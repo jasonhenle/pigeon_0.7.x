@@ -1,0 +1,477 @@
+"""
+TMDb: search movie and/or TV by title, download poster into pigeonPulledMedia, then poster pipeline.
+
+Credentials (never commit real keys):
+  - PIGEON_TMDB_READ_TOKEN  — JWT read access token (Bearer), preferred
+  - PIGEON_TMDB_API_KEY     — v3 API key (query param)
+  Or files in ~/.pigeon_0_5/: tmdb_read_token, tmdb_api_key (single line each)
+
+Query hints (optional):
+  - Prefix ``tv `` to search TV only (e.g. ``tv Breaking Bad``).
+  - Prefix ``movie `` to search movies only.
+
+This product uses the TMDb API but is not endorsed or certified by TMDb.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import secrets
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+
+from pigeon.app_state import auto_delete_pulled_media
+from pigeon.image_ui_protocol import backdrop_master_bgr_from_file, pulled_path_is_under_pulled_dir
+from pigeon.media_cache import (
+    ASSET_BACKDROP,
+    ASSET_LOGO,
+    ASSET_POSTER_ART,
+    copy_pulled_to_reformatted,
+    find_cached_reformatted_asset,
+    title_key,
+)
+from pigeon.media_folders import pigeon_pulled_media_dir
+
+TMDB_API_BASE = "https://api.themoviedb.org/3"
+POSTER_SIZE = "w780"  # good balance before local 1800-wide pipeline
+IMG_BASE = f"https://image.tmdb.org/t/p/{POSTER_SIZE}"
+LOGO_SIZE = "w500"
+BACKDROP_SIZE = "w1280"
+IMG_LOGO_BASE = f"https://image.tmdb.org/t/p/{LOGO_SIZE}"
+IMG_BACKDROP_BASE = f"https://image.tmdb.org/t/p/{BACKDROP_SIZE}"
+
+MediaKind = Literal["movie", "tv"]
+Prefer = Literal["auto", "movie", "tv"]
+
+_STATE_DIR = Path.home() / ".pigeon_0_5"
+_UA = "Pigeon0.5/1.0 (local; +https://www.themoviedb.org/documentation/api)"
+
+
+def load_tmdb_api_key() -> str | None:
+    k = os.environ.get("PIGEON_TMDB_API_KEY", "").strip()
+    if k:
+        return k
+    p = _STATE_DIR / "tmdb_api_key"
+    if p.is_file():
+        return p.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def load_tmdb_read_token() -> str | None:
+    t = os.environ.get("PIGEON_TMDB_READ_TOKEN", "").strip()
+    if t:
+        return t
+    p = _STATE_DIR / "tmdb_read_token"
+    if p.is_file():
+        return p.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def _request_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    token = load_tmdb_read_token()
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    else:
+        api_key = load_tmdb_api_key()
+        if not api_key:
+            raise RuntimeError(
+                "TMDb not configured. Set PIGEON_TMDB_READ_TOKEN or PIGEON_TMDB_API_KEY, "
+                "or create ~/.pigeon_0_5/tmdb_read_token or tmdb_api_key (single line)."
+            )
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}{urllib.parse.urlencode({'api_key': api_key})}"
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _download_binary(url: str, dest: Path) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = resp.read()
+    dest.write_bytes(data)
+
+
+def _best_with_poster_from_results(results: list) -> dict | None:
+    if not isinstance(results, list) or not results:
+        return None
+    with_poster = [r for r in results if isinstance(r, dict) and r.get("poster_path")]
+    if not with_poster:
+        return None
+    return max(with_poster, key=lambda r: float(r.get("popularity") or 0.0))
+
+
+def _best_from_results(results: list) -> dict | None:
+    """Highest popularity among dict results (no poster requirement)."""
+    if not isinstance(results, list) or not results:
+        return None
+    items = [r for r in results if isinstance(r, dict)]
+    if not items:
+        return None
+    return max(items, key=lambda r: float(r.get("popularity") or 0.0))
+
+
+def search_movie_best_with_poster(query: str) -> dict | None:
+    """Return one TMDb movie dict (has poster_path) or None."""
+    q = query.strip()
+    if not q:
+        return None
+    params = urllib.parse.urlencode({"query": q})
+    url = f"{TMDB_API_BASE}/search/movie?{params}"
+    data = _request_json(url)
+    return _best_with_poster_from_results(data.get("results") or [])
+
+
+def search_movie_best(query: str) -> dict | None:
+    q = query.strip()
+    if not q:
+        return None
+    params = urllib.parse.urlencode({"query": q})
+    url = f"{TMDB_API_BASE}/search/movie?{params}"
+    data = _request_json(url)
+    return _best_from_results(data.get("results") or [])
+
+
+def search_tv_best(query: str) -> dict | None:
+    q = query.strip()
+    if not q:
+        return None
+    params = urllib.parse.urlencode({"query": q})
+    url = f"{TMDB_API_BASE}/search/tv?{params}"
+    data = _request_json(url)
+    return _best_from_results(data.get("results") or [])
+
+
+def search_tv_best_with_poster(query: str) -> dict | None:
+    """Return one TMDb TV result (has poster_path) or None."""
+    q = query.strip()
+    if not q:
+        return None
+    params = urllib.parse.urlencode({"query": q})
+    url = f"{TMDB_API_BASE}/search/tv?{params}"
+    data = _request_json(url)
+    return _best_with_poster_from_results(data.get("results") or [])
+
+
+def search_best_media_with_poster(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
+    """
+    Pick one movie or TV hit with a poster.
+    ``auto`` chooses whichever has higher TMDb ``popularity`` (ties → movie).
+    """
+    q = query.strip()
+    if not q:
+        return None, None
+    if prefer == "movie":
+        m = search_movie_best_with_poster(q)
+        return (m, "movie") if m else (None, None)
+    if prefer == "tv":
+        t = search_tv_best_with_poster(q)
+        return (t, "tv") if t else (None, None)
+
+    m = search_movie_best_with_poster(q)
+    t = search_tv_best_with_poster(q)
+    if m and not t:
+        return m, "movie"
+    if t and not m:
+        return t, "tv"
+    if not m and not t:
+        return None, None
+    pm = float(m.get("popularity") or 0.0)
+    pt = float(t.get("popularity") or 0.0)
+    if pt > pm:
+        return t, "tv"
+    return m, "movie"
+
+
+def search_best_media(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
+    """Pick one movie or TV hit by popularity (poster not required)."""
+    q = query.strip()
+    if not q:
+        return None, None
+    if prefer == "movie":
+        m = search_movie_best(q)
+        return (m, "movie") if m else (None, None)
+    if prefer == "tv":
+        t = search_tv_best(q)
+        return (t, "tv") if t else (None, None)
+
+    m = search_movie_best(q)
+    t = search_tv_best(q)
+    if m and not t:
+        return m, "movie"
+    if t and not m:
+        return t, "tv"
+    if not m and not t:
+        return None, None
+    pm = float(m.get("popularity") or 0.0)
+    pt = float(t.get("popularity") or 0.0)
+    if pt > pm:
+        return t, "tv"
+    return m, "movie"
+
+
+def fetch_media_images(kind: MediaKind, media_id: int) -> dict:
+    if kind == "movie":
+        url = f"{TMDB_API_BASE}/movie/{int(media_id)}/images"
+    else:
+        url = f"{TMDB_API_BASE}/tv/{int(media_id)}/images"
+    return _request_json(url)
+
+
+def _logo_path_from_images(images: dict) -> str | None:
+    logos = images.get("logos") or []
+    if not logos:
+        return None
+
+    def sort_key(l: dict) -> tuple[int, float]:
+        iso = (l.get("iso_639_1") or "") or ""
+        iso_l = str(iso).lower()
+        if iso_l == "en":
+            tier = 0
+        elif iso_l == "":
+            tier = 1
+        else:
+            tier = 2
+        return (tier, -float(l.get("vote_average") or 0.0))
+
+    best = min(logos, key=sort_key)
+    return best.get("file_path")  # type: ignore[arg-type]
+
+
+def _backdrop_is_no_language(item: dict) -> bool:
+    """TMDb uses ``iso_639_1: null`` (and sometimes missing/empty) for language-neutral backdrops."""
+    iso = item.get("iso_639_1")
+    if iso is None:
+        return True
+    if isinstance(iso, str) and iso.strip() == "":
+        return True
+    return False
+
+
+def _random_backdrop_path(images: dict) -> str | None:
+    backs = images.get("backdrops") or []
+    neutral = [
+        b
+        for b in backs
+        if isinstance(b, dict) and _backdrop_is_no_language(b) and b.get("file_path")
+    ]
+    if not neutral:
+        return None
+    choice = random.choice(neutral)
+    return choice.get("file_path")
+
+
+def _maybe_delete_pulled(path: Path) -> None:
+    if pulled_path_is_under_pulled_dir(path) and auto_delete_pulled_media():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _display_title(item: dict, kind: MediaKind) -> str:
+    if kind == "movie":
+        return str(item.get("title") or item.get("original_title") or "movie")
+    return str(item.get("name") or item.get("original_name") or "TV")
+
+
+def download_poster_to_pulled(item: dict, kind: MediaKind) -> tuple[bool, str, Path | None]:
+    """
+    Save poster under pigeonPulledMedia as ``tmdb_m_<id>`` or ``tmdb_tv_<id>`` (IDs differ by media type).
+    """
+    mid = item.get("id")
+    ppath = item.get("poster_path")
+    title = _display_title(item, kind)
+    if mid is None or not ppath:
+        return False, "TMDb result missing id or poster_path.", None
+    ext = Path(str(ppath)).suffix.lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+        ext = ".jpg"
+    tag = "m" if kind == "movie" else "tv"
+    pulled = pigeon_pulled_media_dir()
+    dest = pulled / f"tmdb_{tag}_{int(mid)}{ext}"
+    image_url = f"{IMG_BASE}{ppath}"
+    try:
+        _download_binary(image_url, dest)
+    except urllib.error.HTTPError as e:
+        return False, f"Poster download failed ({e.code}): {e.reason}", None
+    except urllib.error.URLError as e:
+        return False, f"Poster download failed: {e.reason}", None
+    except OSError as e:
+        return False, f"Could not save poster: {e}", None
+    kind_label = "movie" if kind == "movie" else "TV"
+    return True, f"{title} ({kind_label}) → {dest.name}", dest
+
+
+def download_logo_to_pulled(item: dict, kind: MediaKind, file_path: str) -> tuple[bool, str, Path | None]:
+    mid = item.get("id")
+    if mid is None or not file_path:
+        return False, "TMDb logo path missing.", None
+    ext = Path(str(file_path)).suffix.lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp", ".svg"):
+        ext = ".png"
+    tag = "m" if kind == "movie" else "tv"
+    dest = pigeon_pulled_media_dir() / f"tmdb_logo_{tag}_{int(mid)}{ext}"
+    image_url = f"{IMG_LOGO_BASE}{file_path}"
+    try:
+        _download_binary(image_url, dest)
+    except urllib.error.HTTPError as e:
+        return False, f"Logo download failed ({e.code}): {e.reason}", None
+    except urllib.error.URLError as e:
+        return False, f"Logo download failed: {e.reason}", None
+    except OSError as e:
+        return False, f"Could not save logo: {e}", None
+    return True, dest.name, dest
+
+
+def download_backdrop_to_pulled(item: dict, kind: MediaKind, file_path: str) -> tuple[bool, str, Path | None]:
+    mid = item.get("id")
+    if mid is None or not file_path:
+        return False, "TMDb backdrop path missing.", None
+    ext = Path(str(file_path)).suffix.lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+        ext = ".jpg"
+    tag = "m" if kind == "movie" else "tv"
+    rand = secrets.token_hex(4)
+    dest = pigeon_pulled_media_dir() / f"tmdb_bd_{tag}_{int(mid)}_{rand}{ext}"
+    image_url = f"{IMG_BACKDROP_BASE}{file_path}"
+    try:
+        _download_binary(image_url, dest)
+    except urllib.error.HTTPError as e:
+        return False, f"Backdrop download failed ({e.code}): {e.reason}", None
+    except urllib.error.URLError as e:
+        return False, f"Backdrop download failed: {e.reason}", None
+    except OSError as e:
+        return False, f"Could not save backdrop: {e}", None
+    return True, dest.name, dest
+
+
+def fetch_tmdb_poster_to_pulled(query: str, *, prefer: Prefer = "auto") -> tuple[bool, str, Path | None]:
+    """Search TMDb (movie and/or TV) and download best-match poster to pigeonPulledMedia."""
+    try:
+        item, kind = search_best_media_with_poster(query, prefer=prefer)
+    except RuntimeError as e:
+        return False, str(e), None
+    except urllib.error.HTTPError as e:
+        return False, f"TMDb API error ({e.code}): {e.reason}", None
+    except urllib.error.URLError as e:
+        return False, f"TMDb network error: {e.reason}", None
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        return False, str(e), None
+    if item is None or kind is None:
+        return False, "No movie or TV show found with a poster for that search.", None
+    return download_poster_to_pulled(item, kind)
+
+
+def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool, str, np.ndarray | None]:
+    """
+    Search TMDb, use pigeonReFormattedMedia cache for poster (PosterArt) and logo when present;
+    pull missing assets; duplicate pulls as ``{Title}_{PosterArt|Logo|Backdrop}`` in reformatted.
+
+    Always picks a **random** backdrop from TMDb image results (not served from cache).
+
+    Returns ``(ok, message, backdrop_master_bgr_or_none)`` where master is BGR scaled to 2160px tall
+    for the scene compositor, or None if no backdrop could be loaded.
+    """
+    from pigeon.widgets.poster_art import apply_poster_from_source_path
+
+    q = query.strip()
+    if not q:
+        return False, "Empty search.", None
+
+    try:
+        item, kind = search_best_media(q, prefer=prefer)
+    except RuntimeError as e:
+        return False, str(e), None
+    except urllib.error.HTTPError as e:
+        return False, f"TMDb API error ({e.code}): {e.reason}", None
+    except urllib.error.URLError as e:
+        return False, f"TMDb network error: {e.reason}", None
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        return False, str(e), None
+
+    if item is None or kind is None:
+        return False, "No movie or TV show found for that search.", None
+
+    display_title = _display_title(item, kind)
+    tk = title_key(display_title)
+    parts: list[str] = [display_title]
+
+    # --- Poster ---
+    poster_src: Path | None = find_cached_reformatted_asset(tk, ASSET_POSTER_ART)
+    if poster_src is not None:
+        parts.append("poster: cache")
+    else:
+        ppath = item.get("poster_path")
+        if not ppath:
+            return False, "TMDb result has no poster (and no cached PosterArt).", None
+        ok_p, msg_p, poster_src = download_poster_to_pulled(item, kind)
+        if not ok_p or poster_src is None:
+            return False, msg_p, None
+        try:
+            copy_pulled_to_reformatted(poster_src, tk, ASSET_POSTER_ART)
+        except OSError as e:
+            return False, f"Could not copy poster to reformatted: {e}", None
+        parts.append(f"poster: {poster_src.name}")
+
+    ok_ap, msg_ap = apply_poster_from_source_path(poster_src, reformatted_title=display_title)
+    if not ok_ap:
+        return False, msg_ap, None
+
+    # --- Images bundle (logo + random backdrop) ---
+    backdrop_master: np.ndarray | None = None
+    try:
+        images = fetch_media_images(kind, int(item["id"]))
+    except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
+        images = {}
+
+    # --- Logo (cache first) ---
+    logo_cached = find_cached_reformatted_asset(tk, ASSET_LOGO)
+    if logo_cached is not None:
+        parts.append("logo: cache")
+    else:
+        lp = _logo_path_from_images(images)
+        if lp:
+            ok_l, _msg_l, logo_path = download_logo_to_pulled(item, kind, lp)
+            if ok_l and logo_path is not None:
+                try:
+                    copy_pulled_to_reformatted(logo_path, tk, ASSET_LOGO)
+                    parts.append(f"logo: {logo_path.name}")
+                except OSError as e:
+                    parts.append(f"logo: copy failed ({e})")
+                _maybe_delete_pulled(logo_path)
+            else:
+                parts.append("logo: skip")
+        else:
+            parts.append("logo: none")
+
+    # --- Backdrop: always random from API ---
+    bp = _random_backdrop_path(images)
+    if not bp:
+        parts.append("backdrop: none")
+    else:
+        ok_b, _msg_b, bd_pulled = download_backdrop_to_pulled(item, kind, bp)
+        if ok_b and bd_pulled is not None:
+            try:
+                copy_pulled_to_reformatted(bd_pulled, tk, ASSET_BACKDROP)
+            except OSError as e:
+                parts.append(f"backdrop: reformatted copy failed ({e})")
+            else:
+                parts.append(f"backdrop: {bd_pulled.name}")
+            backdrop_master = backdrop_master_bgr_from_file(bd_pulled)
+            _maybe_delete_pulled(bd_pulled)
+        else:
+            parts.append("backdrop: download failed")
+
+    summary = " | ".join(parts)
+    return True, summary, backdrop_master
