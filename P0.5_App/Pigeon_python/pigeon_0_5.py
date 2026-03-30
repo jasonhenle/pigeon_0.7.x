@@ -19,6 +19,12 @@ POSTER_ANCHOR_COL = 3
 # 5×2 clock anchored at [7,3]; poster 4×6 at [1,3].
 CLOCK_ANCHOR_ROW = 7
 CLOCK_ANCHOR_COL = 3
+# Timecode-style labels on row 1, each 3×1: cols 7–9 and 15–17.
+TIMECODE_LABEL_ANCHOR_ROW = 1
+TIMECODE_LABEL_A_ANCHOR_COL = 7
+TIMECODE_LABEL_A_TEXT = "0:00:00"
+TIMECODE_LABEL_B_ANCHOR_COL = 15
+TIMECODE_LABEL_B_TEXT = "1:00:00"
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
@@ -40,6 +46,7 @@ try:
     from pigeon.design import DESIGN_H, DESIGN_W, rect_for_span_at_cell
     from pigeon.overlay import blend_overlay_bgr, build_stage_overlay_source_bgra
     from pigeon.widgets.clock_calendar import ClockCalendarWidget
+    from pigeon.widgets.timecode_label import TimecodeLabelWidget
     from pigeon.widgets.poster_art import (
         PosterArtWidget,
         apply_poster_command_pigeon,
@@ -60,6 +67,7 @@ except ImportError:
     apply_poster_command_terminator = None  # type: ignore[misc, assignment]
     prepare_default_poster_at_startup = None  # type: ignore[misc, assignment]
     ClockCalendarWidget = None  # type: ignore[misc, assignment]
+    TimecodeLabelWidget = None  # type: ignore[misc, assignment]
     _PIGEON_EXT = False
 
 
@@ -80,7 +88,7 @@ class DevPhase(IntEnum):
 MAX_FAST_COMPOSITE_W = 1280
 
 # TMDb static backdrop scene (not paused-video dim 0.3).
-BACKDROP_BRIGHTNESS = 1.0
+BACKDROP_BRIGHTNESS = 0.8
 
 HOTKEY_BINDTAG = "Pigeon0_5_hotkeys"
 
@@ -479,9 +487,24 @@ def main() -> int:
             if _PIGEON_EXT and ClockCalendarWidget is not None
             else None
         )
+        timecode_label_widgets: list = []
+        if _PIGEON_EXT and TimecodeLabelWidget is not None:
+            timecode_label_widgets = [
+                TimecodeLabelWidget(
+                    anchor_row=TIMECODE_LABEL_ANCHOR_ROW,
+                    anchor_col=TIMECODE_LABEL_A_ANCHOR_COL,
+                    text=TIMECODE_LABEL_A_TEXT,
+                ),
+                TimecodeLabelWidget(
+                    anchor_row=TIMECODE_LABEL_ANCHOR_ROW,
+                    anchor_col=TIMECODE_LABEL_B_ANCHOR_COL,
+                    text=TIMECODE_LABEL_B_TEXT,
+                ),
+            ]
 
         poster_patch_bgra: np.ndarray | None = None
         clock_patch_bgra: np.ndarray | None = None
+        timecode_label_patches_bgra: list = []
         _last_clock_design_tick = -1
 
         def _apply_stage_chrome_colors() -> None:
@@ -546,6 +569,10 @@ def main() -> int:
                 return
             poster_patch_bgra = poster_widget.bgra_patch().copy()
 
+        def _warm_timecode_label_patches() -> None:
+            nonlocal timecode_label_patches_bgra
+            timecode_label_patches_bgra = [w.bgra_patch().copy() for w in timecode_label_widgets]
+
         def _refresh_clock_patch_bgra() -> None:
             nonlocal clock_patch_bgra, _last_clock_design_tick
             if clock_widget is None:
@@ -607,6 +634,20 @@ def main() -> int:
                 patch = cv2.resize(clock_patch_bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
                 sub = base[y : y + rh, x : x + rw]
                 sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
+            if (
+                timecode_label_patches_bgra
+                and timecode_label_widgets
+                and rect_for_span_at_cell is not None
+                and alpha_blend_bgra_over_bgr is not None
+            ):
+                for patch_bgra, tc_w in zip(timecode_label_patches_bgra, timecode_label_widgets):
+                    sw, sh = tc_w.grid_span
+                    ar, ac = tc_w.grid_anchor
+                    wx, wy, ww, wh = rect_for_span_at_cell(sw, sh, row_1based=ar, col_1based=ac)
+                    x, y, rw, rh = _design_rect_to_target(wx, wy, ww, wh, cap_w, cap_h)
+                    patch = cv2.resize(patch_bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                    sub = base[y : y + rh, x : x + rw]
+                    sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
             if use_cap:
                 return cv2.resize(base, (dw, dh), interpolation=cv2.INTER_LINEAR)
             return base
@@ -642,6 +683,8 @@ def main() -> int:
                 poster_widget.render(canvas)
             if clock_widget is not None:
                 clock_widget.render(canvas)
+            for tc_w in timecode_label_widgets:
+                tc_w.render(canvas)
             if show_grid:
                 ov = build_stage_overlay_source_bgra()
                 canvas = blend_overlay_bgr(canvas, ov)
@@ -692,6 +735,7 @@ def main() -> int:
 
         if _PIGEON_EXT:
             _warm_poster_design_patch()
+            _warm_timecode_label_patches()
 
         # Start with video fully closed if last session had scene off — black screen, no capture.
         if not scene_enabled and cap is not None:
