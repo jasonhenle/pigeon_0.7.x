@@ -46,6 +46,40 @@ def resolve_ui_font_medium() -> str | None:
     return None
 
 
+def resolve_ui_font_extrabold() -> str | None:
+    """
+    Return path to Sharp Sans ExtraBold, or None to fall back to Bold / Medium.
+
+    Set PIGEON_FONT_EXTRABOLD to a .ttf/.otf path to override.
+    """
+    env = os.environ.get("PIGEON_FONT_EXTRABOLD")
+    if env and Path(env).is_file():
+        return env
+
+    roots = [
+        Path.home() / "Library" / "Fonts",
+        Path("/Library/Fonts"),
+        Path("/System/Library/Fonts"),
+        Path("/System/Library/Fonts/Supplemental"),
+    ]
+    globs = (
+        "*Sharp*Sans*Extra*Bold*.otf",
+        "*Sharp*Sans*Extra*Bold*.ttf",
+        "*SharpSans*Extra*Bold*.otf",
+        "*SharpSans*Extra*Bold*.ttf",
+        "*Sharp*Sans*ExtraBold*.otf",
+        "*Sharp*Sans*ExtraBold*.ttf",
+    )
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for pattern in globs:
+            for p in sorted(root.glob(pattern)):
+                if p.is_file():
+                    return str(p)
+    return None
+
+
 def resolve_ui_font_bold() -> str | None:
     """
     Return path to Sharp Sans Bold, or None to use Pillow fallback.

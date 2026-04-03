@@ -15,7 +15,10 @@ PIGEON_HOTKEY_ROWS: list[tuple[str, str]] = [
         "Title only: searches movies and TV, picks by popularity. Prefix tv <title> or movie <title> to force. tmdb … same.",
     ),
     ("Esc", "Close command bar if open; otherwise quit"),
-    ("Space", "Play / pause scene (when scene is on)"),
+    (
+        "Space",
+        "If a TMDb backdrop is saved: show backdrop + title logo. Otherwise: landing brightness pulse (when scene is on).",
+    ),
     ("S", "Toggle scene on/off (grid overlay only)"),
     (
         "F10",
@@ -25,8 +28,10 @@ PIGEON_HOTKEY_ROWS: list[tuple[str, str]] = [
     ("Double-click video", "Toggle scene"),
     ("Ctrl+Shift+S", "Toggle scene"),
     ("Right-click video", "Cycle developer mode"),
-    ("Video (button)", "Toggle scene / black (close video file)"),
-    ("Dev (button)", "Cycle developer mode"),
+    (
+        "Apple TV (settings)",
+        "Apple TV → TMDb: Developer settings auto-discovers Apple TVs, remembers the current one, and still lets you switch before using “Selected → TMDb” (needs pyatv + pairing; see pigeon/apple_tv_now_playing.py).",
+    ),
 ]
 
 

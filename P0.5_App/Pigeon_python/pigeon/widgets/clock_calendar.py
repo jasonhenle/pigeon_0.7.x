@@ -1,16 +1,15 @@
 """Clock + calendar widget: 5×2 squares on the global 19×8 grid.
 
-Default anchor is [1,1] (widget dev). Main Pigeon uses ``anchor_row`` / ``anchor_col`` for placement.
+Anchor so the span is **cols 13–17** on row 1 (default): trailing ``am``/``pm`` sits in column 17, right-aligned,
+so the block is not clipped past the design canvas edge.
 
-Layout matches a 5-column × 2-row sheet (e.g. After Effects red column guides 1–5):
-  Row 1: month in cols 1–3.5; date in cols 4–5 (from col 4).
-  Row 2: time in cols 1–3, right-aligned to the right edge of box [2,3]; am/pm in col 4; weekday in col 5.
+Layout: one line — ``month day`` (medium) + ``time`` (bold) + `` am|pm`` (medium), spaces only (no slashes).
+The date segment has a black outline; there is no background pill. The line is vertically centered in **row 1**
+of the 5×2 span (top grid row only).
 
-Typography: Sharp Sans Bold (see PIGEON_FONT). Each label is scaled to use the full row height
-within its horizontal band (uniform row scale), subject to width.
+A subtle drop shadow uses the same BGR accent as the now-playing progress bar (``set_shadow_accent_bgr``).
 
-The drawn clock/calendar is ``_CLOCK_CONTENT_SCALE`` (default 0.8) of the grid box, top-left aligned
-so the anchor cell origin is unchanged.
+Text is **right-aligned** within the full grid footprint.
 """
 
 from __future__ import annotations
@@ -22,29 +21,29 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.compositing import alpha_blend_bgra_over_bgr
+from pigeon.compositing import alpha_blend_bgra_over_bgr, scale_bgra_rgb
 from pigeon.design import rect_for_span_at_cell
-from pigeon.font_paths import resolve_ui_font_bold
+from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_medium
 
 _SPAN = (5, 2)
 
-# Clock/calendar glyphs fill this fraction of the 5×2 grid box; remainder is transparent (origin = top-left).
-_CLOCK_CONTENT_SCALE = 0.8
+# Use the full 5×2 footprint so right-aligned text (am/pm in col 17) is not squeezed off-canvas.
+_CLOCK_CONTENT_SCALE = 1.0
 
-# Default sample when enabling fake time via hotkey (Nov 30 Mon 12:55 pm)
+_DEFAULT_SHADOW_ACCENT_BGR = (40, 140, 255)
+
 DEFAULT_FAKE_TIME_STRING = "2020-11-30 12:55:00"
 
-# AE reference sizes (informational; runtime sizing is box-driven)
-_W75 = (191, 191, 191, 255)
-_W100 = (255, 255, 255, 255)
+_TEXT_WHITE = (255, 255, 255, 255)
+_SHADOW_ALPHA = 110
+# Calendar (month + day) white text with black outline for contrast without the old pill.
+_CAL_STROKE_W = 2
+_CAL_STROKE_RGBA = (0, 0, 0, 255)
 
 
-def _text_size(font: ImageFont.ImageFont, text: str) -> tuple[int, int]:
-    if hasattr(font, "getbbox"):
-        l, t, r, b = font.getbbox(text)
-        return r - l, b - t
-    w, h = font.getsize(text)
-    return w, h
+def _text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
+    l, t, r, b = draw.textbbox((0, 0), text, font=font)
+    return r - l, b - t
 
 
 def _load_font(path: str, size: int) -> ImageFont.ImageFont:
@@ -52,51 +51,6 @@ def _load_font(path: str, size: int) -> ImageFont.ImageFont:
         return ImageFont.truetype(path, size)
     except OSError:
         return ImageFont.load_default()
-
-
-def _fit_font_to_box(
-    path: str,
-    text: str,
-    max_w: int,
-    max_h: int,
-    min_sz: int = 6,
-    *,
-    min_sz_floor: int | None = None,
-) -> ImageFont.ImageFont:
-    """Largest font size so text fits in max_w × max_h (row-filling).
-
-    ``min_sz_floor``: try to use at least this point size (e.g. weekday vs date balance)
-    if it still fits; otherwise keep the smaller fit.
-    """
-    if max_w < 4 or max_h < 4:
-        return _load_font(path, min_sz)
-    lo, hi = min_sz, max(max_h * 3, max_w, 120)
-    best = _load_font(path, min_sz)
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        f = _load_font(path, mid)
-        tw, th = _text_size(f, text)
-        if tw <= max_w and th <= max_h:
-            best = f
-            lo = mid + 1
-        else:
-            hi = mid - 1
-
-    if min_sz_floor is None:
-        return best
-
-    fs = getattr(best, "size", min_sz)
-    if fs >= min_sz_floor:
-        return best
-
-    # Bump toward floor: largest size ≥ min_sz_floor that still fits (narrow cols + short labels).
-    hi2 = max(max_h * 3, max_w, 120)
-    for sz in range(min(hi2, min_sz_floor + 80), min_sz_floor - 1, -1):
-        f = _load_font(path, sz)
-        tw, th = _text_size(f, text)
-        if tw <= max_w and th <= max_h:
-            return f
-    return best
 
 
 def _time_12h_no_leading_zero(now: datetime) -> str:
@@ -107,12 +61,6 @@ def _time_12h_no_leading_zero(now: datetime) -> str:
 
 
 def _resolve_display_time() -> datetime:
-    """
-    Live clock uses ``datetime.now()``. For layout tests, set either:
-
-    - ``PIGEON_FAKE_TIME`` or ``PIGEON_FAKE_DATETIME`` (e.g. ``2020-11-30 12:55:00``)
-    - ``pigeon_widget_preview.py --fake-time "2020-11-30 12:55:00"``
-    """
     raw = (os.environ.get("PIGEON_FAKE_TIME") or os.environ.get("PIGEON_FAKE_DATETIME") or "").strip()
     if not raw:
         return datetime.now()
@@ -128,10 +76,51 @@ def _resolve_display_time() -> datetime:
     return datetime.now()
 
 
+def _fit_segmented_fonts(
+    medium_path: str | None,
+    bold_path: str,
+    left: str,
+    mid: str,
+    right: str,
+    draw: ImageDraw.ImageDraw,
+    max_w: int,
+    max_h: int,
+    min_sz: int = 6,
+) -> tuple[ImageFont.ImageFont, ImageFont.ImageFont]:
+    """One point size; ``mid`` uses bold, ``left``/``right`` use medium (or bold path if no medium)."""
+    med_p = medium_path if medium_path else bold_path
+    lo, hi = min_sz, max(max_h * 3, max_w, 120)
+    best_pair: tuple[ImageFont.ImageFont, ImageFont.ImageFont] | None = None
+    while lo <= hi:
+        mid_sz = (lo + hi) // 2
+        f_med = _load_font(med_p, mid_sz)
+        f_bold = _load_font(bold_path, mid_sz)
+        tw = (
+            _text_size(draw, left, f_med)[0]
+            + _text_size(draw, mid, f_bold)[0]
+            + _text_size(draw, right, f_med)[0]
+        )
+        th = max(
+            _text_size(draw, left, f_med)[1],
+            _text_size(draw, mid, f_bold)[1],
+            _text_size(draw, right, f_med)[1],
+        )
+        if tw <= max_w and th <= max_h:
+            best_pair = (f_med, f_bold)
+            lo = mid_sz + 1
+        else:
+            hi = mid_sz - 1
+    if best_pair is None:
+        sz = min_sz
+        return _load_font(med_p, sz), _load_font(bold_path, sz)
+    return best_pair
+
+
 class ClockCalendarWidget:
     def __init__(self, *, anchor_row: int = 1, anchor_col: int = 1) -> None:
         self._anchor_row = anchor_row
         self._anchor_col = anchor_col
+        self._shadow_accent_bgr: tuple[int, int, int] = _DEFAULT_SHADOW_ACCENT_BGR
 
     @property
     def grid_span(self) -> tuple[int, int]:
@@ -139,104 +128,106 @@ class ClockCalendarWidget:
 
     @property
     def grid_anchor(self) -> tuple[int, int]:
-        """Top-left cell (1-based) on the global 19×8 grid."""
         return (self._anchor_row, self._anchor_col)
 
-    def _rgba_clock_content(self, w: int, h: int) -> Image.Image:
-        """Draw clock/calendar filling a transparent RGBA image of exactly ``w``×``h``."""
-        cell = max(1, w // 5)
-        row1_top = 0
-        row1_h = max(1, h // 2)
-        row2_top = row1_h
-        row2_h = max(1, h - row1_h)
+    def set_shadow_accent_bgr(self, bgr: tuple[int, int, int] | None) -> None:
+        if bgr is None or len(bgr) != 3:
+            self._shadow_accent_bgr = _DEFAULT_SHADOW_ACCENT_BGR
+            return
+        self._shadow_accent_bgr = (int(bgr[0]), int(bgr[1]), int(bgr[2]))
 
-        now = _resolve_display_time()
+    def _clock_segments(self, now: datetime) -> tuple[str, str, str]:
         month_s = now.strftime("%B").lower()
         date_s = str(now.day)
         time_s = _time_12h_no_leading_zero(now)
         ampm_s = now.strftime("%p").lower()
-        dow_s = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[now.weekday()]
+        # Single spaces between month/day and before am/pm; two spaces between date and time.
+        left = f"{month_s} {date_s}  "
+        mid = time_s
+        right = f" {ampm_s}"
+        return left, mid, right
 
-        font_path = resolve_ui_font_bold()
-        if not font_path:
-            font_path = "/System/Library/Fonts/Supplemental/Arial.ttf"
+    def _rgba_clock_content(self, w: int, h: int) -> Image.Image:
+        now = _resolve_display_time()
+        left, mid, right = self._clock_segments(now)
 
-        month_box = (0, row1_top, int(3.5 * cell), row1_h)
-        date_box = (int(3.5 * cell), row1_top, w - int(3.5 * cell), row1_h)
-        time_box = (0, row2_top, 3 * cell, row2_h)
-        ampm_box = (3 * cell, row2_top, cell, row2_h)
-        day_box = (4 * cell, row2_top, cell, row2_h)
+        bold_path = resolve_ui_font_bold()
+        if not bold_path:
+            bold_path = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+        medium_path = resolve_ui_font_medium()
+        if not medium_path:
+            medium_path = "/System/Library/Fonts/Supplemental/Arial.ttf"
 
-        pad = max(2, int(cell * 0.03))
-
-        def inner(box: tuple[int, int, int, int]) -> tuple[int, int]:
-            bx, by, bw, bh = box
-            return max(1, bw - 2 * pad), max(1, bh - 2 * pad)
-
-        mw, mh = inner(month_box)
-        dw, dh = inner(date_box)
-        tw, th = inner(time_box)
-        aw, ah = inner(ampm_box)
-        yw, yh = inner(day_box)
-
-        month_font = _fit_font_to_box(font_path, month_s, mw, mh)
-        date_font = _fit_font_to_box(font_path, date_s, dw, dh)
-        time_font = _fit_font_to_box(font_path, time_s, tw, th)
-        ampm_font = _fit_font_to_box(font_path, ampm_s, aw, ah)
-        date_pt = getattr(date_font, "size", None)
-        dow_floor = max(8, int((date_pt or 20) * 0.72))
-        day_font = _fit_font_to_box(font_path, dow_s, yw, yh, min_sz_floor=dow_floor)
+        pad = max(2, int(min(w, h) * 0.04))
+        inner_w = max(1, w - 2 * pad)
+        inner_h = max(1, h - 2 * pad)
 
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
+        f_med, f_bold = _fit_segmented_fonts(
+            medium_path, bold_path, left, mid, right, draw, inner_w, inner_h
+        )
 
-        def center_in_box(
-            text: str,
-            font: ImageFont.ImageFont,
-            box: tuple[int, int, int, int],
-            fill: tuple[int, int, int, int],
-        ) -> None:
-            bx, by, bw, bh = box
-            l, t, r, b = draw.textbbox((0, 0), text, font=font)
-            tw_, th_ = r - l, b - t
-            cx = bx + bw // 2
-            cy = by + bh // 2
-            x = cx - (tw_ // 2) - l
-            y = cy - (th_ // 2) - t
-            draw.text((x, y), text, font=font, fill=fill)
+        total_w = (
+            _text_size(draw, left, f_med)[0]
+            + _text_size(draw, mid, f_bold)[0]
+            + _text_size(draw, right, f_med)[0]
+        )
+        x0 = max(pad, w - pad - total_w)
+        # Vertically center the line in **grid row 1** only (this widget spans two rows).
+        row1_h = max(1, h // 2)
+        y_center_row1 = row1_h // 2
+        baseline_y = row1_h // 2
 
-        def right_align_in_box(
-            text: str,
-            font: ImageFont.ImageFont,
-            box: tuple[int, int, int, int],
-            fill: tuple[int, int, int, int],
-        ) -> None:
-            bx, by, bw, bh = box
-            ax = bx + bw - pad
-            ay = by + bh // 2
-            draw.text((ax, ay), text, font=font, fill=fill, anchor="rm")
+        def _line_bbox_at(by: int) -> tuple[int, int, int, int]:
+            xr = x0
+            ul = ut = 999999
+            dr = db = -999999
+            for text, font in ((left, f_med), (mid, f_bold), (right, f_med)):
+                bb = draw.textbbox((xr, by), text, font=font, anchor="ls")
+                ul, ut = min(ul, bb[0]), min(ut, bb[1])
+                dr, db = max(dr, bb[2]), max(db, bb[3])
+                xr = bb[2]
+            return ul, ut, dr, db
 
-        center_in_box(month_s, month_font, month_box, _W75)
-        center_in_box(date_s, date_font, date_box, _W75)
-        right_align_in_box(time_s, time_font, time_box, _W100)
-        center_in_box(ampm_s, ampm_font, ampm_box, _W100)
-        center_in_box(dow_s, day_font, day_box, _W75)
+        ul, ut, dr, db = _line_bbox_at(baseline_y)
+        cy = (ut + db) // 2
+        baseline_y += y_center_row1 - cy
+
+        b_bgr, g_bgr, r_bgr = self._shadow_accent_bgr
+        shadow_rgb = (int(r_bgr), int(g_bgr), int(b_bgr))
+        shadow_fill = shadow_rgb + (_SHADOW_ALPHA,)
+        off = max(1, int(round(min(w, h) * 0.018)))
+
+        x = x0
+        for idx, (text, font) in enumerate(((left, f_med), (mid, f_bold), (right, f_med))):
+            draw.text((x + off, baseline_y + off), text, font=font, fill=shadow_fill, anchor="ls")
+            if idx == 0:
+                draw.text(
+                    (x, baseline_y),
+                    text,
+                    font=font,
+                    fill=_TEXT_WHITE,
+                    anchor="ls",
+                    stroke_width=_CAL_STROKE_W,
+                    stroke_fill=_CAL_STROKE_RGBA,
+                )
+            else:
+                draw.text((x, baseline_y), text, font=font, fill=_TEXT_WHITE, anchor="ls")
+            bx = draw.textbbox((x, baseline_y), text, font=font, anchor="ls")
+            x = bx[2]
         return img
 
     def _rgba_clock_image(self, w: int, h: int) -> Image.Image:
-        """
-        Full 5×2 footprint ``w``×``h`` (grid origin unchanged). Content is drawn at
-        ``_CLOCK_CONTENT_SCALE`` size and pasted at the top-left so cell [anchor] stays the origin.
-        """
         cw = max(1, int(round(w * _CLOCK_CONTENT_SCALE)))
         ch = max(1, int(round(h * _CLOCK_CONTENT_SCALE)))
         content = self._rgba_clock_content(cw, ch)
         canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        canvas.paste(content, (0, 0), content)
+        # Right-align the glyph block: trailing segment (am/pm) hugs the span’s right edge (col 17 when anchored at 13).
+        canvas.paste(content, (w - cw, 0), content)
         return canvas
 
     def bgra_patch(self) -> np.ndarray:
-        """Clock only, transparent background; shape (h, w, 4) BGRA at design scale for this widget."""
         wx, wy, w, h = rect_for_span_at_cell(
             _SPAN[0],
             _SPAN[1],
@@ -246,7 +237,7 @@ class ClockCalendarWidget:
         rgba = np.asarray(self._rgba_clock_image(w, h))
         return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
 
-    def render(self, canvas_bgr: np.ndarray) -> None:
+    def render(self, canvas_bgr: np.ndarray, *, rgb_scale: float = 1.0) -> None:
         wx, wy, w, h = rect_for_span_at_cell(
             _SPAN[0],
             _SPAN[1],
@@ -256,4 +247,6 @@ class ClockCalendarWidget:
         roi = canvas_bgr[wy : wy + h, wx : wx + w]
         rgba = np.asarray(self._rgba_clock_image(w, h))
         bgra = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+        if rgb_scale < 0.999:
+            bgra = scale_bgra_rgb(bgra, rgb_scale)
         roi[:] = alpha_blend_bgra_over_bgr(roi, bgra)

@@ -1,4 +1,5 @@
 opencv-python
 pillow
 numpy
+pyatv>=0.14.5
 

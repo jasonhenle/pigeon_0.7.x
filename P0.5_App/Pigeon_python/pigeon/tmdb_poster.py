@@ -32,6 +32,7 @@ from pigeon.image_ui_protocol import backdrop_master_bgr_from_file, pulled_path_
 from pigeon.media_cache import (
     ASSET_BACKDROP,
     ASSET_LOGO,
+    ASSET_LOGO_EN,
     ASSET_POSTER_ART,
     copy_pulled_to_reformatted,
     find_cached_reformatted_asset,
@@ -52,6 +53,106 @@ Prefer = Literal["auto", "movie", "tv"]
 
 _STATE_DIR = Path.home() / ".pigeon_0_5"
 _UA = "Pigeon0.5/1.0 (local; +https://www.themoviedb.org/documentation/api)"
+
+
+def _norm_query(s: str) -> str:
+    """Normalize a query/title for substring + token matching (ASCII-ish, punctuation-insensitive)."""
+    s = (s or "").strip().lower()
+    if not s:
+        return ""
+    out: list[str] = []
+    prev_space = False
+    for ch in s:
+        # Keep letters/digits; treat everything else as a space.
+        if ch.isalnum():
+            out.append(ch)
+            prev_space = False
+        else:
+            if not prev_space:
+                out.append(" ")
+                prev_space = True
+    return " ".join("".join(out).split())
+
+
+def _result_titles(item: dict) -> list[str]:
+    """Candidate title strings for movie/tv result dicts."""
+    vals = [
+        item.get("title"),
+        item.get("original_title"),
+        item.get("name"),
+        item.get("original_name"),
+    ]
+    out: list[str] = []
+    for v in vals:
+        if isinstance(v, str) and v.strip():
+            out.append(v.strip())
+    # de-dupe while preserving order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in out:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return uniq
+
+
+def _tokens_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    """True if ``needle`` appears as consecutive tokens in ``haystack``."""
+    if not needle:
+        return True
+    nlen = len(needle)
+    for i in range(len(haystack) - nlen + 1):
+        if haystack[i : i + nlen] == needle:
+            return True
+    return False
+
+
+def _match_rank(query: str, item: dict) -> tuple[int, int]:
+    """
+    Sort key (tier, tie_break) for picking the best TMDb search hit — lexicographic **max** wins.
+    ``tie_break`` is ``-len(normalized_title)`` so **shorter** titles win when tier ties
+    (e.g. "Luck" over "Good Luck, Have Fun, Don't Die" for query ``luck``).
+
+    Tiers (highest first):
+      5 — normalized title **equals** query (exact)
+      4 — multi-word query appears as **consecutive** whole tokens in the title
+      3 — every query token appears as a **whole word** in the title
+      2 — normalized query substring of normalized title (fuzzy)
+      1 — every query token appears as substring in some title token
+      0 — no match
+    """
+    nq = _norm_query(query)
+    if not nq:
+        return (0, 0)
+    q_tokens = [t for t in nq.split() if t]
+    if not q_tokens:
+        return (0, 0)
+
+    best: tuple[int, int] = (0, -(10**9))
+    for title in _result_titles(item):
+        nt = _norm_query(title)
+        if not nt:
+            continue
+        t_tokens = [t for t in nt.split() if t]
+        t_set = set(t_tokens)
+        neg_len = -len(nt)
+
+        tier = 0
+        if nt == nq:
+            tier = 5
+        elif len(q_tokens) >= 2 and _tokens_subsequence(q_tokens, t_tokens):
+            tier = 4
+        elif all(qt in t_set for qt in q_tokens):
+            tier = 3
+        elif nq in nt:
+            tier = 2
+        elif all(any(qt in tw for tw in t_tokens) for qt in q_tokens):
+            tier = 1
+
+        cand = (tier, neg_len)
+        if cand > best:
+            best = cand
+    return best
 
 
 def load_tmdb_api_key() -> str | None:
@@ -102,23 +203,31 @@ def _download_binary(url: str, dest: Path) -> None:
     dest.write_bytes(data)
 
 
-def _best_with_poster_from_results(results: list) -> dict | None:
+def _best_with_poster_from_results(query: str, results: list) -> dict | None:
     if not isinstance(results, list) or not results:
         return None
     with_poster = [r for r in results if isinstance(r, dict) and r.get("poster_path")]
     if not with_poster:
         return None
-    return max(with_poster, key=lambda r: float(r.get("popularity") or 0.0))
+    # Prefer exact / whole-word title matches from the real search query; tie-break by
+    # shorter title, then TMDb popularity. Fall back to full pool only if every rank is 0.
+    scored = [(r, _match_rank(query, r)) for r in with_poster]
+    best_key = max(rank for _, rank in scored)
+    pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else with_poster
+    return max(pool, key=lambda r: float(r.get("popularity") or 0.0))
 
 
-def _best_from_results(results: list) -> dict | None:
+def _best_from_results(query: str, results: list) -> dict | None:
     """Highest popularity among dict results (no poster requirement)."""
     if not isinstance(results, list) or not results:
         return None
     items = [r for r in results if isinstance(r, dict)]
     if not items:
         return None
-    return max(items, key=lambda r: float(r.get("popularity") or 0.0))
+    scored = [(r, _match_rank(query, r)) for r in items]
+    best_key = max(rank for _, rank in scored)
+    pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else items
+    return max(pool, key=lambda r: float(r.get("popularity") or 0.0))
 
 
 def search_movie_best_with_poster(query: str) -> dict | None:
@@ -129,7 +238,7 @@ def search_movie_best_with_poster(query: str) -> dict | None:
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/movie?{params}"
     data = _request_json(url)
-    return _best_with_poster_from_results(data.get("results") or [])
+    return _best_with_poster_from_results(q, data.get("results") or [])
 
 
 def search_movie_best(query: str) -> dict | None:
@@ -139,7 +248,7 @@ def search_movie_best(query: str) -> dict | None:
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/movie?{params}"
     data = _request_json(url)
-    return _best_from_results(data.get("results") or [])
+    return _best_from_results(q, data.get("results") or [])
 
 
 def search_tv_best(query: str) -> dict | None:
@@ -149,7 +258,7 @@ def search_tv_best(query: str) -> dict | None:
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/tv?{params}"
     data = _request_json(url)
-    return _best_from_results(data.get("results") or [])
+    return _best_from_results(q, data.get("results") or [])
 
 
 def search_tv_best_with_poster(query: str) -> dict | None:
@@ -160,7 +269,7 @@ def search_tv_best_with_poster(query: str) -> dict | None:
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/tv?{params}"
     data = _request_json(url)
-    return _best_with_poster_from_results(data.get("results") or [])
+    return _best_with_poster_from_results(q, data.get("results") or [])
 
 
 def search_best_media_with_poster(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
@@ -233,19 +342,12 @@ def _logo_path_from_images(images: dict) -> str | None:
     if not logos:
         return None
 
-    def sort_key(l: dict) -> tuple[int, float]:
-        iso = (l.get("iso_639_1") or "") or ""
-        iso_l = str(iso).lower()
-        if iso_l == "en":
-            tier = 0
-        elif iso_l == "":
-            tier = 1
-        else:
-            tier = 2
-        return (tier, -float(l.get("vote_average") or 0.0))
-
-    best = min(logos, key=sort_key)
-    return best.get("file_path")  # type: ignore[arg-type]
+    # Always prefer English logos. If none exist, treat as no logo (do not fall back).
+    en = [l for l in logos if str((l or {}).get("iso_639_1") or "").lower() == "en"]
+    if not en:
+        return None
+    best = max(en, key=lambda l: float((l or {}).get("vote_average") or 0.0))
+    return (best or {}).get("file_path")  # type: ignore[return-value]
 
 
 def _backdrop_is_no_language(item: dict) -> bool:
@@ -375,16 +477,14 @@ def fetch_tmdb_poster_to_pulled(query: str, *, prefer: Prefer = "auto") -> tuple
 
 def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool, str, np.ndarray | None]:
     """
-    Search TMDb, use pigeonReFormattedMedia cache for poster (PosterArt) and logo when present;
-    pull missing assets; duplicate pulls as ``{Title}_{PosterArt|Logo|Backdrop}`` in reformatted.
+    Search TMDb, prefer cached logo when present; pull missing assets and cache as
+    ``{Title}_{Logo|Backdrop}`` in pigeonReFormattedMedia.
 
     Always picks a **random** backdrop from TMDb image results (not served from cache).
 
     Returns ``(ok, message, backdrop_master_bgr_or_none)`` where master is BGR scaled to 2160px tall
     for the scene compositor, or None if no backdrop could be loaded.
     """
-    from pigeon.widgets.poster_art import apply_poster_from_source_path
-
     q = query.strip()
     if not q:
         return False, "Empty search.", None
@@ -407,27 +507,6 @@ def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool
     tk = title_key(display_title)
     parts: list[str] = [display_title]
 
-    # --- Poster ---
-    poster_src: Path | None = find_cached_reformatted_asset(tk, ASSET_POSTER_ART)
-    if poster_src is not None:
-        parts.append("poster: cache")
-    else:
-        ppath = item.get("poster_path")
-        if not ppath:
-            return False, "TMDb result has no poster (and no cached PosterArt).", None
-        ok_p, msg_p, poster_src = download_poster_to_pulled(item, kind)
-        if not ok_p or poster_src is None:
-            return False, msg_p, None
-        try:
-            copy_pulled_to_reformatted(poster_src, tk, ASSET_POSTER_ART)
-        except OSError as e:
-            return False, f"Could not copy poster to reformatted: {e}", None
-        parts.append(f"poster: {poster_src.name}")
-
-    ok_ap, msg_ap = apply_poster_from_source_path(poster_src, reformatted_title=display_title)
-    if not ok_ap:
-        return False, msg_ap, None
-
     # --- Images bundle (logo + random backdrop) ---
     backdrop_master: np.ndarray | None = None
     try:
@@ -435,17 +514,17 @@ def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool
     except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
         images = {}
 
-    # --- Logo (cache first) ---
-    logo_cached = find_cached_reformatted_asset(tk, ASSET_LOGO)
+    # --- Logo (English-only; cache first) ---
+    logo_cached = find_cached_reformatted_asset(tk, ASSET_LOGO_EN)
     if logo_cached is not None:
-        parts.append("logo: cache")
+        parts.append("logo: en cache")
     else:
         lp = _logo_path_from_images(images)
         if lp:
             ok_l, _msg_l, logo_path = download_logo_to_pulled(item, kind, lp)
             if ok_l and logo_path is not None:
                 try:
-                    copy_pulled_to_reformatted(logo_path, tk, ASSET_LOGO)
+                    copy_pulled_to_reformatted(logo_path, tk, ASSET_LOGO_EN)
                     parts.append(f"logo: {logo_path.name}")
                 except OSError as e:
                     parts.append(f"logo: copy failed ({e})")
@@ -474,4 +553,5 @@ def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool
             parts.append("backdrop: download failed")
 
     summary = " | ".join(parts)
-    return True, summary, backdrop_master
+    # Prefix title_key + display_title so the UI can render a text fallback when no English logo exists.
+    return True, f"{tk}::{display_title}::{summary}", backdrop_master

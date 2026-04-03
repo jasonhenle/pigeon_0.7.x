@@ -14,6 +14,7 @@ from pigeon.widgets.poster_art import sanitize_reformatted_poster_title
 
 ASSET_POSTER_ART = "PosterArt"
 ASSET_LOGO = "Logo"
+ASSET_LOGO_EN = "LogoEn"
 ASSET_BACKDROP = "Backdrop"
 
 _EXTS = (".png", ".jpg", ".jpeg", ".webp")

@@ -30,8 +30,8 @@ POSTER_MASTER_H = 2700
 # TMDb backdrop: pull → uniform height BACKDROP_MASTER_HEIGHT, then place on design canvas (not full-bleed).
 BACKDROP_MASTER_HEIGHT = 2160
 # Design grid (1-based): patch top-left = top-left of this cell, bottom-right = bottom-right of this cell.
-BACKDROP_PATCH_TL_ROW_1BASED = 2
-BACKDROP_PATCH_TL_COL_1BASED = 6
+BACKDROP_PATCH_TL_ROW_1BASED = 1
+BACKDROP_PATCH_TL_COL_1BASED = 2
 BACKDROP_PATCH_BR_ROW_1BASED = 8
 BACKDROP_PATCH_BR_COL_1BASED = 18
 

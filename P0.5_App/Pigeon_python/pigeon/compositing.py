@@ -6,6 +6,20 @@ import cv2
 import numpy as np
 
 
+def scale_bgra_rgb(bgra: np.ndarray, rgb_factor: float) -> np.ndarray:
+    """Scale BGR channels only; alpha unchanged. Used for idle-dim per-widget tuning."""
+    f = float(rgb_factor)
+    if f >= 0.999:
+        return bgra
+    if f <= 0.0:
+        out = np.zeros_like(bgra)
+        out[:, :, 3] = bgra[:, :, 3]
+        return out
+    out = bgra.copy()
+    out[:, :, :3] = np.clip(bgra[:, :, :3].astype(np.float32) * f, 0, 255).astype(np.uint8)
+    return out
+
+
 def alpha_blend_bgra_over_bgr(base_bgr: np.ndarray, overlay_bgra: np.ndarray) -> np.ndarray:
     if base_bgr.shape[:2] != overlay_bgra.shape[:2]:
         raise ValueError("Overlay and base frame sizes must match")

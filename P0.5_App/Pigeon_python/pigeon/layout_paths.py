@@ -386,6 +386,11 @@ def pick_pigeon_logo_png(poster_widget_dir: Path | None = None) -> Path | None:
     Find Pigeon_Logo.png in the poster asset folder first, then pigeonAssets, then anywhere
     under Pigeon0.5 (excluding venv, pigeonOld, docs, etc.).
     """
+    # Shipped default next to the ``pigeon`` package (replace with your own PNG if desired).
+    _shipped = _pigeon_package_dir() / "static" / "P_0.5_pigeonLogo_4x6_MEDIUM_pigeonLogo.png"
+    if _shipped.is_file():
+        return _shipped
+
     found: list[Path] = []
     if poster_widget_dir is not None and poster_widget_dir.is_dir():
         for name in _LOGO_EXACT_NAMES:
