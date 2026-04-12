@@ -10,6 +10,7 @@ if content height exceeds 2700. Widget display scales the master by fixed factor
 
 from __future__ import annotations
 
+import io
 from enum import Enum
 from pathlib import Path
 import cv2
@@ -56,15 +57,10 @@ _POSTER_SIZE_FACTORS: dict[PosterWidgetSize, float] = {
     PosterWidgetSize.SUPER_8X10: 1.0,
 }
 
+_SVG_DECODE_WARNED = False
 
-def load_image_bgra(path: Path | str) -> np.ndarray | None:
-    """Load image as BGRA uint8, or None on failure."""
-    p = Path(path)
-    if not p.is_file():
-        return None
-    raw = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
-    if raw is None or raw.size == 0:
-        return None
+
+def _bgr_or_gray_array_to_bgra(raw: np.ndarray) -> np.ndarray:
     if raw.ndim == 2:
         bgr = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
         a = np.full((bgr.shape[0], bgr.shape[1], 1), 255, dtype=np.uint8)
@@ -74,6 +70,47 @@ def load_image_bgra(path: Path | str) -> np.ndarray | None:
         bgra[:, :, 3] = 255
         return bgra
     return raw
+
+
+def _load_svg_as_bgra(path: Path) -> np.ndarray | None:
+    """Rasterize SVG to BGRA via optional ``cairosvg`` (for App logos under pigeonAssets)."""
+    global _SVG_DECODE_WARNED
+    try:
+        import cairosvg
+    except ImportError:
+        if not _SVG_DECODE_WARNED:
+            _SVG_DECODE_WARNED = True
+            import sys
+
+            sys.stderr.write(
+                "pigeon: SVG images (e.g. App logos) need cairosvg — "
+                "pip install cairosvg — or use PNG/JPEG assets\n"
+            )
+        return None
+    try:
+        out = io.BytesIO()
+        cairosvg.svg2png(bytestring=path.read_bytes(), write_to=out)
+        out.seek(0)
+        data = np.frombuffer(out.getvalue(), dtype=np.uint8)
+        raw = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+    except Exception:
+        return None
+    if raw is None or raw.size == 0:
+        return None
+    return _bgr_or_gray_array_to_bgra(raw)
+
+
+def load_image_bgra(path: Path | str) -> np.ndarray | None:
+    """Load image as BGRA uint8, or None on failure."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    if p.suffix.lower() == ".svg":
+        return _load_svg_as_bgra(p)
+    raw = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+    if raw is None or raw.size == 0:
+        return None
+    return _bgr_or_gray_array_to_bgra(raw)
 
 
 def _bgr_to_bgra(img: np.ndarray) -> np.ndarray:
@@ -181,6 +218,59 @@ def backdrop_master_bgr_from_file(path: Path | str) -> np.ndarray | None:
     return bgr_scale_uniform_height(bgr, BACKDROP_MASTER_HEIGHT)
 
 
+def _bgr_uniform_fit_letterbox_center(
+    bgr: np.ndarray,
+    target_w: int,
+    target_h: int,
+    *,
+    fill_bgr: tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    """Scale uniformly so the image fits entirely inside ``target_w``×``target_h``; center on ``fill_bgr``."""
+    out = np.zeros((max(1, target_h), max(1, target_w), 3), dtype=np.uint8)
+    out[:, :] = fill_bgr
+    if bgr is None or bgr.size == 0 or target_w < 1 or target_h < 1:
+        return out
+    sh, sw = bgr.shape[:2]
+    if sh < 1 or sw < 1:
+        return out
+    scale = min(target_w / float(sw), target_h / float(sh))
+    nw = max(1, int(round(sw * scale)))
+    nh = max(1, int(round(sh * scale)))
+    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(bgr, (nw, nh), interpolation=interp)
+    x0 = (target_w - nw) // 2
+    y0 = (target_h - nh) // 2
+    out[y0 : y0 + nh, x0 : x0 + nw] = resized
+    return out
+
+
+def app_logo_fallback_master_bgr(
+    bgr: np.ndarray,
+    *,
+    display_w: int,
+    display_h: int,
+    fraction: float = 0.9,
+) -> np.ndarray:
+    """
+    Letterbox the streaming-app logo onto black at ``fraction``×(display_w×display_h).
+
+    The bitmap is exactly ``cap_w``×``cap_h`` with the logo uniformly scaled **inside** (never cropped).
+    A second letterbox pass in ``build_backdrop_design_layer_bgr`` then fits that into the grid patch.
+    """
+    if bgr is None or bgr.size == 0 or bgr.ndim != 3 or bgr.shape[2] != 3:
+        return np.zeros((1, 1, 3), dtype=np.uint8)
+    sh, sw = bgr.shape[:2]
+    if sh < 1 or sw < 1:
+        return np.zeros((1, 1, 3), dtype=np.uint8)
+
+    rw = max(1, int(display_w))
+    rh = max(1, int(display_h))
+    frac = max(0.05, min(1.0, float(fraction)))
+    cap_w = max(1, int(round(rw * frac)))
+    cap_h = max(1, int(round(rh * frac)))
+    return _bgr_uniform_fit_letterbox_center(bgr, cap_w, cap_h, fill_bgr=(0, 0, 0))
+
+
 def _bgr_uniform_cover_center_crop(bgr: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
     """Scale uniformly until the image covers ``target_w``×``target_h``, then center-crop to that size."""
     if bgr is None or bgr.size == 0 or target_w < 1 or target_h < 1:
@@ -220,17 +310,28 @@ def _paste_bgr_patch(
     canvas[dst_y0:dst_y1, dst_x0:dst_x1] = patch[src_y0:src_y1, src_x0:src_x1]
 
 
-def build_backdrop_design_layer_bgr(master_h2160_bgr: np.ndarray) -> np.ndarray:
+def build_backdrop_design_layer_bgr(
+    master_h2160_bgr: np.ndarray,
+    *,
+    app_logo_letterbox_fit: bool = False,
+) -> np.ndarray:
     """
-    Black ``DESIGN_W``×``DESIGN_H`` canvas with backdrop.
+    ``DESIGN_W``×``DESIGN_H`` canvas with backdrop.
 
     The patch rectangle spans from the top-left of grid cell ``[TL row, TL col]`` to the bottom-right
-    of grid cell ``[BR row, BR col]`` (1-based). The 2160-tall master is uniformly scaled with
-    center-crop to exactly fill that rectangle (aspect preserved).
+    of grid cell ``[BR row, BR col]`` (1-based). The 2160-tall master is scaled with aspect preserved.
+
+    Default: stage-colored canvas; image **covers** the patch (center-crop), matching TMDb stills.
+
+    ``app_logo_letterbox_fit``: full canvas and patch margins are **black**; the image **fits** inside
+    the patch (letterbox) so wide/tall app logos are never cropped.
     """
-    b, g, r = get_stage_bgr()
-    canvas = np.empty((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
-    canvas[:] = (b, g, r)
+    if app_logo_letterbox_fit:
+        canvas = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
+    else:
+        b, g, r = get_stage_bgr()
+        canvas = np.empty((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
+        canvas[:] = (b, g, r)
     if master_h2160_bgr is None or master_h2160_bgr.size == 0:
         return canvas
 
@@ -254,7 +355,10 @@ def build_backdrop_design_layer_bgr(master_h2160_bgr: np.ndarray) -> np.ndarray:
     if box_w < 1 or box_h < 1:
         return canvas
 
-    patch = _bgr_uniform_cover_center_crop(master_h2160_bgr, box_w, box_h)
+    if app_logo_letterbox_fit:
+        patch = _bgr_uniform_fit_letterbox_center(master_h2160_bgr, box_w, box_h, fill_bgr=(0, 0, 0))
+    else:
+        patch = _bgr_uniform_cover_center_crop(master_h2160_bgr, box_w, box_h)
     _paste_bgr_patch(canvas, patch, tl_x, tl_y)
     return canvas
 
@@ -284,14 +388,22 @@ def _fit_bgr_scale_height_center_crop_or_pad(frame_bgr: np.ndarray, target_w: in
     return resized[:, x0 : x0 + target_w]
 
 
-def backdrop_scene_bgr_for_display(master_h2160_bgr: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+def backdrop_scene_bgr_for_display(
+    master_h2160_bgr: np.ndarray,
+    target_w: int,
+    target_h: int,
+    *,
+    app_logo_letterbox_fit: bool = False,
+) -> np.ndarray:
     """
-    Build the design-resolution backdrop layer (black + placed patch), then scale/crop to ``target_w``×``target_h``
+    Build the design-resolution backdrop layer (stage or black + placed patch), then scale/crop to ``target_w``×``target_h``
     using the same height-first fit as scene video frames.
     """
     if target_w < 1 or target_h < 1:
         return np.zeros((max(1, target_h), max(1, target_w), 3), dtype=np.uint8)
-    design = build_backdrop_design_layer_bgr(master_h2160_bgr)
+    design = build_backdrop_design_layer_bgr(
+        master_h2160_bgr, app_logo_letterbox_fit=app_logo_letterbox_fit
+    )
     return _fit_bgr_scale_height_center_crop_or_pad(design, target_w, target_h)
 
 

@@ -45,12 +45,89 @@ def _fetch(host: str, path: str, timeout: float, *, scheme: str = "http") -> str
     sch = scheme if scheme in ("http", "https") else "http"
     url = f"{sch}://{host}{path}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Pigeon/0.5"})
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Pigeon/0.5; +Denon-AVR-status)",
+                "Accept": "*/*",
+            },
+        )
         ctx = _SSL_UNVERIFIED if sch == "https" else None
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return resp.read().decode("utf-8", errors="replace")
     except Exception:
         return None
+
+
+# Newer Denon/Marantz units often return 403 or no document on port 80 for ``formMainZone*`` GETs,
+# but still answer ``AppCommand.xml`` POST on port 8080 (same as Home Assistant / openHAB).
+_APPCOMMAND_XML = b"""<?xml version="1.0" encoding="utf-8"?>
+<tx>
+  <cmd id="1">GetVolumeLevel</cmd>
+  <cmd id="1">GetMuteStatus</cmd>
+</tx>
+"""
+
+
+def _post_fetch(host: str, path: str, body: bytes, timeout: float, *, scheme: str = "http") -> str | None:
+    sch = scheme if scheme in ("http", "https") else "http"
+    url = f"{sch}://{host}{path}"
+    try:
+        req = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; Pigeon/0.5; +Denon-AVR-AppCommand)",
+                "Accept": "*/*",
+                "Content-Type": "text/xml; charset=utf-8",
+            },
+        )
+        ctx = _SSL_UNVERIFIED if sch == "https" else None
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _parse_appcommand_rx(xml_text: str) -> dict[str, str]:
+    """Map ``<rx>`` / ``<cmd>`` children from AppCommand.xml POST into MainZone-style keys."""
+    out: dict[str, str] = {}
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return out
+    for el in root.iter():
+        raw = (el.tag or "").split("}")[-1].lower()
+        txt = (el.text or "").strip()
+        if not txt:
+            continue
+        if raw == "volume":
+            out.setdefault("MasterVolume", txt)
+        elif raw == "mute":
+            out.setdefault("Mute", txt)
+        elif raw == "zone1":
+            u = txt.upper()
+            if u in ("ON", "OFF", "STANDBY"):
+                out.setdefault("Power", u)
+        elif raw == "power" and len(txt) <= 12:
+            out.setdefault("Power", txt.upper())
+    return out
+
+
+def _merge_appcommand_status(host: str, timeout: float, *, scheme: str) -> dict[str, str] | None:
+    body = _post_fetch(host, "/goform/AppCommand.xml", _APPCOMMAND_XML, timeout, scheme=scheme)
+    if not body or len(body.strip()) < 20:
+        return None
+    low = body.lower()
+    if "<!doctype html" in low or "<html" in low[:400]:
+        return None
+    parsed = _parse_appcommand_rx(body)
+    if not parsed:
+        return None
+    if "MasterVolume" not in parsed and "Mute" not in parsed and "Power" not in parsed:
+        return None
+    return parsed
 
 
 def _parse_item_xml(xml_text: str) -> dict[str, str]:
@@ -87,6 +164,78 @@ def _parse_item_xml(xml_text: str) -> dict[str, str]:
     return out
 
 
+# <TagName>...<value>text</value>...</TagName> (works when <item> wrapper is missing).
+_DENON_VALUE_PAIR_RE = re.compile(
+    r"<([A-Za-z][\w:.-]*)\b[^>]*>\s*(?:<value>\s*([^<]*?)\s*</value>|([^<]+?))\s*</\1>",
+    re.I | re.DOTALL,
+)
+
+
+def _parse_denon_regex_value_pairs(xml_text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for m in _DENON_VALUE_PAIR_RE.finditer(xml_text):
+        tag = (m.group(1) or "").strip()
+        inner = (m.group(2) or m.group(3) or "").strip()
+        if not tag or not inner or tag in out:
+            continue
+        out[tag] = inner
+    return out
+
+
+def _parse_zone_xml_walk_values(xml_text: str) -> dict[str, str]:
+    """Collect <Tag><value>text</value></Tag> anywhere in the tree (newer Denon layouts)."""
+    out: dict[str, str] = {}
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return out
+    skip_tags = frozenset(
+        x.lower()
+        for x in (
+            "videoselectlists",
+            "ecomodelists",
+            "inputfunclist",
+            "renamesource",
+            "sourcedelete",
+        )
+    )
+    for el in root.iter():
+        raw_tag = el.tag.split("}")[-1] if el.tag else ""
+        if not raw_tag or raw_tag.lower() in skip_tags:
+            continue
+        val_el = el.find("value")
+        if val_el is not None and val_el.text is not None:
+            t = val_el.text.strip()
+            if t and raw_tag not in out:
+                out[raw_tag] = t
+    return out
+
+
+def _merge_parsed_denon_status_fields(xml_text: str) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    merged.update(_parse_item_xml(xml_text))
+    merged.update(_parse_zone_xml_walk_values(xml_text))
+    merged.update(_parse_denon_regex_value_pairs(xml_text))
+    return merged
+
+
+def _body_looks_like_denon_zone_xml(body: str) -> bool:
+    """True when the HTTP body is probably MainZone status XML (not the HTML setup UI)."""
+    s = (body or "").strip()
+    if len(s) < 40:
+        return False
+    low = s.lower()
+    if "<!doctype html" in low or "<html" in low[:300]:
+        return False
+    if "mainzone" in low or "formmainzone" in low:
+        return True
+    if "<power" in low or "<zonepower" in low or "<mastervolume" in low:
+        return True
+    if "<item" in low and ("<value>" in low or "</value>" in low):
+        return True
+    return s.startswith("<?xml")
+
+
 def _schemes_for_host(host: str) -> tuple[str, ...]:
     """Pick URL schemes for a probe host (may include ``host:port``)."""
     m = re.match(r"^(.+):(\d+)$", host)
@@ -110,28 +259,72 @@ def _merge_zone_status(
     for scheme in schemes:
         merged: dict[str, str] = {}
         ok_any = False
+        last_body: str | None = None
         for path in _STATUS_PATHS:
             body = _fetch(host, path, timeout, scheme=scheme)
             if not body:
                 continue
             ok_any = True
-            merged.update(_parse_item_xml(body))
-        if ok_any:
+            last_body = body
+            merged.update(_merge_parsed_denon_status_fields(body))
+        if ok_any and not merged and last_body and _body_looks_like_denon_zone_xml(last_body):
+            merged = {"Power": "ON"}
+        # Many models block MainZone GET on :80 but still answer AppCommand POST on :8080 — merge both.
+        ac = _merge_appcommand_status(host, timeout, scheme=scheme)
+        if ac:
+            combo = dict(merged)
+            combo.update(ac)
+            merged = combo
+        if merged:
             return merged
     return None
 
 
-def _merge_zone_status_with_fallback(host: str, timeout: float) -> dict[str, str] | None:
-    """Try primary host, then bare IPv4 with :8080 (some Denon/Marantz UIs listen there)."""
-    d = _merge_zone_status(host, timeout)
-    if d:
-        return d
+def _receiver_probe_host_variants(host: str) -> list[str]:
+    """Try bare IP/hostname, then common Denon API ports (web UI may differ from status XML)."""
     hn = _normalize_host(host)
-    if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", hn) and ":" not in hn:
-        d = _merge_zone_status(f"{hn}:8080", timeout)
+    if not hn:
+        return []
+    if re.search(r":\d+\s*$", hn):
+        return [hn]
+    variants = [hn]
+    if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", hn):
+        variants.extend((f"{hn}:8080", f"{hn}:10443"))
+    return variants
+
+
+def _merge_zone_status_with_fallback(host: str, timeout: float) -> dict[str, str] | None:
+    for h in _receiver_probe_host_variants(host):
+        d = _merge_zone_status(h, timeout)
         if d:
             return d
     return None
+
+
+def _denon_field_ci(d: dict[str, str], *names: str) -> str:
+    """
+    Read the first non-empty field matching one of ``names``, case-insensitive on keys.
+    Firmware / parsers vary in XML tag casing (``MasterVolume`` vs ``mastervolume``).
+    """
+    if not d or not names:
+        return ""
+    for n in names:
+        v = (d.get(n) or "").strip()
+        if v:
+            return v
+    by_lower: dict[str, str] = {}
+    for k, v in d.items():
+        t = str(v or "").strip()
+        if not t:
+            continue
+        kl = str(k or "").lower()
+        if kl not in by_lower:
+            by_lower[kl] = t
+    for n in names:
+        t = by_lower.get(str(n or "").lower())
+        if t:
+            return t
+    return ""
 
 
 def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollResult:
@@ -147,16 +340,24 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
     if not d:
         return ReceiverPollResult(False, "", "", "")
 
-    power = (d.get("Power") or d.get("ZonePower") or "").upper()
+    power = _denon_field_ci(d, "Power", "ZonePower").upper()
     if power in ("OFF", "STANDBY"):
         return ReceiverPollResult(True, "", "", "")
 
-    mute = (d.get("Mute") or "").strip().lower()
-    mv = (d.get("MasterVolume") or "").strip()
+    mute = _denon_field_ci(d, "Mute").lower()
+    mv = _denon_field_ci(
+        d,
+        "MasterVolume",
+        "MasterVolumeDisplay",
+        "VolumeDisplay",
+        "DispVolume",
+        "MainZoneVolume",
+    )
     if mute == "on":
         vol_s = "mute"
     elif mv:
-        vol_s = f"{mv}dB"
+        low_mv = mv.lower()
+        vol_s = mv if "db" in low_mv or mv.strip().endswith("%") else f"{mv}dB"
     else:
         vol_s = ""
 
@@ -185,7 +386,7 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
                 incoming = v
                 break
 
-    cfg = (d.get("selectSurround") or d.get("SurrMode") or "").strip()
+    cfg = _denon_field_ci(d, "selectSurround", "SurrMode", "surroundmode").strip()
     cfg = " ".join(cfg.split())
 
     if incoming:

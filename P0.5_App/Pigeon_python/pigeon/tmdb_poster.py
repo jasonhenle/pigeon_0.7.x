@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import secrets
 import urllib.error
 import urllib.parse
@@ -74,6 +75,465 @@ def _norm_query(s: str) -> str:
     return " ".join("".join(out).split())
 
 
+def _title_norm_matches_exact_tv_series_filter(must_norm: str, title_norm: str) -> bool:
+    """
+    For short-show canonical queries: keep TMDb rows whose name equals the series **or** adds only
+    numeric tokens after the series (e.g. ``Saturday Night Live (1975)`` → ``saturday night live 1975``).
+
+    Rejects spin-offs with word suffixes (``Saturday Night Live: Christmas`` → ``… christmas``).
+    """
+    if not must_norm or not title_norm:
+        return False
+    if title_norm == must_norm:
+        return True
+    prefix = must_norm + " "
+    if not title_norm.startswith(prefix):
+        return False
+    rest = title_norm[len(prefix) :].strip()
+    if not rest:
+        return False
+    for tok in rest.split():
+        if not tok.isdigit():
+            return False
+    return True
+
+
+# App / channel branding — not a movie or episode title (TMDb search yields wrong hits).
+_DEGENERATE_TMDB_QUERIES = frozenset(
+    {
+        "disney",
+        "disney+",
+        "disney plus",
+        "disney+ 365",
+        "netflix",
+        "hulu",
+        "max",
+        "peacock",
+        "apple tv",
+        "youtube",
+        "paramount+",
+        "paramount plus",
+        "prime video",
+        "amazon video",
+        "roku",
+        "home",
+        "settings",
+        "hbo max",
+        "hbomax",
+    }
+)
+
+
+def is_degenerate_tmdb_query(q: str) -> bool:
+    """
+    True if ``q`` should not be sent to TMDb alone (streaming app name, splash branding, etc.).
+    """
+    raw = (q or "").strip()
+    if not raw or len(raw) < 2:
+        return True
+    n = _norm_query(raw)
+    if not n:
+        return True
+    if n in _DEGENERATE_TMDB_QUERIES:
+        return True
+    # "disney+ originals", "disney+ 365", etc.
+    if "disney" in n and ("365" in n or n.endswith(" original") or n.endswith(" originals")):
+        return True
+    if n.replace(" ", "").isdigit():
+        return True
+    return False
+
+
+# Keys match ``_norm_query()`` form (e.g. ``snl`` for ``SNL``, full title for specials).
+_SHORT_SHOW_CANONICAL_QUERIES: dict[str, str] = {
+    "snl": "Saturday Night Live",
+    "saturday night live": "Saturday Night Live",
+}
+
+# When TMDb search + ``prefer`` heuristics would still pick the wrong kind (e.g. SNL holiday
+# compilations are **movies**, while the main show is TV 1667), resolve by id.
+_SHORT_SHOW_TMDB_TV_ID_BY_NORM: dict[str, int] = {
+    "saturday night live": 1667,
+}
+
+# When TMDb lists compilation specials as **movies** (e.g. ``Saturday Night Live: Christmas``), inferred
+# ``prefer=movie`` from pyatv ``Video`` must still resolve the **series** for artwork. Keys = ``_norm_query``
+# form of the canonical display title (same namespace as ``_exact_tv_title_norm_for_known_series_query``).
+_SHORT_SHOW_TMDB_TV_ID_BY_NORM: dict[str, int] = {
+    "saturday night live": 1667,
+}
+
+
+def _compact_norm_for_acronym(s: str) -> str:
+    return "".join(ch for ch in _norm_query(s) if ch.isalnum())
+
+
+def _canonical_series_from_dash_pair(left: str, right: str) -> str | None:
+    """
+    Peacock / tvOS sometimes send ``SNL - Sketch`` or ``Sketch - SNL``.
+    If either side is a known acronym, return the canonical series search string.
+    """
+    le, ri = left.strip(), right.strip()
+    if not le or not ri:
+        return None
+    lk = _compact_norm_for_acronym(le)
+    rk = _compact_norm_for_acronym(ri)
+    if rk in _SHORT_SHOW_CANONICAL_QUERIES:
+        return _SHORT_SHOW_CANONICAL_QUERIES[rk]
+    if lk in _SHORT_SHOW_CANONICAL_QUERIES:
+        return _SHORT_SHOW_CANONICAL_QUERIES[lk]
+    return None
+
+
+def canonical_tv_title_if_sketch_show_compound(display_title: str) -> str | None:
+    """
+    TMDb sometimes returns a TV row whose ``name`` is ``Sketch - SNL``, ``SNL - Sketch``,
+    or ``Saturday Night Live: Christmas``-style episode/special labels.
+    Replace with the canonical series title when a known show appears on the left (dash or colon).
+    """
+    q0 = _normalize_title_for_show_split(display_title or "")
+    if not q0:
+        return None
+    pair = _sketch_show_dash_pair(q0)
+    if pair is not None:
+        c = _canonical_series_from_dash_pair(pair[0], pair[1])
+        if c:
+            return c
+    for sep in (":", "\uff1a"):
+        if sep in q0:
+            a, b = q0.split(sep, 1)
+            a_s, b_s = a.strip(), b.strip()
+            if not a_s or not b_s:
+                continue
+            c = _canonical_series_from_dash_pair(a_s, b_s)
+            if c:
+                return c
+            full = _SHORT_SHOW_CANONICAL_QUERIES.get(_norm_query(a_s))
+            if full:
+                return full
+    return None
+
+
+_UNICODE_DASH_CHARS = frozenset(
+    "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d"  # hyphen, dashes, minus (not ASCII -)
+)
+
+# NBSP and other spaces that break naive ``" - "`` substring checks (Peacock / tvOS metadata).
+_SPACE_LIKE_RE = re.compile(r"[\u00a0\u2000-\u200a\u202f\u205f\u3000]+")
+# ``Show - sketch`` with flexible space and any common dash (ASCII or unicode).
+_SHOW_EPISODE_SEP_RE = re.compile(
+    r"\s+[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d]\s+"
+)
+# Metadata sometimes omits spaces around the hyphen (``Papryus-SNL``, ``Papryus -SNL``).
+_LOOSE_SHOW_EPISODE_SEP_RE = re.compile(
+    r"\s*[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d]\s*"
+)
+
+
+def _sketch_show_dash_pair(q0: str) -> tuple[str, str] | None:
+    """Return ``(left, right)`` for ``Sketch - Show`` / tight-hyphen variants, or None."""
+    m = _SHOW_EPISODE_SEP_RE.split(q0, maxsplit=1)
+    if len(m) == 2:
+        a, b = m[0].strip(), m[1].strip()
+        if a and b:
+            return a, b
+    parts = _LOOSE_SHOW_EPISODE_SEP_RE.split(q0, maxsplit=1)
+    if len(parts) == 2:
+        a, b = parts[0].strip(), parts[1].strip()
+        if a and b:
+            return a, b
+    return None
+
+
+def _normalize_unicode_dashes_for_episode_titles(s: str) -> str:
+    """Map unicode dashes to `` - `` so ``SNL–Sketch`` (en dash) splits like ``SNL - Sketch``."""
+    if not s:
+        return s
+    parts: list[str] = []
+    for ch in s:
+        if ch in _UNICODE_DASH_CHARS:
+            parts.append(" - ")
+        else:
+            parts.append(ch)
+    t = "".join(parts)
+    while "   " in t:
+        t = t.replace("   ", " ")
+    while "  " in t:
+        t = t.replace("  ", " ")
+    return t.strip()
+
+
+def _normalize_title_for_show_split(s: str) -> str:
+    """Unicode dashes → spaced hyphen; NBSP-like → space; collapse runs (for reliable ``Show - x`` splits)."""
+    if not s:
+        return s
+    t = _normalize_unicode_dashes_for_episode_titles(s.strip())
+    t = _SPACE_LIKE_RE.sub(" ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def colon_prefix_show_query(raw: str) -> str | None:
+    """
+    If metadata looks like ``Show: segment`` or ``Show - sketch`` (guest, sketch, episode label),
+    return the show side for TMDb when the full string would match the wrong thing or miss the series.
+    """
+    q0 = _normalize_title_for_show_split(raw or "")
+    if not q0:
+        return None
+
+    def _split_show(sep: str) -> str | None:
+        if sep not in q0:
+            return None
+        left, right = q0.split(sep, 1)
+        left, right = left.strip(), right.strip()
+        if not left or not right:
+            return None
+        if len(left) < 2:
+            return None
+        if is_degenerate_tmdb_query(left):
+            return None
+        if left.lower() == q0.lower():
+            return None
+        return left
+
+    parts = _SHOW_EPISODE_SEP_RE.split(q0, maxsplit=1)
+    if len(parts) == 2:
+        left, right = parts[0].strip(), parts[1].strip()
+        if left and right:
+            canon = _canonical_series_from_dash_pair(left, right)
+            if canon:
+                return canon
+            if (
+                len(left) >= 2
+                and not is_degenerate_tmdb_query(left)
+                and left.lower() != q0.lower()
+            ):
+                return left
+
+    for sep in (" - ", " – "):
+        got = _split_show(sep)
+        if got:
+            return got
+    for sep in ("\u2014", "\u2013"):
+        got = _split_show(sep)
+        if got:
+            return got
+    for sep in (":", "\uff1a"):
+        got = _split_show(sep)
+        if got:
+            return got
+    return None
+
+
+def refine_tmdb_search_query(raw: str | None) -> str | None:
+    """
+    Last-mile cleanup for any metadata source: unicode dashes, then ``Show - segment`` / colon stripping.
+    Safe to call on strings that already went through pyatv heuristics (idempotent for plain titles).
+    """
+    if raw is None:
+        return None
+    s = _normalize_title_for_show_split(str(raw).strip())
+    if not s:
+        return None
+    pick = colon_prefix_show_query(s)
+    out = (pick or s).strip()
+    return out or None
+
+
+def canonical_tv_display_name_for_search_query(search_query: str) -> str | None:
+    """
+    When the user/device search resolves to a known acronym (e.g. ``SNL``), use TMDb’s full series
+    name for on-screen title/logo cache even if TMDb matched a sketch row.
+    """
+    p = (search_query or "").strip()
+    m = re.match(r"(?is)^tv\s+(.+)$", p)
+    if m:
+        p = m.group(1).strip()
+    key = _norm_query(p)
+    return _SHORT_SHOW_CANONICAL_QUERIES.get(key)
+
+
+def _exact_tv_title_norm_for_known_series_query(q: str) -> str | None:
+    """
+    If ``q`` maps to a canonical series in ``_SHORT_SHOW_CANONICAL_QUERIES`` (via
+    :func:`canonical_tv_display_name_for_search_query`, including after
+    :func:`refine_tmdb_search_query`), return that series’ normalized title.
+
+    TV search keeps only rows whose title matches the canonical series (normalized), optionally with
+    **numeric-only** trailing tokens (e.g. TMDb’s ``(1975)`` in the title). When this returns
+    non-``None``, media pick uses **TV** for that query (and a fixed TMDb id when configured) even if
+    ``prefer`` is ``movie``, so compilation **movies** with the same words cannot beat the series.
+    """
+    p = (q or "").strip()
+    m = re.match(r"(?is)^tv\s+(.+)$", p)
+    if m:
+        p = m.group(1).strip()
+    canon = canonical_tv_display_name_for_search_query(p)
+    if canon:
+        return _norm_query(canon)
+    r = refine_tmdb_search_query(p) or p
+    if r.strip() != p.strip():
+        canon = canonical_tv_display_name_for_search_query(r)
+        if canon:
+            return _norm_query(canon)
+    return None
+
+
+def resolve_tmdb_query_from_now_playing_fields(
+    *,
+    base_query: str | None,
+    title: object | None = None,
+    series_name: object | None = None,
+    artist: object | None = None,
+    album: object | None = None,
+    episode_title: object | None = None,
+) -> str | None:
+    """
+    Build the TMDb search string from pyatv-style fields plus the heuristic ``base_query``.
+
+    Prefer the same canonical series title used in the UI (e.g. ``Saturday Night Live``) when any
+    field is a sketch–show compound (``… - SNL``) or a mapped short name (``SNL`` alone).
+    """
+
+    def _field(x: object | None) -> str | None:
+        if x is None:
+            return None
+        t = str(x).strip()
+        return t or None
+
+    ordered: list[str] = []
+    for x in (series_name, title, episode_title, base_query, artist, album):
+        s = _field(x)
+        if s and s not in ordered:
+            ordered.append(s)
+
+    for s in ordered:
+        compound = canonical_tv_title_if_sketch_show_compound(s)
+        if compound:
+            return compound
+    for s in ordered:
+        r = refine_tmdb_search_query(s) or s
+        canon = canonical_tv_display_name_for_search_query(r)
+        if canon:
+            return canon
+
+    if base_query is None:
+        return None
+    out = refine_tmdb_search_query(str(base_query).strip()) or str(base_query).strip()
+    if not out:
+        return None
+    compound = canonical_tv_title_if_sketch_show_compound(out)
+    if compound:
+        return compound
+    canon = canonical_tv_display_name_for_search_query(out)
+    return canon or out
+
+
+def equivalent_tmdb_search_queries(a: str, b: str) -> bool:
+    """
+    True when two query strings mean the same show for alternation / dedupe
+    (e.g. primary ``SNL`` vs metadata title ``Papyrus - SNL``).
+    """
+    ra = refine_tmdb_search_query((a or "").strip()) or (a or "").strip()
+    rb = refine_tmdb_search_query((b or "").strip()) or (b or "").strip()
+    if ra.lower() == rb.lower():
+        return True
+    ca = canonical_tv_display_name_for_search_query(ra)
+    cb = canonical_tv_display_name_for_search_query(rb)
+    if ca and cb and ca.lower() == cb.lower():
+        return True
+    if ca and rb.lower() == ca.lower():
+        return True
+    if cb and ra.lower() == cb.lower():
+        return True
+    return False
+
+
+def _tmdb_query_variants(raw: str) -> list[str]:
+    """
+    Extra query strings to try when now-playing metadata appends app names or episode titles
+    (common from Apple TV), which TMDb will not match as a single search phrase.
+
+    **Show–segment** prefixes (``Show - sketch``, colon, etc.) are tried **before** the full string
+    so TMDb does not latch onto a sketch/special that matches the compound title.
+    """
+    q0 = _normalize_title_for_show_split((raw or "").strip())
+    if not q0:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(s: str) -> None:
+        t = s.strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+
+    prefixes: list[str] = []
+
+    def push_left(left: str, right: str) -> None:
+        le = left.strip()
+        ri = right.strip()
+        if not le or not ri or len(le) < 2:
+            return
+        if is_degenerate_tmdb_query(le):
+            return
+        if le.lower() == q0.lower():
+            return
+        prefixes.append(le)
+
+    rx_parts = _SHOW_EPISODE_SEP_RE.split(q0, maxsplit=1)
+    if len(rx_parts) == 2:
+        lx, rx = rx_parts[0].strip(), rx_parts[1].strip()
+        cnp = _canonical_series_from_dash_pair(lx, rx)
+        if cnp:
+            add(cnp)
+        else:
+            push_left(lx, rx)
+
+    if "|" in q0:
+        a, b = q0.split("|", 1)
+        push_left(a, b)
+    if " - " in q0:
+        a, b = q0.split(" - ", 1)
+        push_left(a, b)
+    for sep in (" – ", "\u2014", "\u2013"):
+        if sep in q0:
+            a, b = q0.split(sep, 1)
+            push_left(a, b)
+    for sep in (":", "\uff1a"):
+        if sep in q0:
+            a, b = q0.split(sep, 1)
+            push_left(a, b)
+
+    uniq_prefix: list[str] = []
+    for p in prefixes:
+        if p not in uniq_prefix:
+            uniq_prefix.append(p)
+    # Shortest first: e.g. ``SNL`` before a longer accidental prefix.
+    uniq_prefix.sort(key=len)
+    for p in uniq_prefix:
+        add(p)
+        key = _norm_query(p)
+        canon = _SHORT_SHOW_CANONICAL_QUERIES.get(key)
+        if canon:
+            add(canon)
+
+    add(q0)
+    if "|" in q0:
+        add(q0.split("|", 1)[0])
+    for sep in ("\u2014", "\u2013", " – "):
+        if sep in q0:
+            add(q0.split(sep, 1)[0])
+    for sep in (":", "\uff1a"):
+        if sep in q0:
+            left = q0.split(sep, 1)[0].strip()
+            if left and not is_degenerate_tmdb_query(left):
+                add(left)
+    return out
+
+
 def _result_titles(item: dict) -> list[str]:
     """Candidate title strings for movie/tv result dicts."""
     vals = [
@@ -112,6 +572,10 @@ def _match_rank(query: str, item: dict) -> tuple[int, int]:
     Sort key (tier, tie_break) for picking the best TMDb search hit — lexicographic **max** wins.
     ``tie_break`` is ``-len(normalized_title)`` so **shorter** titles win when tier ties
     (e.g. "Luck" over "Good Luck, Have Fun, Don't Die" for query ``luck``).
+
+    TV queries that map to ``_SHORT_SHOW_CANONICAL_QUERIES`` are pre-filtered so every candidate’s
+    title **equals** the canonical series name (normalized), or that name plus **numeric-only** suffix
+    tokens (TMDb’s ``(1975)`` style); those hits are not chosen on loose substring strength alone.
 
     Tiers (highest first):
       5 — normalized title **equals** query (exact)
@@ -203,12 +667,28 @@ def _download_binary(url: str, dest: Path) -> None:
     dest.write_bytes(data)
 
 
-def _best_with_poster_from_results(query: str, results: list) -> dict | None:
+def _best_with_poster_from_results(
+    query: str,
+    results: list,
+    *,
+    tv_title_must_equal_norm: str | None = None,
+) -> dict | None:
     if not isinstance(results, list) or not results:
         return None
     with_poster = [r for r in results if isinstance(r, dict) and r.get("poster_path")]
     if not with_poster:
         return None
+    if tv_title_must_equal_norm:
+        with_poster = [
+            r
+            for r in with_poster
+            if any(
+                _title_norm_matches_exact_tv_series_filter(tv_title_must_equal_norm, _norm_query(t))
+                for t in _result_titles(r)
+            )
+        ]
+        if not with_poster:
+            return None
     # Prefer exact / whole-word title matches from the real search query; tie-break by
     # shorter title, then TMDb popularity. Fall back to full pool only if every rank is 0.
     scored = [(r, _match_rank(query, r)) for r in with_poster]
@@ -217,13 +697,29 @@ def _best_with_poster_from_results(query: str, results: list) -> dict | None:
     return max(pool, key=lambda r: float(r.get("popularity") or 0.0))
 
 
-def _best_from_results(query: str, results: list) -> dict | None:
+def _best_from_results(
+    query: str,
+    results: list,
+    *,
+    tv_title_must_equal_norm: str | None = None,
+) -> dict | None:
     """Highest popularity among dict results (no poster requirement)."""
     if not isinstance(results, list) or not results:
         return None
     items = [r for r in results if isinstance(r, dict)]
     if not items:
         return None
+    if tv_title_must_equal_norm:
+        items = [
+            r
+            for r in items
+            if any(
+                _title_norm_matches_exact_tv_series_filter(tv_title_must_equal_norm, _norm_query(t))
+                for t in _result_titles(r)
+            )
+        ]
+        if not items:
+            return None
     scored = [(r, _match_rank(query, r)) for r in items]
     best_key = max(rank for _, rank in scored)
     pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else items
@@ -258,7 +754,8 @@ def search_tv_best(query: str) -> dict | None:
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/tv?{params}"
     data = _request_json(url)
-    return _best_from_results(q, data.get("results") or [])
+    en = _exact_tv_title_norm_for_known_series_query(q)
+    return _best_from_results(q, data.get("results") or [], tv_title_must_equal_norm=en)
 
 
 def search_tv_best_with_poster(query: str) -> dict | None:
@@ -269,16 +766,54 @@ def search_tv_best_with_poster(query: str) -> dict | None:
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/tv?{params}"
     data = _request_json(url)
-    return _best_with_poster_from_results(q, data.get("results") or [])
+    en = _exact_tv_title_norm_for_known_series_query(q)
+    return _best_with_poster_from_results(
+        q, data.get("results") or [], tv_title_must_equal_norm=en
+    )
 
 
-def search_best_media_with_poster(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
+def _tmdb_tv_detail(tv_id: int) -> dict | None:
+    try:
+        data = _request_json(f"{TMDB_API_BASE}/tv/{int(tv_id)}")
+    except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("id") is None:
+        return None
+    return data
+
+
+def _forced_tmdb_tv_item_for_canonical_query(q: str, *, require_poster: bool) -> dict | None:
     """
-    Pick one movie or TV hit with a poster.
-    ``auto`` chooses whichever has higher TMDb ``popularity`` (ties → movie).
+    For queries that map to :data:`_SHORT_SHOW_CANONICAL_QUERIES`, return the fixed TMDb TV row from
+    ``/tv/{id}`` when listed in :data:`_SHORT_SHOW_TMDB_TV_ID_BY_NORM`.
+
+    Holiday / clip compilations for the same franchise are often **movies** on TMDb; Apple TV often
+    reports them as ``Video`` so ``prefer`` becomes ``movie`` and would otherwise beat the series.
     """
-    q = query.strip()
+    en = _exact_tv_title_norm_for_known_series_query(q)
+    if en is None:
+        return None
+    tv_id = _SHORT_SHOW_TMDB_TV_ID_BY_NORM.get(en)
+    if tv_id is None:
+        return None
+    detail = _tmdb_tv_detail(tv_id)
+    if detail is None:
+        return None
+    if require_poster and not detail.get("poster_path"):
+        return None
+    return detail
+
+
+def _search_best_media_with_poster_one(q: str, *, prefer: Prefer) -> tuple[dict | None, MediaKind | None]:
     if not q:
+        return None, None
+    en = _exact_tv_title_norm_for_known_series_query(q)
+    if en is not None:
+        hit = _forced_tmdb_tv_item_for_canonical_query(q, require_poster=True)
+        if hit is None:
+            hit = search_tv_best_with_poster(q)
+        if hit is not None:
+            return hit, "tv"
         return None, None
     if prefer == "movie":
         m = search_movie_best_with_poster(q)
@@ -302,10 +837,28 @@ def search_best_media_with_poster(query: str, *, prefer: Prefer = "auto") -> tup
     return m, "movie"
 
 
-def search_best_media(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
-    """Pick one movie or TV hit by popularity (poster not required)."""
-    q = query.strip()
+def search_best_media_with_poster(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
+    """
+    Pick one movie or TV hit with a poster.
+    ``auto`` chooses whichever has higher TMDb ``popularity`` (ties → movie).
+    """
+    for q in _tmdb_query_variants(query):
+        hit = _search_best_media_with_poster_one(q, prefer=prefer)
+        if hit[0] is not None:
+            return hit
+    return None, None
+
+
+def _search_best_media_one(q: str, *, prefer: Prefer) -> tuple[dict | None, MediaKind | None]:
     if not q:
+        return None, None
+    en = _exact_tv_title_norm_for_known_series_query(q)
+    if en is not None:
+        hit = _forced_tmdb_tv_item_for_canonical_query(q, require_poster=False)
+        if hit is None:
+            hit = search_tv_best(q)
+        if hit is not None:
+            return hit, "tv"
         return None, None
     if prefer == "movie":
         m = search_movie_best(q)
@@ -327,6 +880,15 @@ def search_best_media(query: str, *, prefer: Prefer = "auto") -> tuple[dict | No
     if pt > pm:
         return t, "tv"
     return m, "movie"
+
+
+def search_best_media(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
+    """Pick one movie or TV hit by popularity (poster not required)."""
+    for q in _tmdb_query_variants(query):
+        hit = _search_best_media_one(q, prefer=prefer)
+        if hit[0] is not None:
+            return hit
+    return None, None
 
 
 def fetch_media_images(kind: MediaKind, media_id: int) -> dict:
@@ -471,7 +1033,22 @@ def fetch_tmdb_poster_to_pulled(query: str, *, prefer: Prefer = "auto") -> tuple
     except (json.JSONDecodeError, OSError, ValueError) as e:
         return False, str(e), None
     if item is None or kind is None:
-        return False, "No movie or TV show found with a poster for that search.", None
+        q0 = query.strip()
+        variants = _tmdb_query_variants(q0)
+        tried_line = (
+            "Variants tried: " + ", ".join(repr(x) for x in variants) + "\n"
+            if len(variants) > 1
+            else ""
+        )
+        return (
+            False,
+            "No movie or TV show found with a poster for that search.\n\n"
+            f"Searched: {q0!r}\n{tried_line}\n"
+            "Tips: In the command bar use tv Your Show or movie Your Film; use the series or "
+            "film title only. If the string included an app, episode name, or a colon "
+            "(Show: guest), Pigeon already tried shortened variants.",
+            None,
+        )
     return download_poster_to_pulled(item, kind)
 
 
@@ -488,6 +1065,7 @@ def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool
     q = query.strip()
     if not q:
         return False, "Empty search.", None
+    q = refine_tmdb_search_query(q) or q
 
     try:
         item, kind = search_best_media(q, prefer=prefer)
@@ -501,9 +1079,31 @@ def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool
         return False, str(e), None
 
     if item is None or kind is None:
-        return False, "No movie or TV show found for that search.", None
+        variants = _tmdb_query_variants(q)
+        tried_line = (
+            "Variants tried: " + ", ".join(repr(x) for x in variants) + "\n"
+            if len(variants) > 1
+            else ""
+        )
+        return (
+            False,
+            "No movie or TV show found for that search.\n\n"
+            f"Searched: {q!r}\n{tried_line}\n"
+            "Tips: Use tv Your Show or movie Your Film in the command bar; try the main title "
+            "only. Apple TV sometimes sends a label TMDb does not recognize (episode titles, apps, "
+            "Show: guest lines, or extras). Check spelling and network — API errors show a different message.",
+            None,
+        )
 
     display_title = _display_title(item, kind)
+    # TMDb may classify an SNL sketch row as a **movie**; still normalize the on-screen title.
+    swap = canonical_tv_title_if_sketch_show_compound(display_title)
+    if swap:
+        display_title = swap
+    if kind == "tv":
+        canon = canonical_tv_display_name_for_search_query(q)
+        if canon:
+            display_title = canon
     tk = title_key(display_title)
     parts: list[str] = [display_title]
 

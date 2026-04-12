@@ -32,8 +32,12 @@ def build_grid_overlay_bgra(width: int, height: int, rows: int, cols: int) -> np
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = max(0.55, cell / 120.0)
     thickness = 2
+    # Omit per-cell label chips on the bottom design row so row-8 playback chrome stays readable.
+    label_row_max = rows - 1
     for r in range(rows):
         for c in range(cols):
+            if r >= label_row_max:
+                continue
             label = f"[{r + 1},{c + 1}]"
             (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
             cx = x0 + c * cell + (cell // 2)

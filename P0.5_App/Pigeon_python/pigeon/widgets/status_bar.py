@@ -1,13 +1,11 @@
-"""Composite status bar: left/right TRT pills + translucent now-playing progress bar (on top).
+"""Composite status bar: one continuous black pill, bar-shaped hole, then labels, then the bar (on top).
 
-Elapsed and remaining timecodes use **two** black capsules (played / remaining). The gap under
-the progress bar has **no** black pill so only the backdrop shows through the translucent bar.
-The bar is the same thickness as a full grid cell and composites **on top**.
+The black strip is a **single** unbroken capsule (e.g. cols 3–17). A hole matching the progress
+bar’s pill mask (same geometry as :func:`pill_alpha_mask`) is punched through it so the backdrop
+shows there; the semi-transparent bar draws on top in the same footprint.
 
 The bar track is ~60% gray. Progress is a contrasting accent fill (left → right) sampled
-from the TMDb backdrop (vivid / saturated region). The pill-shaped **progress** bar is
-mostly opaque (~80%) so backdrop still reads through; the TRT capsules stay fully opaque.
-No separate CTI knob.
+from the TMDb backdrop (vivid / saturated region). No separate CTI knob.
 """
 
 from __future__ import annotations
@@ -29,7 +27,7 @@ _TRACK_GRAY_BGR = (153, 153, 153)
 # Fallback accent when no backdrop (vivid orange, BGR).
 _ACCENT_FALLBACK_BGR = (40, 140, 255)
 
-# Progress track + fill alpha (0 = invisible, 1 = opaque). TRT capsules are not affected.
+# Progress track + fill alpha inside the pill mask (backdrop shows through; black strip does not).
 _PROGRESS_BAR_OPACITY = 0.8
 
 
@@ -79,28 +77,35 @@ def sample_accent_bgr_from_backdrop(bgr: np.ndarray | None) -> tuple[int, int, i
     return _boost_accent_bgr(b_acc, g_acc, r_acc)
 
 
-def _blend_bgra_over_bgra_inplace(
-    dst_bgra: np.ndarray, src_bgra: np.ndarray, x0: int, y0: int
+def _punch_bar_shaped_hole_in_strip_bgra(
+    strip_bgra: np.ndarray,
+    *,
+    bar_local_x: int,
+    bar_local_y: int,
+    bar_bw: int,
+    bar_bh: int,
 ) -> None:
-    """Alpha-composite ``src`` onto ``dst`` at top-left (x0, y0) (source-over)."""
-    dh, dw = dst_bgra.shape[:2]
-    sh, sw = src_bgra.shape[:2]
-    if sh < 1 or sw < 1:
+    """
+    In-place: reduce strip alpha by the progress-bar pill mask so the hole matches the bar shape.
+
+    Uses the same ``pill_alpha_mask(bar_bw, bar_bh)`` as :meth:`StatusBarWidget._build_bar_patch_bgra`.
+    """
+    uh, uw = strip_bgra.shape[:2]
+    if bar_bw < 1 or bar_bh < 1:
         return
-    x1, x2 = max(0, x0), min(dw, x0 + sw)
-    y1, y2 = max(0, y0), min(dh, y0 + sh)
-    if x1 >= x2 or y1 >= y2:
+    bar_m = pill_alpha_mask(bar_bw, bar_bh).astype(np.float32) / 255.0
+    hx0, hy0 = bar_local_x, bar_local_y
+    sy0 = max(0, hy0)
+    sx0 = max(0, hx0)
+    sy1 = min(uh, hy0 + bar_bh)
+    sx1 = min(uw, hx0 + bar_bw)
+    if sy0 >= sy1 or sx0 >= sx1:
         return
-    sx0, sy0 = x1 - x0, y1 - y0
-    dst = dst_bgra[y1:y2, x1:x2].astype(np.float32)
-    src = src_bgra[sy0 : sy0 + (y2 - y1), sx0 : sx0 + (x2 - x1)].astype(np.float32)
-    sa = src[:, :, 3:4] / 255.0
-    da = dst[:, :, 3:4] / 255.0
-    inv_sa = 1.0 - sa
-    out_a = sa + da * inv_sa
-    out_rgb = (src[:, :, :3] * sa + dst[:, :, :3] * da * inv_sa) / np.maximum(out_a, 1e-6)
-    dst_bgra[y1:y2, x1:x2, :3] = np.clip(out_rgb, 0, 255).astype(np.uint8)
-    dst_bgra[y1:y2, x1:x2, 3:4] = np.clip(out_a * 255.0, 0, 255).astype(np.uint8)
+    my0, mx0 = sy0 - hy0, sx0 - hx0
+    mh, mw = sy1 - sy0, sx1 - sx0
+    m = bar_m[my0 : my0 + mh, mx0 : mx0 + mw]
+    sub_a = strip_bgra[sy0:sy1, sx0:sx1, 3].astype(np.float32)
+    strip_bgra[sy0:sy1, sx0:sx1, 3] = np.clip(sub_a * (1.0 - m), 0, 255).astype(np.uint8)
 
 
 def _boost_accent_bgr(b: int, g: int, r: int) -> tuple[int, int, int]:
@@ -117,7 +122,7 @@ def _boost_accent_bgr(b: int, g: int, r: int) -> tuple[int, int, int]:
 
 
 class StatusBarWidget:
-    """Left/right TRT pills with a clear gap; translucent progress bar on top (z-order)."""
+    """One continuous black pill with a bar-shaped mask cutout; translucent bar on top."""
 
     def __init__(
         self,
@@ -149,6 +154,10 @@ class StatusBarWidget:
         self._accent_bgr: tuple[int, int, int] = _ACCENT_FALLBACK_BGR
         self._progress: float = 0.0
         self._cached_blits: list[DesignPatch] | None = None
+        # When False, omit TRT pills + progress bar (nothing queued / idle Apple TV).
+        self._now_playing_chrome_visible: bool = False
+        # When True, omit bar + pills during theater idle-dim (red mono) even if chrome would show.
+        self._theater_dim_suppressed: bool = False
 
     @property
     def accent_bgr(self) -> tuple[int, int, int]:
@@ -157,6 +166,32 @@ class StatusBarWidget:
 
     def clear_cache(self) -> None:
         self._cached_blits = None
+
+    def set_now_playing_chrome_visible(self, visible: bool) -> bool:
+        """Show or hide the progress bar and timecode pills (compositor uses empty blits when hidden)."""
+        v = bool(visible)
+        if v == self._now_playing_chrome_visible:
+            return False
+        self._now_playing_chrome_visible = v
+        self.clear_cache()
+        return True
+
+    @property
+    def now_playing_chrome_visible(self) -> bool:
+        return self._now_playing_chrome_visible
+
+    @property
+    def theater_dim_suppressed(self) -> bool:
+        return self._theater_dim_suppressed
+
+    def set_theater_dim_suppressed(self, suppressed: bool) -> bool:
+        """Hide TRT + progress chrome while the UI is in (or easing into) theater idle-dim."""
+        v = bool(suppressed)
+        if v == self._theater_dim_suppressed:
+            return False
+        self._theater_dim_suppressed = v
+        self.clear_cache()
+        return True
 
     def set_accent_from_backdrop_bgr(self, backdrop_bgr: np.ndarray | None) -> bool:
         """Re-sample accent from TMDb backdrop (call when backdrop image updates)."""
@@ -227,6 +262,8 @@ class StatusBarWidget:
         return patch
 
     def design_blits(self) -> list[DesignPatch]:
+        if not self._now_playing_chrome_visible or self._theater_dim_suppressed:
+            return []
         if self._cached_blits is not None:
             return self._cached_blits
 
@@ -273,9 +310,26 @@ class StatusBarWidget:
         pill_y0 = max(0, (row_h - pbh) // 2)
         vcy = pill_y0 + pbh // 2
 
-        # Left and right pills only — no black under the progress bar (backdrop shows through the bar).
-        left_bgra = np.zeros((row_h, played_w, 4), dtype=np.uint8)
-        left_bgra[pill_y0 : pill_y0 + pbh, :, :] = pill_bgra_black(played_w, pbh)
+        # One black capsule from the played label column through the remaining label column (e.g. row 7, cols 3–17).
+        pill_col_1based = ac_p
+        pill_span_w = (ac_r + sw_r - 1) - pill_col_1based + 1
+        ux, uy, uw, uh = rect_for_span_at_cell(
+            pill_span_w,
+            1,
+            row_1based=ar_p,
+            col_1based=pill_col_1based,
+        )
+        strip_bgra = pill_bgra_black(uw, uh)
+        if cell >= 1 and bar_bw >= 4 and bar_bh >= 4:
+            _punch_bar_shaped_hole_in_strip_bgra(
+                strip_bgra,
+                bar_local_x=bar_x - ux,
+                bar_local_y=bar_y - uy,
+                bar_bw=bar_bw,
+                bar_bh=bar_bh,
+            )
+        blits.append(DesignPatch(x=ux, y=uy, w=uw, h=uh, bgra=strip_bgra))
+
         played_txt = self._tc_played.bgra_text_only_extend_under_bar(
             canvas_w=played_w,
             canvas_h=row_h,
@@ -283,11 +337,8 @@ class StatusBarWidget:
             align="left",
             cy_center=vcy,
         )
-        _blend_bgra_over_bgra_inplace(left_bgra, played_txt, 0, 0)
-        blits.append(DesignPatch(x=px, y=py, w=played_w, h=row_h, bgra=left_bgra))
+        blits.append(DesignPatch(x=px, y=py, w=played_w, h=row_h, bgra=played_txt))
 
-        right_bgra = np.zeros((row_h, rem_w, 4), dtype=np.uint8)
-        right_bgra[pill_y0 : pill_y0 + pbh, :, :] = pill_bgra_black(rem_w, pbh)
         rem_txt = self._tc_remaining.bgra_text_only_extend_under_bar(
             canvas_w=rem_w,
             canvas_h=row_h,
@@ -295,8 +346,7 @@ class StatusBarWidget:
             align="right",
             cy_center=vcy,
         )
-        _blend_bgra_over_bgra_inplace(right_bgra, rem_txt, 0, 0)
-        blits.append(DesignPatch(x=bar_right, y=ry, w=rem_w, h=row_h, bgra=right_bgra))
+        blits.append(DesignPatch(x=bar_right, y=ry, w=rem_w, h=row_h, bgra=rem_txt))
 
         if cell >= 1 and bar_bw >= 4 and bar_bh >= 4:
             bar_r = self._build_bar_patch_bgra(bar_bw=bar_bw, bar_bh=bar_bh)
@@ -306,6 +356,8 @@ class StatusBarWidget:
         return blits
 
     def render(self, canvas_bgr: np.ndarray) -> None:
+        if not self._now_playing_chrome_visible or self._theater_dim_suppressed:
+            return
         ch, cw = canvas_bgr.shape[:2]
         for p in self.design_blits():
             x, y, w, h = p.x, p.y, p.w, p.h

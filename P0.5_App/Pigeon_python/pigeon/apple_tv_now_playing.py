@@ -24,9 +24,19 @@ _CREDENTIALS_FILE = _STATE_DIR / "pyatv_credentials"
 _PAIRING_SESSIONS: dict[str, dict[str, object]] = {}
 
 
-def _tmdb_query_from_playing(playing) -> str | None:
-    """Pick a short search string for TMDb from pyatv ``Playing`` state."""
+def _tmdb_query_from_playing_impl(playing) -> str | None:
+    """Pick a short search string for TMDb from pyatv ``Playing`` state (before global refine)."""
     from pyatv.const import DeviceState, MediaType
+
+    try:
+        from pigeon.tmdb_poster import colon_prefix_show_query, is_degenerate_tmdb_query
+    except ImportError:
+
+        def is_degenerate_tmdb_query(_s: str) -> bool:  # type: ignore[misc]
+            return False
+
+        def colon_prefix_show_query(_s: str) -> str | None:  # type: ignore[misc]
+            return None
 
     def _text(name: str) -> str | None:
         value = getattr(playing, name, None)
@@ -49,10 +59,14 @@ def _tmdb_query_from_playing(playing) -> str | None:
     # visually playing, but still include a valid title/series name. Prefer any usable metadata
     # over the reported device state.
     mt = getattr(playing, "media_type", None)
-    if mt == MediaType.TV:
-        if series_name:
-            return series_name
-        if artist:
+    is_tv = mt == MediaType.TV
+
+    # HBO Max and similar often report episodes as Video, not TV — still prefer series for TMDb.
+    if series_name and (is_tv or episode_like):
+        return series_name
+
+    if is_tv:
+        if artist and not is_degenerate_tmdb_query(artist):
             return artist
         if title:
             return title
@@ -62,12 +76,43 @@ def _tmdb_query_from_playing(playing) -> str | None:
     # while still reporting media type Unknown. Prefer the show name in that case.
     if artist and title and artist != title:
         if episode_like:
-            return artist
+            if not is_degenerate_tmdb_query(artist):
+                return artist
+            if album and not is_degenerate_tmdb_query(album) and album.lower() != title.lower():
+                return album
+            if series_name:
+                return series_name
+            return title
+        # HBO Max et al. often omit season/episode numbers but still send show=artist, episode=title.
+        # Do not use len() here — episode titles are often longer than the series name.
+        if mt in (MediaType.Video, MediaType.Unknown):
+            if not is_degenerate_tmdb_query(artist):
+                return artist
+            # Artist is the app (Peacock, etc.): series_name is usually the real show (e.g. SNL), not the sketch in title.
+            if series_name and not is_degenerate_tmdb_query(series_name):
+                return series_name
+            cp = colon_prefix_show_query(title or "")
+            if cp:
+                return cp
+            return artist if len(artist) >= len(title) else title
         # Live/continuous content often swaps fields; prefer the longest “title-like” string.
-        # If series_name exists, it is frequently the actual show name.
         if series_name:
             return max((title, artist, series_name), key=len)
         return artist if len(artist) >= len(title) else title
+    # Video with sketch/segment in title but no usable artist (Peacock often omits it): still prefer series_name.
+    if (
+        title
+        and series_name
+        and not is_degenerate_tmdb_query(series_name)
+        and mt in (MediaType.Video, MediaType.Unknown)
+        and series_name.strip().lower() != title.strip().lower()
+        and (not artist or is_degenerate_tmdb_query(artist))
+    ):
+        return series_name
+    if title and mt in (MediaType.Video, MediaType.Unknown):
+        cp = colon_prefix_show_query(title)
+        if cp:
+            return cp
     if title:
         return title
     if series_name:
@@ -82,11 +127,64 @@ def _tmdb_query_from_playing(playing) -> str | None:
     return None
 
 
+def _tmdb_query_from_playing(playing) -> str | None:
+    """Pick TMDb query from ``Playing``; align with UI canonical series names (e.g. SNL → full title)."""
+    q = _tmdb_query_from_playing_impl(playing)
+    try:
+        from pigeon.tmdb_poster import resolve_tmdb_query_from_now_playing_fields
+    except ImportError:
+        try:
+            from pigeon.tmdb_poster import refine_tmdb_search_query as _ref
+        except ImportError:
+            return q
+        return _ref(q)
+    return resolve_tmdb_query_from_now_playing_fields(
+        base_query=q,
+        title=getattr(playing, "title", None),
+        series_name=getattr(playing, "series_name", None),
+        artist=getattr(playing, "artist", None),
+        album=getattr(playing, "album", None),
+        episode_title=getattr(playing, "episode_title", None),
+    )
+
+
 def _query_preference_from_playing(playing) -> str:
     from pyatv.const import MediaType
 
+    try:
+        from pigeon.tmdb_poster import is_degenerate_tmdb_query
+    except ImportError:
+
+        def is_degenerate_tmdb_query(_s: str) -> bool:  # type: ignore[misc]
+            return False
+
+    def _tx(name: str) -> str | None:
+        v = getattr(playing, name, None)
+        if v is None:
+            return None
+        t = str(v).strip()
+        return t or None
+
     media_type = getattr(playing, "media_type", None)
+    sn = getattr(playing, "season_number", None)
+    en = getattr(playing, "episode_number", None)
+    episode_like = sn is not None or en is not None
+    t_t = _tx("title")
+    t_a = _tx("artist")
+
     if media_type == MediaType.TV:
+        return "tv"
+    # Streamers often tag TV episodes as Video; still search TMDb as TV when episodic.
+    if episode_like:
+        return "tv"
+    # HBO-style: Video + distinct title/artist (episode vs series) with no S/E numbers.
+    if (
+        media_type in (MediaType.Video, MediaType.Unknown)
+        and t_t
+        and t_a
+        and t_t.lower() != t_a.lower()
+        and not is_degenerate_tmdb_query(t_a)
+    ):
         return "tv"
     # Feature films / streaming playback are often reported as Video, not Unknown.
     if media_type == MediaType.Video:
@@ -219,17 +317,49 @@ def _title_from_now_playing_archive(archive: bytes) -> str | None:
         return None
     if not isinstance(root, dict):
         return None
+    try:
+        from pigeon.tmdb_poster import (
+            refine_tmdb_search_query,
+            resolve_tmdb_query_from_now_playing_fields,
+        )
+    except ImportError:
+
+        def refine_tmdb_search_query(x: str | None) -> str | None:  # type: ignore[misc]
+            return (x or "").strip() or None
+
+        def resolve_tmdb_query_from_now_playing_fields(*, base_query, **kwargs):  # type: ignore[misc]
+            return refine_tmdb_search_query(base_query) if base_query else None
+
+    def _pick_refined(*candidates: object) -> str | None:
+        for c in candidates:
+            if isinstance(c, str) and c.strip():
+                r = refine_tmdb_search_query(c.strip())
+                if r:
+                    return r
+        return None
+
     metadata = root.get("metadata")
+    sn: object | None
+    ti: object | None
+    ep: object | None
     if isinstance(metadata, dict):
-        for key in ("title", "episodeTitle", "seriesName"):
-            value = metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    for key in ("title", "episodeTitle", "seriesName"):
-        value = root.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+        sn = metadata.get("seriesName")
+        ti = metadata.get("title")
+        ep = metadata.get("episodeTitle")
+        base = _pick_refined(sn, ti, ep)
+    else:
+        sn = root.get("seriesName")
+        ti = root.get("title")
+        ep = root.get("episodeTitle")
+        base = _pick_refined(sn, ti, ep)
+    return resolve_tmdb_query_from_now_playing_fields(
+        base_query=base,
+        title=ti,
+        series_name=sn,
+        artist=None,
+        album=None,
+        episode_title=ep,
+    )
 
 
 def _conf_services_summary(conf) -> str:
@@ -826,6 +956,75 @@ def fetch_now_playing_info_for_device(
         _async_fetch_now_playing_info_for_device(
             device_identifier=device_identifier,
             device_address=device_address,
+            scan_timeout_s=scan_timeout_s,
+        )
+    )
+
+
+async def _async_send_play_pause_to_device(
+    *,
+    device_identifier: str,
+    device_address: str,
+    scan_timeout_s: int,
+) -> tuple[bool, str]:
+    """Connect like metadata fetch and send one ``play_pause`` (Siri Remote) command."""
+    import pyatv
+
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    loop = asyncio.get_running_loop()
+    storage = await _create_storage(loop)
+
+    use_hosts_only = device_identifier == device_address
+    if use_hosts_only:
+        atvs = await pyatv.scan(
+            loop, timeout=scan_timeout_s, storage=storage, hosts=[device_address]
+        )
+    else:
+        atvs = await pyatv.scan(
+            loop, timeout=scan_timeout_s, storage=storage, identifier=device_identifier
+        )
+
+    if not atvs:
+        return False, "Selected Apple TV did not respond to scan."
+
+    conf = atvs[0]
+    name = getattr(conf, "name", None) or "Apple TV"
+    last_err = ""
+    for protocol in _candidate_protocols(conf):
+        atv = None
+        try:
+            atv = await _connect_with_protocol(pyatv, conf, loop, storage, protocol)
+            await atv.remote_control.play_pause()
+            return True, f'Play/pause sent to "{name}".'
+        except Exception as e:
+            last_err = str(e)
+        finally:
+            if atv is not None:
+                try:
+                    await atv.close()
+                except Exception:
+                    pass
+
+    return False, last_err or "Could not send play/pause to Apple TV."
+
+
+def send_play_pause_to_device(
+    *,
+    device_identifier: str,
+    device_address: str,
+    scan_timeout_s: int = 8,
+) -> tuple[bool, str]:
+    """Blocking: send play/pause to the paired Apple TV (pyatv)."""
+    try:
+        _ensure_pyatv()
+    except ImportError:
+        return False, "The `pyatv` package is not installed. From Pigeon_python: pip install pyatv"
+    if not (device_identifier or "").strip():
+        return False, "No Apple TV selected."
+    return _new_loop_run(
+        _async_send_play_pause_to_device(
+            device_identifier=device_identifier.strip(),
+            device_address=(device_address or device_identifier).strip(),
             scan_timeout_s=scan_timeout_s,
         )
     )

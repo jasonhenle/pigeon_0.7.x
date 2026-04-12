@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +24,10 @@ def read_app_state() -> dict[str, Any]:
         return {}
 
 
-def write_app_state(**updates: Any) -> None:
-    """Merge updates into existing JSON and atomically replace the file."""
+def _atomic_write_state(cur: dict[str, Any]) -> None:
     try:
         p = state_file()
         p.parent.mkdir(parents=True, exist_ok=True)
-        cur = read_app_state()
-        cur.update(updates)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(cur, indent=2) + "\n", encoding="utf-8")
         tmp.replace(p)
@@ -36,9 +35,63 @@ def write_app_state(**updates: Any) -> None:
         pass
 
 
+def write_app_state(**updates: Any) -> None:
+    """Merge updates into existing JSON and atomically replace the file."""
+    try:
+        cur = read_app_state()
+        cur.update(updates)
+        _atomic_write_state(cur)
+    except Exception:
+        pass
+
+
+def pop_app_state_key_prefix(prefix: str) -> None:
+    """Remove top-level keys starting with ``prefix`` (e.g. per-location observed capability keys)."""
+    if not prefix:
+        return
+    try:
+        cur = read_app_state()
+        rm = [k for k in list(cur.keys()) if isinstance(k, str) and k.startswith(prefix)]
+        if not rm:
+            return
+        for k in rm:
+            del cur[k]
+        _atomic_write_state(cur)
+    except Exception:
+        pass
+
+
+def pop_app_state_keys(*keys: str) -> None:
+    """Remove specific top-level keys if present."""
+    if not keys:
+        return
+    try:
+        cur = read_app_state()
+        changed = False
+        for k in keys:
+            if k in cur:
+                del cur[k]
+                changed = True
+        if changed:
+            _atomic_write_state(cur)
+    except Exception:
+        pass
+
+
 def auto_delete_pulled_media() -> bool:
     v = read_app_state().get("auto_delete_pulled_media")
     return bool(v) if isinstance(v, bool) else False
+
+
+def read_roku_ecp_base_url() -> str:
+    """Optional manual Roku ECP base (``http://ip:8060``) in state.json for TVs / Roku players."""
+    v = read_app_state().get("roku_ecp_base_url")
+    return str(v).strip() if isinstance(v, str) and v.strip() else ""
+
+
+def write_roku_ecp_base_url(url: str | None) -> None:
+    u = str(url or "").strip()
+    write_app_state(roku_ecp_base_url=u)
 
 
 def read_last_apple_tv() -> dict[str, str]:
@@ -177,27 +230,36 @@ def migrate_device_slots_from_legacy_if_needed() -> None:
 
 def read_saved_streaming_device() -> dict[str, str] | None:
     migrate_device_slots_from_legacy_if_needed()
-    return _parse_one_saved_device_row(read_app_state().get("saved_streaming_device"))
+    return _v2_read_primary_streaming()
 
 
-def write_saved_streaming_device(row: dict[str, str] | None) -> None:
+def write_saved_streaming_device(
+    row: dict[str, str] | None,
+    *,
+    for_location_id: str | None = None,
+) -> None:
     migrate_device_slots_from_legacy_if_needed()
-    write_app_state(saved_streaming_device=_slot_row_to_state_dict(row))
+    _v2_write_streaming_slot(row, for_location_id=for_location_id)
 
 
 def read_saved_av_receiver() -> dict[str, str] | None:
     migrate_device_slots_from_legacy_if_needed()
-    return _parse_one_saved_device_row(read_app_state().get("saved_av_receiver"))
+    return _v2_read_primary_av_receiver()
 
 
-def write_saved_av_receiver(row: dict[str, str] | None) -> None:
+def write_saved_av_receiver(
+    row: dict[str, str] | None,
+    *,
+    for_location_id: str | None = None,
+) -> None:
     migrate_device_slots_from_legacy_if_needed()
-    write_app_state(saved_av_receiver=_slot_row_to_state_dict(row))
+    _v2_write_av_receiver_slot(row, for_location_id=for_location_id)
 
 
 def clear_all_persisted_devices_and_targets() -> None:
     """Clear saved device slots, last playback/receiver targets, and legacy receiver lists."""
     migrate_device_slots_from_legacy_if_needed()
+    pop_app_state_key_prefix("observed_capability_live_v1.")
     write_app_state(
         saved_streaming_device={},
         saved_av_receiver={},
@@ -205,6 +267,9 @@ def clear_all_persisted_devices_and_targets() -> None:
         last_apple_tv={},
         last_receiver={},
         saved_receivers=[],
+        locations_v2=[],
+        current_location_id="",
+        feature_delegation_v1={"overrides": {}, "log": {}, "active": {}},
     )
 
 
@@ -353,3 +418,679 @@ def write_saved_receivers(rows: list[dict[str, str]]) -> None:
             row["label"] = f"{nm} — {row['host']}"
         clean.append(row)
     write_app_state(saved_receivers=clean)
+
+
+# --- Multi-room locations (v2), Advanced delegation state, slot helpers -----------------
+
+LOCATION_PRESET_ROOM_NAMES: tuple[str, ...] = (
+    "Living room",
+    "Bedroom",
+    "Office",
+    "Kitchen",
+    "Basement",
+    "Theater",
+)
+
+_LOCATION_SLOT_KEYS: tuple[str, ...] = (
+    "streaming",
+    "av_receiver",
+    "tv",
+    "projector",
+    "game",
+    "other",
+)
+
+_EMPTY_DELEGATION: dict[str, dict[str, Any]] = {"overrides": {}, "log": {}, "active": {}}
+
+
+def _receiver_from_partial_dict(item: dict[str, Any]) -> dict[str, str] | None:
+    adr = str(item.get("address") or "").strip()
+    if not adr:
+        return None
+    host = adr.split("%")[0].strip()
+    ident = str(item.get("identifier") or "").strip() or f"denon:{host}"
+    nm = str(item.get("name") or "").strip() or "Receiver"
+    lb = str(item.get("label") or "").strip() or f"{nm} — {adr}"
+    row: dict[str, str] = {
+        "identifier": ident,
+        "address": adr,
+        "name": nm,
+        "label": lb,
+        "looks_like_apple_tv": "false",
+    }
+    lk = item.get("looks_like_apple_tv")
+    if isinstance(lk, bool):
+        row["looks_like_apple_tv"] = "true" if lk else "false"
+    elif isinstance(lk, str) and lk.strip().lower() in ("true", "false"):
+        row["looks_like_apple_tv"] = lk.strip().lower()
+    return row
+
+
+def _parse_receiver_row_flexible(item: Any) -> dict[str, str] | None:
+    if not isinstance(item, dict):
+        return None
+    hit = _parse_one_saved_device_row(item)
+    if hit is not None:
+        return hit
+    return _receiver_from_partial_dict(item)
+
+
+def _normalize_slot_list(raw: Any, sk: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    it: list[Any]
+    if isinstance(raw, list):
+        it = raw
+    elif isinstance(raw, dict):
+        it = [raw]
+    else:
+        it = []
+    for x in it:
+        if not isinstance(x, dict):
+            continue
+        if sk == "av_receiver":
+            pr = _parse_receiver_row_flexible(x)
+        else:
+            pr = _parse_one_saved_device_row(x)
+        if pr is not None:
+            rows.append(pr)
+    return rows
+
+
+def _normalize_location_dict(item: dict[str, Any]) -> dict[str, Any] | None:
+    lid = str(item.get("id") or "").strip()
+    if not lid:
+        return None
+    loc: dict[str, Any] = {
+        "id": lid,
+        "name": str(item.get("name") or "Room").strip() or "Room",
+    }
+    for sk in _LOCATION_SLOT_KEYS:
+        loc[sk] = _normalize_slot_list(item.get(sk), sk)
+    return loc
+
+
+def _loc_serializable(loc: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "id": str(loc.get("id") or ""),
+        "name": str(loc.get("name") or "Room").strip() or "Room",
+    }
+    for sk in _LOCATION_SLOT_KEYS:
+        raw = loc.get(sk, [])
+        if isinstance(raw, list):
+            out[sk] = [dict(r) for r in raw if isinstance(r, dict)]
+        else:
+            out[sk] = []
+    return out
+
+
+def _new_empty_location(loc_id: str, name: str) -> dict[str, Any]:
+    loc: dict[str, Any] = {"id": loc_id, "name": str(name).strip() or "Room"}
+    for sk in _LOCATION_SLOT_KEYS:
+        loc[sk] = []
+    return loc
+
+
+def _v2_copy_locations_from_state(cur: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = cur.get("locations_v2")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        parsed = _normalize_location_dict(item)
+        if parsed is not None:
+            out.append(parsed)
+    return out
+
+
+def _v2_find_loc(locs: list[dict[str, Any]], lid: str) -> dict[str, Any] | None:
+    tl = str(lid or "").strip()
+    if not tl:
+        return None
+    for L in locs:
+        if str(L.get("id") or "").strip() == tl:
+            return L
+    return None
+
+
+def _v2_resolve_effective_location_id(locs: list[dict[str, Any]], cur: dict[str, Any]) -> str:
+    lid = str(cur.get("current_location_id") or "").strip()
+    ids = {str(L.get("id") or "").strip() for L in locs}
+    if lid and lid in ids:
+        return lid
+    if locs:
+        return str(locs[0].get("id") or "").strip()
+    return ""
+
+
+def _v2_first_parsed_row(
+    loc: dict[str, Any] | None,
+    slot_key: str,
+    *,
+    use_receiver_parser: bool,
+) -> dict[str, str] | None:
+    if not loc:
+        return None
+    rows = loc.get(slot_key)
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return None
+    x = rows[0]
+    if use_receiver_parser:
+        return _parse_receiver_row_flexible(x) or _parse_one_saved_device_row(x)
+    return _parse_one_saved_device_row(x)
+
+
+def _mirror_primary_devices_to_legacy_slots(
+    cur: dict[str, Any],
+    locs: list[dict[str, Any]],
+    eff_location_id: str,
+) -> None:
+    loc = _v2_find_loc(locs, eff_location_id)
+    s0 = _v2_first_parsed_row(loc, "streaming", use_receiver_parser=False)
+    a0 = _v2_first_parsed_row(loc, "av_receiver", use_receiver_parser=True)
+    cur["saved_streaming_device"] = _slot_row_to_state_dict(s0)
+    cur["saved_av_receiver"] = _slot_row_to_state_dict(a0)
+
+
+def _v2_persist_locations_and_mirror_legacy(locs: list[dict[str, Any]]) -> None:
+    cur = read_app_state()
+    cur["locations_v2"] = [_loc_serializable(L) for L in locs]
+    eff = _v2_resolve_effective_location_id(locs, cur)
+    _mirror_primary_devices_to_legacy_slots(cur, locs, eff)
+    _atomic_write_state(cur)
+
+
+def _ensure_locations_v2_migrated() -> None:
+    migrate_device_slots_from_legacy_if_needed()
+    cur = read_app_state()
+    raw = cur.get("locations_v2")
+    if isinstance(raw, list) and len(raw) > 0:
+        return
+    loc_id = uuid.uuid4().hex
+    stream = _parse_one_saved_device_row(cur.get("saved_streaming_device"))
+    avr_raw = cur.get("saved_av_receiver")
+    avr = _parse_one_saved_device_row(avr_raw) or _parse_receiver_row_flexible(avr_raw)
+    loc: dict[str, Any] = {
+        "id": loc_id,
+        "name": "Room",
+        "streaming": [stream] if stream else [],
+        "av_receiver": [avr] if avr else [],
+        "tv": [],
+        "projector": [],
+        "game": [],
+        "other": [],
+    }
+    cur["locations_v2"] = [_loc_serializable(loc)]
+    cur["current_location_id"] = loc_id
+    _mirror_primary_devices_to_legacy_slots(cur, [loc], loc_id)
+    _atomic_write_state(cur)
+
+
+def _coerce_slot_row(row: dict[str, str], slot_key: str) -> dict[str, str] | None:
+    if slot_key == "av_receiver":
+        hit = _parse_receiver_row_flexible(row)
+    else:
+        hit = _parse_one_saved_device_row(row)
+    if hit is not None:
+        return hit
+    ident = str(row.get("identifier") or "").strip()
+    adr = str(row.get("address") or "").strip()
+    if ident and adr:
+        out = {k: str(row.get(k, "")).strip() for k in ("identifier", "address", "name", "label")}
+        out["identifier"] = ident
+        out["address"] = adr
+        if not out["label"]:
+            nm = out["name"] or "Device"
+            out["label"] = f"{nm} — {adr}"
+        lk = row.get("looks_like_apple_tv")
+        if isinstance(lk, bool):
+            out["looks_like_apple_tv"] = "true" if lk else "false"
+        elif isinstance(lk, str) and lk.strip().lower() in ("true", "false"):
+            out["looks_like_apple_tv"] = lk.strip().lower()
+        return out
+    if slot_key == "av_receiver":
+        return _receiver_from_partial_dict(row)
+    return None
+
+
+def _v2_read_primary_streaming() -> dict[str, str] | None:
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    if not locs:
+        return _parse_one_saved_device_row(cur.get("saved_streaming_device"))
+    lid = _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    return _v2_first_parsed_row(loc, "streaming", use_receiver_parser=False)
+
+
+def _v2_read_primary_av_receiver() -> dict[str, str] | None:
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    if not locs:
+        return _parse_one_saved_device_row(cur.get("saved_av_receiver"))
+    lid = _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    return _v2_first_parsed_row(loc, "av_receiver", use_receiver_parser=True)
+
+
+def _v2_write_streaming_slot(row: dict[str, str] | None, *, for_location_id: str | None) -> None:
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    if not locs:
+        write_app_state(saved_streaming_device=_slot_row_to_state_dict(row))
+        return
+    lid = (str(for_location_id).strip() if for_location_id else "") or _v2_resolve_effective_location_id(
+        locs, cur
+    )
+    loc = _v2_find_loc(locs, lid)
+    if loc is None:
+        return
+    if row is None:
+        loc["streaming"] = []
+    else:
+        pr = _coerce_slot_row(row, "streaming")
+        if pr is not None:
+            loc["streaming"] = [pr]
+    _v2_persist_locations_and_mirror_legacy(locs)
+
+
+def _v2_write_av_receiver_slot(row: dict[str, str] | None, *, for_location_id: str | None) -> None:
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    if not locs:
+        write_app_state(saved_av_receiver=_slot_row_to_state_dict(row))
+        return
+    lid = (str(for_location_id).strip() if for_location_id else "") or _v2_resolve_effective_location_id(
+        locs, cur
+    )
+    loc = _v2_find_loc(locs, lid)
+    if loc is None:
+        return
+    if row is None:
+        loc["av_receiver"] = []
+    else:
+        pr = _coerce_slot_row(row, "av_receiver")
+        if pr is not None:
+            loc["av_receiver"] = [pr]
+    _v2_persist_locations_and_mirror_legacy(locs)
+
+
+def read_all_locations_v2() -> list[dict[str, Any]]:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    return [copy.deepcopy(L) for L in _v2_copy_locations_from_state(cur)]
+
+
+def read_current_location_id() -> str:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    return _v2_resolve_effective_location_id(locs, cur)
+
+
+def set_current_location_id(lid: str) -> bool:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    tl = str(lid).strip()
+    if not any(str(L.get("id") or "").strip() == tl for L in locs):
+        return False
+    cur["current_location_id"] = tl
+    cur["locations_v2"] = [_loc_serializable(L) for L in locs]
+    _mirror_primary_devices_to_legacy_slots(cur, locs, tl)
+    _atomic_write_state(cur)
+    return True
+
+
+def add_empty_location_v2(name: str) -> None:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    new_id = uuid.uuid4().hex
+    locs.append(_new_empty_location(new_id, str(name).strip() or "Room"))
+    _v2_persist_locations_and_mirror_legacy(locs)
+
+
+def delete_location_v2(loc_id: str) -> bool:
+    """
+    Remove one location and all device rows in its slots. Clears Advanced delegation
+    (overrides, log, active) for that location id. Does not remove the last remaining room.
+    """
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    tl = str(loc_id or "").strip()
+    if not tl or len(locs) <= 1:
+        return False
+    new_locs = [L for L in locs if str(L.get("id") or "").strip() != tl]
+    if len(new_locs) == len(locs):
+        return False
+    if str(cur.get("current_location_id") or "").strip() == tl:
+        cur["current_location_id"] = str(new_locs[0].get("id") or "").strip()
+    cur["locations_v2"] = [_loc_serializable(L) for L in new_locs]
+    eff = _v2_resolve_effective_location_id(new_locs, cur)
+    _mirror_primary_devices_to_legacy_slots(cur, new_locs, eff)
+    fd = _load_feature_delegation(cur)
+    for fd_key in ("overrides", "log", "active"):
+        sub = fd.get(fd_key)
+        if isinstance(sub, dict) and tl in sub:
+            del sub[tl]
+    cur["feature_delegation_v1"] = fd
+    _atomic_write_state(cur)
+    return True
+
+
+def rename_location_v2(loc_id: str, new_name: str) -> bool:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    tid = str(loc_id).strip()
+    nm = str(new_name).strip() or "Room"
+    for L in locs:
+        if str(L.get("id") or "").strip() == tid:
+            L["name"] = nm
+            _v2_persist_locations_and_mirror_legacy(locs)
+            return True
+    return False
+
+
+def append_device_to_location_slot(
+    slot_key: str,
+    row: dict[str, str],
+    *,
+    for_location_id: str | None,
+    new_location_name: str | None,
+) -> str:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    sk = str(slot_key or "").strip()
+    if sk not in _LOCATION_SLOT_KEYS:
+        sk = "other"
+    lid_target: str = ""
+    if new_location_name is not None and str(new_location_name).strip():
+        new_id = uuid.uuid4().hex
+        nm = str(new_location_name).strip() or "Room"
+        locs.append(_new_empty_location(new_id, nm))
+        lid_target = new_id
+    elif for_location_id and _v2_find_loc(locs, str(for_location_id).strip()):
+        lid_target = str(for_location_id).strip()
+    else:
+        eff = _v2_resolve_effective_location_id(locs, cur)
+        if eff:
+            lid_target = eff
+        else:
+            new_id = uuid.uuid4().hex
+            locs.append(_new_empty_location(new_id, "Room"))
+            lid_target = new_id
+    loc = _v2_find_loc(locs, lid_target)
+    if loc is None:
+        return ""
+    pr = _coerce_slot_row(dict(row), sk)
+    if pr is None:
+        return lid_target
+    slot_list = loc.setdefault(sk, [])
+    if not isinstance(slot_list, list):
+        slot_list = []
+        loc[sk] = slot_list
+    slot_list.append(pr)
+    _v2_persist_locations_and_mirror_legacy(locs)
+    return lid_target
+
+
+def remove_device_at_slot_index(
+    slot_key: str,
+    index: int,
+    for_location_id: str | None = None,
+) -> None:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    sk = str(slot_key or "").strip()
+    if sk not in _LOCATION_SLOT_KEYS:
+        return
+    lid = (
+        str(for_location_id).strip()
+        if for_location_id
+        else _v2_resolve_effective_location_id(locs, cur)
+    )
+    loc = _v2_find_loc(locs, lid)
+    if not loc:
+        return
+    rows = loc.get(sk)
+    if not isinstance(rows, list):
+        return
+    if 0 <= int(index) < len(rows):
+        del rows[int(index)]
+    _v2_persist_locations_and_mirror_legacy(locs)
+
+
+def read_saved_streaming_devices_all() -> list[dict[str, str]]:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    lid = _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    if not loc:
+        return []
+    rows = loc.get("streaming")
+    if not isinstance(rows, list):
+        return []
+    return [dict(r) for r in rows if isinstance(r, dict)]
+
+
+def read_saved_slot_rows_all(slot_key: str) -> list[dict[str, str]]:
+    sk = str(slot_key or "").strip()
+    if sk not in _LOCATION_SLOT_KEYS:
+        return []
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    lid = _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    if not loc:
+        return []
+    rows = loc.get(sk)
+    if not isinstance(rows, list):
+        return []
+    return [dict(r) for r in rows if isinstance(r, dict)]
+
+
+def read_saved_tv() -> list[dict[str, str]]:
+    return read_saved_slot_rows_all("tv")
+
+
+def read_saved_projector() -> list[dict[str, str]]:
+    return read_saved_slot_rows_all("projector")
+
+
+def read_saved_game() -> list[dict[str, str]]:
+    return read_saved_slot_rows_all("game")
+
+
+def read_saved_other() -> list[dict[str, str]]:
+    return read_saved_slot_rows_all("other")
+
+
+def _v2_replace_entire_slot(slot_key: str, row: dict[str, str] | None) -> None:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    sk = str(slot_key or "").strip()
+    if sk not in _LOCATION_SLOT_KEYS:
+        return
+    lid = _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    if not loc:
+        return
+    if row is None:
+        loc[sk] = []
+    else:
+        pr = _coerce_slot_row(dict(row), sk)
+        loc[sk] = [pr] if pr is not None else []
+    _v2_persist_locations_and_mirror_legacy(locs)
+
+
+def write_saved_tv(row: dict[str, str] | None) -> None:
+    _v2_replace_entire_slot("tv", row)
+
+
+def write_saved_projector(row: dict[str, str] | None) -> None:
+    _v2_replace_entire_slot("projector", row)
+
+
+def write_saved_game(row: dict[str, str] | None) -> None:
+    _v2_replace_entire_slot("game", row)
+
+
+def write_saved_other(row: dict[str, str] | None) -> None:
+    _v2_replace_entire_slot("other", row)
+
+
+def _load_feature_delegation(cur: dict[str, Any]) -> dict[str, Any]:
+    r = cur.get("feature_delegation_v1")
+    if not isinstance(r, dict):
+        return copy.deepcopy(_EMPTY_DELEGATION)
+    return {
+        "overrides": copy.deepcopy(r["overrides"]) if isinstance(r.get("overrides"), dict) else {},
+        "log": copy.deepcopy(r["log"]) if isinstance(r.get("log"), dict) else {},
+        "active": copy.deepcopy(r["active"]) if isinstance(r.get("active"), dict) else {},
+    }
+
+
+def read_feature_delegation_overrides(loc_id: str) -> dict[str, list[str]]:
+    lid = str(loc_id or "").strip()
+    if not lid:
+        return {}
+    cur = read_app_state()
+    fd = _load_feature_delegation(cur)
+    ov = fd["overrides"].get(lid)
+    if not isinstance(ov, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for k, v in ov.items():
+        if isinstance(k, str) and isinstance(v, list):
+            out[k] = [str(x) for x in v if isinstance(x, str)]
+    return out
+
+
+def write_feature_delegation_overrides(loc_id: str, overrides: dict[str, list[str]]) -> None:
+    lid = str(loc_id or "").strip()
+    if not lid:
+        return
+    cur = read_app_state()
+    fd = _load_feature_delegation(cur)
+    clean: dict[str, list[str]] = {}
+    for k, v in overrides.items():
+        if isinstance(k, str) and isinstance(v, list):
+            clean[k] = [str(x) for x in v if isinstance(x, str)]
+    if not isinstance(fd["overrides"], dict):
+        fd["overrides"] = {}
+    fd["overrides"][lid] = clean
+    write_app_state(feature_delegation_v1=fd)
+
+
+def clear_feature_delegation_overrides(loc_id: str) -> None:
+    lid = str(loc_id or "").strip()
+    if not lid:
+        return
+    cur = read_app_state()
+    fd = _load_feature_delegation(cur)
+    if isinstance(fd["overrides"], dict) and lid in fd["overrides"]:
+        del fd["overrides"][lid]
+    write_app_state(feature_delegation_v1=fd)
+
+
+def read_delegation_log(loc_id: str) -> dict[str, list[str]]:
+    lid = str(loc_id or "").strip()
+    if not lid:
+        return {}
+    cur = read_app_state()
+    fd = _load_feature_delegation(cur)
+    lg = fd["log"].get(lid)
+    if not isinstance(lg, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for k, v in lg.items():
+        if isinstance(k, str) and isinstance(v, list):
+            out[k] = [str(x) for x in v if isinstance(x, str)]
+    return out
+
+
+def read_delegation_active_indices(loc_id: str) -> dict[str, int]:
+    lid = str(loc_id or "").strip()
+    if not lid:
+        return {}
+    cur = read_app_state()
+    fd = _load_feature_delegation(cur)
+    ac = fd["active"].get(lid)
+    if not isinstance(ac, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in ac.items():
+        if isinstance(k, str):
+            try:
+                out[k] = int(v)
+            except (TypeError, ValueError):
+                out[k] = 0
+    return out
+
+
+def append_delegation_log_line(loc_id: str, feature_id: str, line: str) -> None:
+    lid = str(loc_id or "").strip()
+    fid = str(feature_id or "").strip()
+    if not lid or not fid:
+        return
+    cur = read_app_state()
+    fd = _load_feature_delegation(cur)
+    if not isinstance(fd["log"], dict):
+        fd["log"] = {}
+    sub = fd["log"].setdefault(lid, {})
+    if not isinstance(sub, dict):
+        sub = {}
+        fd["log"][lid] = sub
+    bucket = sub.setdefault(fid, [])
+    if not isinstance(bucket, list):
+        bucket = []
+        sub[fid] = bucket
+    bucket.append(str(line)[:500])
+    if len(bucket) > 80:
+        del bucket[:-80]
+    write_app_state(feature_delegation_v1=fd)
+
+
+def advance_delegation_active(loc_id: str, feature_id: str, n_slots: int) -> None:
+    lid = str(loc_id or "").strip()
+    fid = str(feature_id or "").strip()
+    n = int(n_slots)
+    if not lid or not fid or n < 1:
+        return
+    cur = read_app_state()
+    fd = _load_feature_delegation(cur)
+    if not isinstance(fd["active"], dict):
+        fd["active"] = {}
+    sub = fd["active"].setdefault(lid, {})
+    if not isinstance(sub, dict):
+        sub = {}
+        fd["active"][lid] = sub
+    try:
+        cur_i = int(sub.get(fid, 0) or 0)
+    except (TypeError, ValueError):
+        cur_i = 0
+    sub[fid] = (cur_i + 1) % n
+    write_app_state(feature_delegation_v1=fd)

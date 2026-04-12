@@ -1,11 +1,10 @@
-"""Clock + calendar widget: 5×2 squares on the global 19×8 grid.
+"""Clock widget: 5×2 squares on the global 19×8 grid.
 
-Anchor so the span is **cols 13–17** on row 1 (default): trailing ``am``/``pm`` sits in column 17, right-aligned,
-so the block is not clipped past the design canvas edge.
+Anchor the 5×2 span by **top-left** (default row 1, cols 11–15): glyphs are right-aligned inside the span so
+``am``/``pm`` sits near the span’s right edge (adjacent to the app badge to the right when using Pigeon defaults).
 
-Layout: one line — ``month day`` (medium) + ``time`` (bold) + `` am|pm`` (medium), spaces only (no slashes).
-The date segment has a black outline; there is no background pill. The line is vertically centered in **row 1**
-of the 5×2 span (top grid row only).
+Layout: one line — ``HH:MM`` (bold) + `` am|pm`` (medium). The line stays in **grid row 1** only
+(top half of the 5×2 span), with padding from the top of that row so glyphs do not spill into row 2.
 
 A subtle drop shadow uses the same BGR accent as the now-playing progress bar (``set_shadow_accent_bgr``).
 
@@ -27,8 +26,11 @@ from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_medium
 
 _SPAN = (5, 2)
 
-# Use the full 5×2 footprint so right-aligned text (am/pm in col 17) is not squeezed off-canvas.
-_CLOCK_CONTENT_SCALE = 1.0
+# Slightly smaller than the full 5×2 footprint; block stays right-aligned in the span.
+_CLOCK_CONTENT_SCALE = 0.76
+# Keep glyphs inside grid **row 1** only (widget spans two rows); breathing room from top of row 1.
+_CLOCK_ROW1_TOP_PAD_FRAC = 0.14
+_CLOCK_ROW1_BOTTOM_MARGIN = 3
 
 _DEFAULT_SHADOW_ACCENT_BGR = (40, 140, 255)
 
@@ -36,11 +38,6 @@ DEFAULT_FAKE_TIME_STRING = "2020-11-30 12:55:00"
 
 _TEXT_WHITE = (255, 255, 255, 255)
 _SHADOW_ALPHA = 110
-# Calendar (month + day) white text with black outline for contrast without the old pill.
-_CAL_STROKE_W = 2
-_CAL_STROKE_RGBA = (0, 0, 0, 255)
-
-
 def _text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
     l, t, r, b = draw.textbbox((0, 0), text, font=font)
     return r - l, b - t
@@ -96,12 +93,12 @@ def _fit_segmented_fonts(
         f_med = _load_font(med_p, mid_sz)
         f_bold = _load_font(bold_path, mid_sz)
         tw = (
-            _text_size(draw, left, f_med)[0]
+            (_text_size(draw, left, f_med)[0] if left else 0)
             + _text_size(draw, mid, f_bold)[0]
             + _text_size(draw, right, f_med)[0]
         )
         th = max(
-            _text_size(draw, left, f_med)[1],
+            _text_size(draw, left, f_med)[1] if left else 0,
             _text_size(draw, mid, f_bold)[1],
             _text_size(draw, right, f_med)[1],
         )
@@ -114,6 +111,106 @@ def _fit_segmented_fonts(
         sz = min_sz
         return _load_font(med_p, sz), _load_font(bold_path, sz)
     return best_pair
+
+
+def design_clock_calendar_medium_font_point_size(
+    *,
+    anchor_row: int = 1,
+    anchor_col: int = 11,
+) -> int:
+    """
+    PIL truetype point size for the **medium** face after fitting the clock line in the
+    5×2 patch — same rules as ``ClockCalendarWidget`` (time + am/pm).
+
+    Default anchor matches ``pigeon_0_5.CLOCK_ANCHOR_ROW`` / ``CLOCK_ANCHOR_COL``.
+    """
+    _wx, _wy, w0, h0 = rect_for_span_at_cell(
+        _SPAN[0],
+        _SPAN[1],
+        row_1based=anchor_row,
+        col_1based=anchor_col,
+    )
+    w = max(1, int(round(w0 * _CLOCK_CONTENT_SCALE)))
+    h = max(1, int(round(h0 * _CLOCK_CONTENT_SCALE)))
+    now = _resolve_display_time()
+    left = ""
+    mid = _time_12h_no_leading_zero(now)
+    right = f" {now.strftime('%p').lower()}"
+
+    bold_path = resolve_ui_font_bold()
+    if not bold_path:
+        bold_path = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+    medium_path = resolve_ui_font_medium()
+    if not medium_path:
+        medium_path = "/System/Library/Fonts/Supplemental/Arial.ttf"
+
+    pad = max(2, int(min(w, h) * 0.04))
+    inner_w = max(1, w - 2 * pad)
+    row1_h = max(1, h // 2)
+    top_m = max(2, int(round(row1_h * _CLOCK_ROW1_TOP_PAD_FRAC)))
+    bot_m = max(2, _CLOCK_ROW1_BOTTOM_MARGIN)
+    inner_h_fit = max(6, row1_h - top_m - bot_m - max(2, int(round(pad * 0.75))))
+
+    scratch = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(scratch)
+    f_med, _f_bold = _fit_segmented_fonts(
+        medium_path, bold_path, left, mid, right, draw, inner_w, inner_h_fit
+    )
+    sz = getattr(f_med, "size", None)
+    if isinstance(sz, (int, float)) and int(sz) > 0:
+        return int(sz)
+    return 12
+
+
+def design_clock_text_left_inset_in_span(
+    *,
+    anchor_row: int = 1,
+    anchor_col: int = 11,
+) -> int:
+    """
+    Pixels from the **left edge of the clock’s 5×2 span** to the **left edge of the time glyphs**
+    (matches ``ClockCalendarWidget`` layout: scaled block right-aligned in the span). Use to align
+    other widgets (e.g. location toast) with the clock text.     Defaults match ``CLOCK_ANCHOR_ROW`` / ``CLOCK_ANCHOR_COL`` in ``pigeon_0_5``.
+    """
+    _wx, _wy, w0, h0 = rect_for_span_at_cell(
+        _SPAN[0],
+        _SPAN[1],
+        row_1based=anchor_row,
+        col_1based=anchor_col,
+    )
+    cw = max(1, int(round(w0 * _CLOCK_CONTENT_SCALE)))
+    ch = max(1, int(round(h0 * _CLOCK_CONTENT_SCALE)))
+    now = _resolve_display_time()
+    left = ""
+    mid = _time_12h_no_leading_zero(now)
+    right = f" {now.strftime('%p').lower()}"
+
+    bold_path = resolve_ui_font_bold()
+    if not bold_path:
+        bold_path = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+    medium_path = resolve_ui_font_medium()
+    if not medium_path:
+        medium_path = "/System/Library/Fonts/Supplemental/Arial.ttf"
+
+    pad = max(2, int(min(cw, ch) * 0.04))
+    inner_w = max(1, cw - 2 * pad)
+    row1_h = max(1, ch // 2)
+    top_m = max(2, int(round(row1_h * _CLOCK_ROW1_TOP_PAD_FRAC)))
+    bot_m = max(2, _CLOCK_ROW1_BOTTOM_MARGIN)
+    inner_h_fit = max(6, row1_h - top_m - bot_m - max(2, int(round(pad * 0.75))))
+
+    scratch = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(scratch)
+    f_med, f_bold = _fit_segmented_fonts(
+        medium_path, bold_path, left, mid, right, draw, inner_w, inner_h_fit
+    )
+    total_w = (
+        (_text_size(draw, left, f_med)[0] if left else 0)
+        + _text_size(draw, mid, f_bold)[0]
+        + _text_size(draw, right, f_med)[0]
+    )
+    x0 = max(pad, cw - pad - total_w)
+    return (w0 - cw) + x0
 
 
 class ClockCalendarWidget:
@@ -137,12 +234,9 @@ class ClockCalendarWidget:
         self._shadow_accent_bgr = (int(bgr[0]), int(bgr[1]), int(bgr[2]))
 
     def _clock_segments(self, now: datetime) -> tuple[str, str, str]:
-        month_s = now.strftime("%B").lower()
-        date_s = str(now.day)
         time_s = _time_12h_no_leading_zero(now)
         ampm_s = now.strftime("%p").lower()
-        # Single spaces between month/day and before am/pm; two spaces between date and time.
-        left = f"{month_s} {date_s}  "
+        left = ""
         mid = time_s
         right = f" {ampm_s}"
         return left, mid, right
@@ -160,30 +254,36 @@ class ClockCalendarWidget:
 
         pad = max(2, int(min(w, h) * 0.04))
         inner_w = max(1, w - 2 * pad)
-        inner_h = max(1, h - 2 * pad)
+        row1_h = max(1, h // 2)
+        top_m = max(2, int(round(row1_h * _CLOCK_ROW1_TOP_PAD_FRAC)))
+        bot_m = max(2, _CLOCK_ROW1_BOTTOM_MARGIN)
+        inner_h_fit = max(6, row1_h - top_m - bot_m - max(2, int(round(pad * 0.75))))
+        band_top = top_m
+        band_bot = row1_h - bot_m
 
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         f_med, f_bold = _fit_segmented_fonts(
-            medium_path, bold_path, left, mid, right, draw, inner_w, inner_h
+            medium_path, bold_path, left, mid, right, draw, inner_w, inner_h_fit
         )
 
         total_w = (
-            _text_size(draw, left, f_med)[0]
+            (_text_size(draw, left, f_med)[0] if left else 0)
             + _text_size(draw, mid, f_bold)[0]
             + _text_size(draw, right, f_med)[0]
         )
         x0 = max(pad, w - pad - total_w)
-        # Vertically center the line in **grid row 1** only (this widget spans two rows).
-        row1_h = max(1, h // 2)
-        y_center_row1 = row1_h // 2
-        baseline_y = row1_h // 2
+        # Vertically center in grid row 1 between top padding and bottom margin (never into row 2).
+        band_mid = (band_top + band_bot) // 2
+        baseline_y = band_mid
 
         def _line_bbox_at(by: int) -> tuple[int, int, int, int]:
             xr = x0
             ul = ut = 999999
             dr = db = -999999
             for text, font in ((left, f_med), (mid, f_bold), (right, f_med)):
+                if not text:
+                    continue
                 bb = draw.textbbox((xr, by), text, font=font, anchor="ls")
                 ul, ut = min(ul, bb[0]), min(ut, bb[1])
                 dr, db = max(dr, bb[2]), max(db, bb[3])
@@ -192,7 +292,12 @@ class ClockCalendarWidget:
 
         ul, ut, dr, db = _line_bbox_at(baseline_y)
         cy = (ut + db) // 2
-        baseline_y += y_center_row1 - cy
+        baseline_y += band_mid - cy
+        ul, ut, dr, db = _line_bbox_at(baseline_y)
+        if db > band_bot:
+            baseline_y -= db - band_bot
+        if ut < band_top:
+            baseline_y += band_top - ut
 
         b_bgr, g_bgr, r_bgr = self._shadow_accent_bgr
         shadow_rgb = (int(r_bgr), int(g_bgr), int(b_bgr))
@@ -200,20 +305,11 @@ class ClockCalendarWidget:
         off = max(1, int(round(min(w, h) * 0.018)))
 
         x = x0
-        for idx, (text, font) in enumerate(((left, f_med), (mid, f_bold), (right, f_med))):
+        for text, font in ((left, f_med), (mid, f_bold), (right, f_med)):
+            if not text:
+                continue
             draw.text((x + off, baseline_y + off), text, font=font, fill=shadow_fill, anchor="ls")
-            if idx == 0:
-                draw.text(
-                    (x, baseline_y),
-                    text,
-                    font=font,
-                    fill=_TEXT_WHITE,
-                    anchor="ls",
-                    stroke_width=_CAL_STROKE_W,
-                    stroke_fill=_CAL_STROKE_RGBA,
-                )
-            else:
-                draw.text((x, baseline_y), text, font=font, fill=_TEXT_WHITE, anchor="ls")
+            draw.text((x, baseline_y), text, font=font, fill=_TEXT_WHITE, anchor="ls")
             bx = draw.textbbox((x, baseline_y), text, font=font, anchor="ls")
             x = bx[2]
         return img
@@ -223,7 +319,7 @@ class ClockCalendarWidget:
         ch = max(1, int(round(h * _CLOCK_CONTENT_SCALE)))
         content = self._rgba_clock_content(cw, ch)
         canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        # Right-align the glyph block: trailing segment (am/pm) hugs the span’s right edge (col 17 when anchored at 13).
+        # Right-align the glyph block: trailing segment (am/pm) hugs the span’s right edge.
         canvas.paste(content, (w - cw, 0), content)
         return canvas
 

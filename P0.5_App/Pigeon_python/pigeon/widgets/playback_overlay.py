@@ -9,8 +9,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.compositing import alpha_blend_bgra_over_bgr, scale_bgra_rgb
-from pigeon.design import rect_for_span_at_cell
+from pigeon.compositing import alpha_blend_bgra_over_bgr
+from pigeon.design import rect_for_span_at_cell, rect_for_span_top_right_at_cell
 from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold
 from pigeon.image_ui_protocol import load_image_bgra
 from pigeon.widgets.status_bar import DesignPatch
@@ -18,11 +18,24 @@ from pigeon.widgets.status_bar import DesignPatch
 # Service badge + audio lines (audioConfig): 10% smaller, centered in grid cells.
 AUDIO_CONFIG_SCALE = 0.9
 
+# Volume line: idle smaller type; boosted size clearly larger (readable animation without excess repaints).
+VOLUME_TEXT_FIT_H_BASE = 0.66
+VOLUME_TEXT_FIT_H_PEAK = 0.96
+# Quantization for overlay cache + ``pigeon_0_5`` skip-cache (smooth strength uses float between steps).
+VOLUME_TEXT_BOOST_SIG_STEPS = 400
+
 PATCH_LAYER_WORDMARK = "wordmark"
 PATCH_LAYER_STREAMING_BADGE = "streaming_badge"
 PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"
-# Idle UI: streaming badge only (receiver lines stay full brightness).
-IDLE_DIM_STREAMING_BADGE_RGB_SCALE = 0.1
+PATCH_LAYER_PAUSED_ROW = "paused_row"
+
+# Row 7, horizontally centered on grid column 10 (17 cells wide: cols 2–18).
+_PAUSED_ROW_TEXT = "paused"
+_PAUSED_ROW_SPAN_W = 17
+_PAUSED_ROW_SPAN_H = 1
+_PAUSED_ROW_GRID_ROW = 7
+_PAUSED_ROW_GRID_COL = 2
+_PAUSED_ROW_RGBA = (238, 240, 245, 242)
 
 
 def _receiver_audio_display_line(raw: object) -> str:
@@ -109,6 +122,24 @@ def _pigeon_wordmark_patch_bgra(w: int, h: int) -> np.ndarray:
     return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
 
 
+def pigeon_wordmark_design_patch() -> DesignPatch:
+    """Faint ``pigeon`` wordmark; same placement as in ``AudioConfig`` when wordmark is shown."""
+    wx, wy, ww, wh = rect_for_span_at_cell(
+        _PIGEON_WORDMARK_SPAN_W,
+        _PIGEON_WORDMARK_SPAN_H,
+        row_1based=_PIGEON_WORDMARK_ROW,
+        col_1based=_PIGEON_WORDMARK_COL,
+    )
+    return DesignPatch(
+        x=wx,
+        y=wy,
+        w=ww,
+        h=wh,
+        bgra=_pigeon_wordmark_patch_bgra(ww, wh),
+        layer=PATCH_LAYER_WORDMARK,
+    )
+
+
 def _text_patch_bgra(
     text: str,
     w: int,
@@ -165,7 +196,8 @@ def _image_contain_center_bgra(
 class AudioConfig:
     """
     Optional ``pigeon`` wordmark in grid [2,3]–[5,15] (hidden when TMDb backdrop artwork is showing);
-    row 8: optional streaming-service badge; up to three audio lines from ``receiver_state``
+    row 1: optional streaming-service badge with **top-right** on grid cell [1,17] (2-wide sits in cols 16–17);
+    up to three audio lines from ``receiver_state``
     (incoming, surround/config, volume); placeholder/unknown values are omitted.
     """
 
@@ -180,18 +212,18 @@ class AudioConfig:
     overlay_flags: dict[str, bool] = field(
         default_factory=lambda: {"hide_wordmark_for_artwork": False}
     )
+    # 0 = smallest volume type; 1 = emphasized (driven by pigeon_0_5 volume-change animation).
+    volume_text_boost_strength: float = 0.0
 
-    badge_row: int = 8
-    badge_col: int = 5
+    badge_row: int = 1
+    # Right edge of the badge aligns with the right edge of grid column 17 (see ``rect_for_span_top_right_at_cell``).
+    badge_top_right_col_1based: float = 18.0
     badge_span: tuple[int, int] = (2, 1)
     audio_row: int = 8
-    audio_col: int = 7
     audio_span_wide: int = 4
 
     _cached: list[DesignPatch] | None = field(default=None, repr=False)
-    _receiver_sig: tuple[str, str, str, bool, str, str, bool] | None = field(
-        default=None, init=False, repr=False
-    )
+    _receiver_sig: tuple[object, ...] | None = field(default=None, init=False, repr=False)
     _warned_badge_files: set[str] = field(default_factory=set, init=False, repr=False)
 
     def clear_cache(self) -> None:
@@ -219,9 +251,36 @@ class AudioConfig:
                 )
             )
 
+        if self.overlay_flags.get("show_paused_row"):
+            px, py, pw, ph = rect_for_span_at_cell(
+                _PAUSED_ROW_SPAN_W,
+                _PAUSED_ROW_SPAN_H,
+                row_1based=_PAUSED_ROW_GRID_ROW,
+                col_1based=_PAUSED_ROW_GRID_COL,
+            )
+            blits.append(
+                DesignPatch(
+                    x=px,
+                    y=py,
+                    w=pw,
+                    h=ph,
+                    bgra=_text_patch_bgra(
+                        _PAUSED_ROW_TEXT,
+                        pw,
+                        ph,
+                        align="center",
+                        fill_rgba=_PAUSED_ROW_RGBA,
+                    ),
+                    layer=PATCH_LAYER_PAUSED_ROW,
+                )
+            )
+
         bw, bh = self.badge_span
-        bx, by, bww, bhh = rect_for_span_at_cell(
-            bw, bh, row_1based=self.badge_row, col_1based=self.badge_col
+        bx, by, bww, bhh = rect_for_span_top_right_at_cell(
+            bw,
+            bh,
+            row_1based=self.badge_row,
+            col_right_1based=float(self.badge_top_right_col_1based),
         )
         bww_i = max(1, int(round(bww * AUDIO_CONFIG_SCALE)))
         bhh_i = max(1, int(round(bhh * AUDIO_CONFIG_SCALE)))
@@ -233,59 +292,32 @@ class AudioConfig:
         svc_label = str(sb.get("label") or "").strip()
         if show and (fname or svc_label):
             badge_path = Path(self.assets_dir) / fname if fname else None
-            has_img = bool(fname and badge_path and badge_path.is_file())
-            if fname and not has_img and fname not in self._warned_badge_files:
+            has_file = bool(fname and badge_path and badge_path.is_file())
+            if fname and not has_file and fname not in self._warned_badge_files:
                 self._warned_badge_files.add(fname)
                 import sys
 
                 sys.stderr.write(f"pigeon: streaming badge not found — {badge_path}\n")
-            if has_img and svc_label:
-                h_img = max(1, int(round(bhh_i * 0.68)))
-                h_txt = max(1, bhh_i - h_img)
-                raw = load_image_bgra(badge_path)
-                if raw is not None:
-                    patch = _image_contain_center_bgra(raw, bww_i, h_img)
-                    blits.append(
-                        DesignPatch(
-                            x=bx_i,
-                            y=by_i,
-                            w=bww_i,
-                            h=h_img,
-                            bgra=patch,
-                            layer=PATCH_LAYER_STREAMING_BADGE,
-                        )
-                    )
-                lbl = _text_patch_bgra(
-                    svc_label,
-                    bww_i,
-                    h_txt,
-                    align="center",
-                    fill_rgba=(220, 220, 220, 255),
-                )
+            img_bgra = load_image_bgra(badge_path) if has_file else None
+            if has_file and img_bgra is None and fname not in self._warned_badge_files:
+                self._warned_badge_files.add(fname)
+                import sys
+
+                sys.stderr.write(f"pigeon: streaming badge unreadable — {badge_path}\n")
+
+            # Prefer logo image alone when the asset loads; text is fallback when there is no file.
+            if img_bgra is not None:
+                patch = _image_contain_center_bgra(img_bgra, bww_i, bhh_i)
                 blits.append(
                     DesignPatch(
                         x=bx_i,
-                        y=by_i + h_img,
+                        y=by_i,
                         w=bww_i,
-                        h=h_txt,
-                        bgra=lbl,
+                        h=bhh_i,
+                        bgra=patch,
                         layer=PATCH_LAYER_STREAMING_BADGE,
                     )
                 )
-            elif has_img:
-                raw = load_image_bgra(badge_path)
-                if raw is not None:
-                    patch = _image_contain_center_bgra(raw, bww_i, bhh_i)
-                    blits.append(
-                        DesignPatch(
-                            x=bx_i,
-                            y=by_i,
-                            w=bww_i,
-                            h=bhh_i,
-                            bgra=patch,
-                            layer=PATCH_LAYER_STREAMING_BADGE,
-                        )
-                    )
             elif svc_label:
                 lbl = _text_patch_bgra(
                     svc_label,
@@ -305,11 +337,12 @@ class AudioConfig:
                     )
                 )
 
-        ax, ay, aww, ahh = rect_for_span_at_cell(
+        # Right edge of the audio strip aligns with the right edge of grid column 17 (col_right_1based=18).
+        ax, ay, aww, ahh = rect_for_span_top_right_at_cell(
             self.audio_span_wide,
             1,
             row_1based=self.audio_row,
-            col_1based=self.audio_col,
+            col_right_1based=18,
         )
         aw_i = max(1, int(round(aww * AUDIO_CONFIG_SCALE)))
         ah_i = max(1, int(round(ahh * AUDIO_CONFIG_SCALE)))
@@ -328,19 +361,45 @@ class AudioConfig:
             texts.append(line3)
         if texts:
             n = len(texts)
-            base = ah_i // n
-            rem = ah_i % n
-            heights: list[int] = []
-            for i in range(n):
-                hi = base + (1 if i < rem else 0)
-                heights.append(max(1, hi))
-            delta = ah_i - sum(heights)
-            if delta and heights:
-                heights[-1] = max(1, heights[-1] + delta)
-            # One short line in a tall slot can over-scale glyphs; keep cap ~one original row.
-            audio_text_fit_cap = max(4, ah_i // 3)
+            has_volume = bool(line3) and texts[-1] == line3
+            heights: list[int]
+            if has_volume and n > 1:
+                # Give the volume line a majority of row 8; split the remainder for incoming/config.
+                vol_h = max(1, int(round(ah_i * 0.58)))
+                rest = max(1, ah_i - vol_h)
+                if n == 2:
+                    heights = [rest, vol_h]
+                else:
+                    h_a = max(1, rest // 2)
+                    h_b = max(1, rest - h_a)
+                    heights = [h_a, h_b, vol_h]
+                drift = ah_i - sum(heights)
+                if drift and heights:
+                    heights[-1] = max(1, heights[-1] + drift)
+            else:
+                base = ah_i // n
+                rem = ah_i % n
+                heights = []
+                for i in range(n):
+                    hi = base + (1 if i < rem else 0)
+                    heights.append(max(1, hi))
+                delta = ah_i - sum(heights)
+                if delta and heights:
+                    heights[-1] = max(1, heights[-1] + delta)
+            # Incoming/config: avoid comically huge type when a line gets a tall slice.
+            incoming_config_fit_cap = max(4, ah_i // 3)
             y_off = ay_i
             for text, h in zip(texts, heights):
+                is_volume = bool(line3) and text == line3
+                # Volume: idle slightly smaller than before; scales up with ``volume_text_boost_strength``.
+                if is_volume:
+                    b = max(0.0, min(1.0, float(self.volume_text_boost_strength)))
+                    fit_ratio = VOLUME_TEXT_FIT_H_BASE + (
+                        VOLUME_TEXT_FIT_H_PEAK - VOLUME_TEXT_FIT_H_BASE
+                    ) * b
+                    fit_h = max(4, int(round(h * fit_ratio)))
+                else:
+                    fit_h = incoming_config_fit_cap
                 blits.append(
                     DesignPatch(
                         x=ax_i,
@@ -351,8 +410,8 @@ class AudioConfig:
                             text,
                             aw_i,
                             h,
-                            align="left",
-                            fit_max_h=audio_text_fit_cap,
+                            align="right",
+                            fit_max_h=fit_h,
                         ),
                         layer=PATCH_LAYER_RECEIVER_AUDIO,
                     )
@@ -364,6 +423,8 @@ class AudioConfig:
     def design_blits(self) -> list[DesignPatch]:
         sb = self.service_badge
         hide_wm = bool(self.overlay_flags.get("hide_wordmark_for_artwork"))
+        show_paused = bool(self.overlay_flags.get("show_paused_row"))
+        vb = max(0.0, min(1.0, float(self.volume_text_boost_strength)))
         sig = (
             str(self.receiver_state.get("incoming", "")),
             str(self.receiver_state.get("config", "")),
@@ -372,6 +433,8 @@ class AudioConfig:
             str(sb.get("filename") or ""),
             str(sb.get("label") or ""),
             hide_wm,
+            show_paused,
+            int(round(vb * VOLUME_TEXT_BOOST_SIG_STEPS)),
         )
         if self._cached is not None and self._receiver_sig == sig:
             return self._cached
@@ -379,11 +442,8 @@ class AudioConfig:
         self._cached = self._build()
         return self._cached
 
-    def render(self, canvas_bgr: np.ndarray, *, idle_dim_strength: float = 0.0) -> None:
+    def render(self, canvas_bgr: np.ndarray) -> None:
         ch, cw = canvas_bgr.shape[:2]
-        badge_scale = 1.0 + (IDLE_DIM_STREAMING_BADGE_RGB_SCALE - 1.0) * float(
-            max(0.0, min(1.0, idle_dim_strength))
-        )
         for p in self.design_blits():
             x, y, w, h = p.x, p.y, p.w, p.h
             if w < 1 or h < 1:
@@ -398,8 +458,6 @@ class AudioConfig:
             sy0 = y0 - y
             roi = canvas_bgr[y0:y1, x0:x1]
             patch = p.bgra[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
-            if p.layer == PATCH_LAYER_STREAMING_BADGE and badge_scale < 0.999:
-                patch = scale_bgra_rgb(patch, badge_scale)
             roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
 
 

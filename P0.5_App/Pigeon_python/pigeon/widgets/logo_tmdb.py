@@ -35,6 +35,7 @@ class TmdbLogoWidget:
         self._span = (max(1, int(span_wide)), max(1, int(span_tall)))
         self._fit_scale = max(0.2, min(1.0, float(fit_scale)))
         self._cached_title_key: str | None = None
+        self._cached_display_title: str | None = None
         self._cached_patch_bgra: np.ndarray | None = None
 
     @property
@@ -64,6 +65,7 @@ class TmdbLogoWidget:
 
     def clear_cache(self) -> None:
         self._cached_title_key = None
+        self._cached_display_title = None
         self._cached_patch_bgra = None
 
     def _pick_font_path(self) -> str:
@@ -131,10 +133,16 @@ class TmdbLogoWidget:
 
     def bgra_patch_for_title(self, title_key_str: str, *, display_title: str | None = None) -> np.ndarray:
         wx, wy, w, h = self.design_rect()
-        if self._cached_patch_bgra is not None and self._cached_title_key == title_key_str:
+        disp = display_title or ""
+        if (
+            self._cached_patch_bgra is not None
+            and self._cached_title_key == title_key_str
+            and self._cached_display_title == disp
+        ):
             return self._cached_patch_bgra
         self._cached_patch_bgra = self._render_logo_patch(title_key_str, w, h, display_title=display_title)
         self._cached_title_key = title_key_str
+        self._cached_display_title = disp
         return self._cached_patch_bgra
 
     def render(self, canvas_bgr: np.ndarray, *, title_key_str: str | None, display_title: str | None = None) -> None:

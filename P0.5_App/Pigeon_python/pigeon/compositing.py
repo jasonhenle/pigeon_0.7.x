@@ -6,6 +6,31 @@ import cv2
 import numpy as np
 
 
+def bgr_to_red_monochrome_luma(bgr: np.ndarray) -> np.ndarray:
+    """Rec. 601 luma mapped to the red channel only (BGR): dark → black, bright → red."""
+    if bgr.ndim != 3 or bgr.shape[2] < 3:
+        return bgr
+    b = bgr[:, :, 0].astype(np.float32)
+    g = bgr[:, :, 1].astype(np.float32)
+    r = bgr[:, :, 2].astype(np.float32)
+    y = 0.114 * b + 0.587 * g + 0.299 * r
+    y_u8 = np.clip(y, 0, 255).astype(np.uint8)
+    out = np.zeros_like(bgr)
+    out[:, :, 2] = y_u8
+    return out
+
+
+def lerp_bgr_red_monochrome(bgr: np.ndarray, strength: float) -> np.ndarray:
+    """Blend ``bgr`` toward luma→red monochrome; ``strength`` 0 = original, 1 = full mono."""
+    s = float(max(0.0, min(1.0, strength)))
+    if s <= 0.0:
+        return bgr
+    red = bgr_to_red_monochrome_luma(bgr)
+    if s >= 1.0 - 1e-6:
+        return red
+    return cv2.addWeighted(bgr, 1.0 - s, red, s, 0)
+
+
 def scale_bgra_rgb(bgra: np.ndarray, rgb_factor: float) -> np.ndarray:
     """Scale BGR channels only; alpha unchanged. Used for idle-dim per-widget tuning."""
     f = float(rgb_factor)
