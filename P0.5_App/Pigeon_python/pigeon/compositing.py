@@ -6,6 +6,19 @@ import cv2
 import numpy as np
 
 
+def cv_resize_interp(src_w: int, src_h: int, dst_w: int, dst_h: int) -> int:
+    """INTER_AREA when shrinking, LANCZOS4 when enlarging, CUBIC near 1:1 — less aliasing than LINEAR."""
+    if src_w < 1 or src_h < 1 or dst_w < 1 or dst_h < 1:
+        return cv2.INTER_LINEAR
+    sa = float(src_w * src_h)
+    da = float(dst_w * dst_h)
+    if da > sa * 1.01:
+        return cv2.INTER_LANCZOS4
+    if da < sa * 0.99:
+        return cv2.INTER_AREA
+    return cv2.INTER_CUBIC
+
+
 def bgr_to_red_monochrome_luma(bgr: np.ndarray) -> np.ndarray:
     """Rec. 601 luma mapped to the red channel only (BGR): dark → black, bright → red."""
     if bgr.ndim != 3 or bgr.shape[2] < 3:
@@ -61,7 +74,11 @@ def scale_height_and_center_crop(image: np.ndarray, target_w: int, target_h: int
     src_h, src_w = image.shape[:2]
     scale = target_h / float(src_h)
     scaled_w = int(round(src_w * scale))
-    resized = cv2.resize(image, (scaled_w, target_h), interpolation=cv2.INTER_AREA)
+    resized = cv2.resize(
+        image,
+        (scaled_w, target_h),
+        interpolation=cv_resize_interp(src_w, src_h, scaled_w, target_h),
+    )
 
     if scaled_w < target_w:
         pad = target_w - scaled_w
@@ -102,7 +119,9 @@ def scale_uniform_letterbox(image: np.ndarray, target_w: int, target_h: int) -> 
     scale = min(target_w / float(src_w), target_h / float(src_h))
     nw = max(1, min(target_w, int(round(src_w * scale))))
     nh = max(1, min(target_h, int(round(src_h * scale))))
-    resized = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_AREA)
+    resized = cv2.resize(
+        image, (nw, nh), interpolation=cv_resize_interp(src_w, src_h, nw, nh)
+    )
 
     pad_w = target_w - nw
     pad_h = target_h - nh

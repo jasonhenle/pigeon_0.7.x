@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview a widget in its shell: full 5126×2160 or cropped to grid span (for building assets).
+"""Preview a widget in its shell: full design canvas or cropped to grid span (for building assets).
 
 Examples:
   python3 pigeon_widget_preview.py --widget clock

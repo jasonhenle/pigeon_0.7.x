@@ -1,6 +1,6 @@
-"""Canonical 2.39:1 design resolution and 19×8 grid math (5126×2160).
+"""Canonical 2:1 design resolution and 19×8 grid math (800×400).
 
-Matches P0.5 docs: 152 boxes (19 variable × 8 fixed), square cells centered on canvas.
+152 boxes (19 × 8), square cells centered on canvas. Matches the live Tk window / composite cap.
 """
 
 from __future__ import annotations
@@ -9,9 +9,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# Hypothetical maximum Pigeon design canvas (matches your asset pipeline).
-DESIGN_W = 5126
-DESIGN_H = 2160
+# Design canvas = nominal display / internal composite (performance target).
+DESIGN_W = 800
+DESIGN_H = 400
 
 GRID_COLS = 19
 GRID_ROWS = 8
@@ -60,7 +60,7 @@ def rect_for_span_at_cell(
     squares_tall: int,
     *,
     row_1based: int | float,
-    col_1based: int,
+    col_1based: int | float,
     width: int = DESIGN_W,
     height: int = DESIGN_H,
     cols: int = GRID_COLS,
@@ -70,10 +70,10 @@ def rect_for_span_at_cell(
     Pixel rectangle (x, y, w, h) for a widget whose **top-left** sits on grid cell [row, col] (1-based).
 
     squares_wide / squares_tall = span in grid cells.
-    ``row_1based`` may be fractional (e.g. 6.5 → half a cell higher than row 7).
+    ``row_1based`` and ``col_1based`` may be fractional (half-cell nudges).
     """
     g = get_grid_geometry(width=width, height=height, cols=cols, rows=rows)
-    x = g.x0 + (col_1based - 1) * g.cell
+    x = int(round(g.x0 + (float(col_1based) - 1.0) * g.cell))
     y = int(round(g.y0 + (float(row_1based) - 1.0) * g.cell))
     w = squares_wide * g.cell
     h = squares_tall * g.cell

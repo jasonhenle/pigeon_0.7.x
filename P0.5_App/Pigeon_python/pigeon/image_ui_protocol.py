@@ -1,8 +1,7 @@
 """
 Image preparation for Pigeon UI widgets.
 
-Future window caps (documented): landscape up to 5126×2160, portrait up to 2160×5126.
-Design resolution for layout remains in pigeon.design.
+Design resolution and documented UI caps follow ``pigeon.design`` (800×400 landscape baseline).
 
 Poster master: 1800×2700 BGRA — uniform width 1800, vertical letterbox (transparent) or center-crop
 if content height exceeds 2700. Widget display scales the master by fixed factors per poster size.
@@ -17,25 +16,29 @@ import cv2
 import numpy as np
 
 from pigeon.app_state import auto_delete_pulled_media
+from pigeon.compositing import cv_resize_interp
 from pigeon.design import DESIGN_H, DESIGN_W, rect_for_span_at_cell
 from pigeon.media_folders import ensure_reformatted_media_dir, pigeon_pulled_media_dir
 from pigeon.stage_background import get_stage_bgr
 
-# Documented future UI bounds (not enforced here yet)
-MAX_UI_LANDSCAPE_W, MAX_UI_LANDSCAPE_H = 5126, 2160
-MAX_UI_PORTRAIT_W, MAX_UI_PORTRAIT_H = 2160, 5126
+MAX_UI_LANDSCAPE_W, MAX_UI_LANDSCAPE_H = DESIGN_W, DESIGN_H
+MAX_UI_PORTRAIT_W, MAX_UI_PORTRAIT_H = DESIGN_H, DESIGN_W
 
 POSTER_MASTER_W = 1800
 POSTER_MASTER_H = 2700
 
 # TMDb backdrop: pull → uniform height BACKDROP_MASTER_HEIGHT, then place on design canvas (not full-bleed).
-BACKDROP_MASTER_HEIGHT = 2160
+BACKDROP_MASTER_HEIGHT = DESIGN_H
 # Design grid (1-based): patch top-left = top-left of this cell, bottom-right = bottom-right of this cell.
 BACKDROP_PATCH_TL_ROW_1BASED = 1
 # Full grid width (cols 1–19): fewer stage-colored side margins around the still.
 BACKDROP_PATCH_TL_COL_1BASED = 1
 BACKDROP_PATCH_BR_ROW_1BASED = 8
 BACKDROP_PATCH_BR_COL_1BASED = 19
+
+# Streaming app logo fallback during clock saver (view 3 or idle saver): align top to this grid row.
+APP_LOGO_CLOCK_SAVER_TOP_ROW_1BASED = 2
+APP_LOGO_CLOCK_SAVER_OPACITY = 0.2
 
 
 class PosterWidgetSize(Enum):
@@ -139,7 +142,7 @@ def poster_master_bgra_from_source(img_bgr_or_bgra: np.ndarray) -> np.ndarray:
     scale = POSTER_MASTER_W / float(w0)
     nh = max(1, int(round(h0 * scale)))
     nw = POSTER_MASTER_W
-    resized = cv2.resize(src, (nw, nh), interpolation=cv2.INTER_AREA)
+    resized = cv2.resize(src, (nw, nh), interpolation=cv_resize_interp(w0, h0, nw, nh))
 
     out = np.zeros((POSTER_MASTER_H, POSTER_MASTER_W, 4), dtype=np.uint8)
     if nh >= POSTER_MASTER_H:
@@ -162,7 +165,7 @@ def scale_master_for_widget_size(master_bgra: np.ndarray, size: PosterWidgetSize
         return master_bgra
     tw = max(1, int(round(POSTER_MASTER_W * f)))
     th = max(1, int(round(mh * f)))
-    return cv2.resize(master_bgra, (tw, th), interpolation=cv2.INTER_AREA)
+    return cv2.resize(master_bgra, (tw, th), interpolation=cv_resize_interp(mw, mh, tw, th))
 
 
 def bgra_to_bgr_on_black(bgra: np.ndarray) -> np.ndarray:
@@ -194,8 +197,7 @@ def bgr_scale_uniform_height(img_bgr: np.ndarray, target_h: int) -> np.ndarray:
     scale = target_h / float(h0)
     tw = max(1, int(round(w0 * scale)))
     th = target_h
-    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    return cv2.resize(img_bgr, (tw, th), interpolation=interp)
+    return cv2.resize(img_bgr, (tw, th), interpolation=cv_resize_interp(w0, h0, tw, th))
 
 
 def load_bgr(path: Path | str) -> np.ndarray | None:
@@ -237,8 +239,7 @@ def _bgr_uniform_fit_letterbox_center(
     scale = min(target_w / float(sw), target_h / float(sh))
     nw = max(1, int(round(sw * scale)))
     nh = max(1, int(round(sh * scale)))
-    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    resized = cv2.resize(bgr, (nw, nh), interpolation=interp)
+    resized = cv2.resize(bgr, (nw, nh), interpolation=cv_resize_interp(sw, sh, nw, nh))
     x0 = (target_w - nw) // 2
     y0 = (target_h - nh) // 2
     out[y0 : y0 + nh, x0 : x0 + nw] = resized
@@ -282,8 +283,7 @@ def _bgr_uniform_cover_center_crop(bgr: np.ndarray, target_w: int, target_h: int
     scale = max(target_w / float(sw), target_h / float(sh))
     nw = max(1, int(round(sw * scale)))
     nh = max(1, int(round(sh * scale)))
-    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    resized = cv2.resize(bgr, (nw, nh), interpolation=interp)
+    resized = cv2.resize(bgr, (nw, nh), interpolation=cv_resize_interp(sw, sh, nw, nh))
     x0 = max(0, (nw - target_w) // 2)
     y0 = max(0, (nh - target_h) // 2)
     return resized[y0 : y0 + target_h, x0 : x0 + target_w].copy()
@@ -311,22 +311,64 @@ def _paste_bgr_patch(
     canvas[dst_y0:dst_y1, dst_x0:dst_x1] = patch[src_y0:src_y1, src_x0:src_x1]
 
 
+def _app_logo_clock_saver_design_layer_bgr(master_bgr: np.ndarray) -> np.ndarray:
+    """Black design canvas; logo top at grid row 2, horizontally centered, ``APP_LOGO_CLOCK_SAVER_OPACITY``."""
+    canvas = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
+    if master_bgr is None or master_bgr.size == 0 or master_bgr.ndim != 3 or master_bgr.shape[2] != 3:
+        return canvas
+    sh, sw = int(master_bgr.shape[0]), int(master_bgr.shape[1])
+    if sh < 1 or sw < 1:
+        return canvas
+    r2 = rect_for_span_at_cell(
+        1,
+        1,
+        row_1based=APP_LOGO_CLOCK_SAVER_TOP_ROW_1BASED,
+        col_1based=1,
+    )
+    y_top = int(r2[1])
+    box_w = DESIGN_W
+    box_h = max(1, DESIGN_H - y_top)
+    scale = min(box_w / float(sw), box_h / float(sh))
+    nw = max(1, int(round(sw * scale)))
+    nh = max(1, int(round(sh * scale)))
+    resized = cv2.resize(
+        master_bgr, (nw, nh), interpolation=cv_resize_interp(sw, sh, nw, nh)
+    )
+    x0 = max(0, (DESIGN_W - nw) // 2)
+    y1 = min(DESIGN_H, y_top + nh)
+    nh_use = y1 - y_top
+    if nh_use < 1:
+        return canvas
+    if nh_use < resized.shape[0]:
+        resized = resized[:nh_use, :, :]
+    dim = (resized.astype(np.float32) * float(APP_LOGO_CLOCK_SAVER_OPACITY)).astype(np.uint8)
+    canvas[y_top:y1, x0 : x0 + nw] = dim
+    return canvas
+
+
 def build_backdrop_design_layer_bgr(
     master_h2160_bgr: np.ndarray,
     *,
     app_logo_letterbox_fit: bool = False,
+    app_logo_clock_saver_style: bool = False,
 ) -> np.ndarray:
     """
     ``DESIGN_W``×``DESIGN_H`` canvas with backdrop.
 
     The patch rectangle spans from the top-left of grid cell ``[TL row, TL col]`` to the bottom-right
-    of grid cell ``[BR row, BR col]`` (1-based). The 2160-tall master is scaled with aspect preserved.
+    of grid cell ``[BR row, BR col]`` (1-based). The height-normalized master is scaled with aspect preserved.
 
     Default: stage-colored canvas; image **covers** the patch (center-crop), matching TMDb stills.
 
     ``app_logo_letterbox_fit``: full canvas and patch margins are **black**; the image **fits** inside
     the patch (letterbox) so wide/tall app logos are never cropped.
+
+    ``app_logo_clock_saver_style`` (with ``app_logo_letterbox_fit``): ignore the TMDb patch; center the
+    logo on the design canvas with its **top** on grid row ``APP_LOGO_CLOCK_SAVER_TOP_ROW_1BASED`` and
+    multiply RGB by ``APP_LOGO_CLOCK_SAVER_OPACITY``.
     """
+    if app_logo_letterbox_fit and app_logo_clock_saver_style:
+        return _app_logo_clock_saver_design_layer_bgr(master_h2160_bgr)
     if app_logo_letterbox_fit:
         canvas = np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
     else:
@@ -374,7 +416,11 @@ def _fit_bgr_scale_height_center_crop_or_pad(frame_bgr: np.ndarray, target_w: in
     scale = target_h / float(src_h)
     scaled_w = int(round(src_w * scale))
     scaled_h = target_h
-    resized = cv2.resize(frame_bgr, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(
+        frame_bgr,
+        (scaled_w, scaled_h),
+        interpolation=cv_resize_interp(src_w, src_h, scaled_w, scaled_h),
+    )
     if scaled_w == target_w:
         return resized
     if scaled_w < target_w:
@@ -395,6 +441,7 @@ def backdrop_scene_bgr_for_display(
     target_h: int,
     *,
     app_logo_letterbox_fit: bool = False,
+    app_logo_clock_saver_style: bool = False,
 ) -> np.ndarray:
     """
     Build the design-resolution backdrop layer (stage or black + placed patch), then scale/crop to ``target_w``×``target_h``
@@ -403,7 +450,9 @@ def backdrop_scene_bgr_for_display(
     if target_w < 1 or target_h < 1:
         return np.zeros((max(1, target_h), max(1, target_w), 3), dtype=np.uint8)
     design = build_backdrop_design_layer_bgr(
-        master_h2160_bgr, app_logo_letterbox_fit=app_logo_letterbox_fit
+        master_h2160_bgr,
+        app_logo_letterbox_fit=app_logo_letterbox_fit,
+        app_logo_clock_saver_style=app_logo_clock_saver_style,
     )
     return _fit_bgr_scale_height_center_crop_or_pad(design, target_w, target_h)
 

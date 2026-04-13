@@ -259,6 +259,22 @@ def _tmdb_query_from_playing(playing) -> str | None:
     )
 
 
+def _prefer_pyatv_media_type_only(playing) -> str:
+    """
+    TMDb axis implied only by pyatv ``media_type`` (no episode/series heuristics).
+
+    Used for debug: e.g. ``Video`` → ``movie`` while fetch ``prefer`` may be ``auto`` to search both endpoints.
+    """
+    from pyatv.const import MediaType
+
+    media_type = getattr(playing, "media_type", None)
+    if media_type == MediaType.TV:
+        return "tv"
+    if media_type == MediaType.Video:
+        return "movie"
+    return "auto"
+
+
 def _query_preference_from_playing(playing) -> str:
     from pyatv.const import MediaType
 
@@ -340,9 +356,7 @@ def _query_preference_from_playing(playing) -> str:
             and not is_degenerate_tmdb_query(q_res)
         ):
             return "tv"
-    # Feature films / streaming playback are often reported as Video, not Unknown.
-    if media_type == MediaType.Video:
-        return "movie"
+    # Video / Unknown without TV signals: search both TMDb movie and TV; popularity picks the hit.
     return "auto"
 
 
@@ -350,6 +364,7 @@ def _playing_metadata(playing) -> dict[str, object]:
     return {
         "query": _tmdb_query_from_playing(playing),
         "prefer": _query_preference_from_playing(playing),
+        "prefer_pyatv_media": _prefer_pyatv_media_type_only(playing),
         "title": getattr(playing, "title", None),
         "series_name": getattr(playing, "series_name", None),
         "artist": getattr(playing, "artist", None),
@@ -1134,14 +1149,19 @@ def fetch_now_playing_info_for_device(
     )
 
 
-async def _async_send_play_pause_to_device(
+async def _async_send_remote_method_to_device(
     *,
     device_identifier: str,
     device_address: str,
     scan_timeout_s: int,
+    method_name: str,
 ) -> tuple[bool, str]:
-    """Connect like metadata fetch and send one ``play_pause`` (Siri Remote) command."""
+    """Connect like metadata fetch and call ``remote_control.<method_name>()`` once."""
     import pyatv
+
+    m = (method_name or "").strip()
+    if not m:
+        return False, "No remote method."
 
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     loop = asyncio.get_running_loop()
@@ -1167,8 +1187,13 @@ async def _async_send_play_pause_to_device(
         atv = None
         try:
             atv = await _connect_with_protocol(pyatv, conf, loop, storage, protocol)
-            await atv.remote_control.play_pause()
-            return True, f'Play/pause sent to "{name}".'
+            fn = getattr(atv.remote_control, m, None)
+            if fn is None or not callable(fn):
+                return False, f'Remote has no "{m}" on "{name}".'
+            out = fn()
+            if asyncio.iscoroutine(out):
+                await out
+            return True, f'"{m}" sent to "{name}".'
         except Exception as e:
             last_err = str(e)
         finally:
@@ -1178,7 +1203,45 @@ async def _async_send_play_pause_to_device(
                 except Exception:
                     pass
 
-    return False, last_err or "Could not send play/pause to Apple TV."
+    return False, last_err or f'Could not send "{m}" to Apple TV.'
+
+
+async def _async_send_play_pause_to_device(
+    *,
+    device_identifier: str,
+    device_address: str,
+    scan_timeout_s: int,
+) -> tuple[bool, str]:
+    return await _async_send_remote_method_to_device(
+        device_identifier=device_identifier,
+        device_address=device_address,
+        scan_timeout_s=scan_timeout_s,
+        method_name="play_pause",
+    )
+
+
+def send_remote_method_to_device(
+    *,
+    device_identifier: str,
+    device_address: str,
+    method_name: str,
+    scan_timeout_s: int = 8,
+) -> tuple[bool, str]:
+    """Blocking: one pyatv ``RemoteControl`` method (e.g. ``volume_up``, ``menu``)."""
+    try:
+        _ensure_pyatv()
+    except ImportError:
+        return False, "The `pyatv` package is not installed. From Pigeon_python: pip install pyatv"
+    if not (device_identifier or "").strip():
+        return False, "No Apple TV selected."
+    return _new_loop_run(
+        _async_send_remote_method_to_device(
+            device_identifier=device_identifier.strip(),
+            device_address=(device_address or device_identifier).strip(),
+            scan_timeout_s=scan_timeout_s,
+            method_name=method_name.strip(),
+        )
+    )
 
 
 def send_play_pause_to_device(

@@ -2,7 +2,7 @@
 
 Each patch is an RGBA texture: areas outside the glyphs are **fully transparent** (alpha 0) — there is no solid
 black plate behind the whole widget rectangle. Text is drawn in white with an opaque black stroke and a
-semi-transparent tinted shadow; global idle opacity (``CLOCK_SAVER_DIM_OPACITY``) scales all alphas together.
+semi-transparent tinted shadow; global idle opacity scales alphas (time and date can use separate opacities).
 """
 
 from __future__ import annotations
@@ -273,6 +273,8 @@ def clock_saver_composite_bgra(
     *,
     shadow_bgr: tuple[int, int, int] | None,
     layer_opacity: float = 1.0,
+    time_layer_opacity: float | None = None,
+    date_layer_opacity: float | None = None,
     clock_anchor_row: int = 1,
     clock_anchor_col: int = 13,
 ) -> tuple[
@@ -284,15 +286,19 @@ def clock_saver_composite_bgra(
 
     1. **Time** — full grid width, starting row 3 (height ``_CLOCK_SAVER_TIME_HEIGHT_CELLS`` cells).
     2. **Date** — month + day in the same 5×2 rect as ``ClockCalendarWidget`` at ``(clock_anchor_row, clock_anchor_col)``.
+
+    If ``time_layer_opacity`` / ``date_layer_opacity`` are omitted, both use ``layer_opacity``.
     """
+    t_op = float(layer_opacity if time_layer_opacity is None else time_layer_opacity)
+    d_op = float(layer_opacity if date_layer_opacity is None else date_layer_opacity)
     time_pack = _time_bgra_full_width_band(
         shadow_bgr=shadow_bgr,
-        layer_opacity=layer_opacity,
+        layer_opacity=t_op,
     )
     date_pack = _date_bgra_clock_widget_rect(
         anchor_row=clock_anchor_row,
         anchor_col=clock_anchor_col,
         shadow_bgr=shadow_bgr,
-        layer_opacity=layer_opacity,
+        layer_opacity=d_op,
     )
     return time_pack, date_pack

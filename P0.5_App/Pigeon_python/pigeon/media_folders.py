@@ -8,6 +8,9 @@ from pathlib import Path
 
 from pigeon.layout_paths import pigeon_python_dir
 
+# Cap pigeonPulledMedia file count (oldest by mtime removed first).
+PULLED_MEDIA_MAX_FILES = 20
+
 
 def pigeon_app_dir() -> Path:
     """Directory containing Pigeon_python (e.g. P0.5_App)."""
@@ -127,6 +130,29 @@ def consolidate_legacy_pigeondata_media_folders() -> list[str]:
     except OSError:
         pass
     return logs
+
+
+def trim_pulled_media_dir(*, max_files: int = PULLED_MEDIA_MAX_FILES) -> None:
+    """Keep at most ``max_files`` regular files in pigeonPulledMedia; delete oldest (mtime) first."""
+    if max_files < 1:
+        return
+    d = pigeon_pulled_media_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    try:
+        files = [p for p in d.iterdir() if p.is_file()]
+    except OSError:
+        return
+    if len(files) <= max_files:
+        return
+    files.sort(key=lambda p: p.stat().st_mtime)
+    for p in files[: len(files) - max_files]:
+        try:
+            p.unlink()
+        except OSError:
+            pass
 
 
 def purge_directory_contents(path: Path) -> tuple[bool, str]:

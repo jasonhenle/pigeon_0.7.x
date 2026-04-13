@@ -117,6 +117,7 @@ from pigeon.media_folders import (
     pigeon_reformatted_media_dir,
     purge_directory_contents,
 )
+from pigeon.compositing import cv_resize_interp
 from pigeon.stage_background import bgr_to_tk_hex, get_stage_bgr, set_stage_bgr
 
 try:
@@ -156,11 +157,17 @@ try:
     )
     from pigeon.widgets.poster_art import prepare_default_poster_at_startup
     from pigeon.splash_sequence import (
+        FALLBACK_SPLASH_FRAME_COUNT,
+        SPLASH_FADE_OUT_FRAMES,
         SPLASH_FPS,
         SPLASH_MAX_DURATION_S,
+        apply_splash_global_alpha,
+        bgra_to_pil_rgba,
+        builtin_splash_bgra_frame,
         composite_splash_over_bg,
         list_splash_png_paths,
         load_splash_bgra,
+        splash_end_fade_factor,
     )
 
     try:
@@ -194,8 +201,40 @@ except ImportError:
     _PIGEON_EXT = False
 
 
-WINDOW_W = 800
-WINDOW_H = 400
+# Default Tk geometry: 2:1 aspect, ~30% larger than the legacy 800×400 launch size.
+_LAUNCH_WINDOW_SCALE = 1.3
+WINDOW_W = int(round(800 * _LAUNCH_WINDOW_SCALE))
+WINDOW_H = int(round(400 * _LAUNCH_WINDOW_SCALE))
+
+
+def _resize_bgr_to_dims(dst_w: int, dst_h: int, src: np.ndarray) -> np.ndarray:
+    """Resize to window/cap size; LANCZOS4 when upscaling, AREA when downscaling."""
+    sh, sw = int(src.shape[0]), int(src.shape[1])
+    if sw == dst_w and sh == dst_h:
+        return src
+    return cv2.resize(
+        src,
+        (dst_w, dst_h),
+        interpolation=cv_resize_interp(sw, sh, dst_w, dst_h),
+    )
+
+
+def _composite_cap_dims(display_w: int, display_h: int) -> tuple[int, int, bool]:
+    """
+    Internal composite size for video + mic EQ + UI blits: fit inside WINDOW_W×WINDOW_H
+    while preserving the live window aspect, then upscale once for Tk. Avoids huge buffers
+    when the window is resized (previously only width was capped).
+    """
+    dw = max(1, int(display_w))
+    dh = max(1, int(display_h))
+    s = min(WINDOW_W / float(dw), WINDOW_H / float(dh))
+    if s >= 1.0:
+        return dw, dh, False
+    cap_w = max(1, int(round(dw * s)))
+    cap_h = max(1, int(round(dh * s)))
+    return cap_w, cap_h, True
+
+
 # App-logo backdrop when TMDb has no art: letterbox canvas is at most this fraction of the live window.
 APP_LOGO_FALLBACK_MAX_RESOLUTION_FRACTION = 0.9
 # Reserved strip at bottom when developer mode is on (must not sit under the full-bleed video label).
@@ -208,9 +247,15 @@ class DevPhase(IntEnum):
     SETTINGS = 2
 
 
-# Compositing (video + widget blits) above this width uses a smaller buffer, then upscales once for Tk.
-# Keeps playback smooth when the window is dragged very large.
-MAX_FAST_COMPOSITE_W = 1280
+class DisplayView(IntEnum):
+    """User-selectable display layout (keys 1–5)."""
+
+    ONE = 1
+    TWO = 2
+    THREE = 3
+    FOUR = 4
+    FIVE = 5
+
 
 # TMDb static backdrop scene (not paused-video dim 0.3).
 BACKDROP_BRIGHTNESS = 0.8
@@ -247,8 +292,7 @@ ATV_IDLE_MONO_ANIM_S = 2.0
 # Also turns on **immediately** when a Player is selected but content is not detected (see ``_clock_saver_active``).
 CLOCK_SAVER_AFTER_S = 240.0
 # Saver text opacity when idle; tap while saver is up briefly uses 1.0 (see clock_saver_peek_until_mono).
-# 0.36 ≈ 20% brighter than 0.3 (stronger alpha on glyphs + shadow).
-CLOCK_SAVER_DIM_OPACITY = 0.36
+CLOCK_SAVER_DIM_OPACITY = 0.54
 CLOCK_SAVER_PEEK_S = 2.5
 # With a TMDb backdrop visible: fade backdrop to black under the clock after this idle span on the saver.
 CLOCK_SAVER_BACKDROP_BLACK_AFTER_S = 60.0
@@ -346,7 +390,11 @@ class SceneFit:
         scaled_w = int(round(src_w * scale))
         scaled_h = self.target_h
 
-        resized = cv2.resize(frame_bgr, (scaled_w, scaled_h), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(
+            frame_bgr,
+            (scaled_w, scaled_h),
+            interpolation=cv_resize_interp(src_w, src_h, scaled_w, scaled_h),
+        )
 
         if scaled_w == self.target_w:
             return resized
@@ -504,7 +552,7 @@ def main() -> int:
     root = tk.Tk()
     root.title("")
     root.geometry(f"{WINDOW_W}x{WINDOW_H}")
-    root.minsize(400, 200)
+    root.minsize(int(round(400 * _LAUNCH_WINDOW_SCALE)), int(round(200 * _LAUNCH_WINDOW_SCALE)))
     root.resizable(True, True)
     try:
         root.wm_aspect(2, 1, 2, 1)
@@ -535,20 +583,22 @@ def main() -> int:
     content_host = tk.Frame(shell, bg="#111")
     content_host.pack(fill=tk.BOTH, expand=True)
 
-    # Text placeholder or PNG sequence splash (``pigeonAssets/P_0.5_WIDGET_splash``).
+    # Full-window splash when extensions load: PNG sequence if present, else built-in wordmark (800×400).
     startup_ph: list[tk.Widget | None] = [None]
-    splash_paths: list[Path] = []
+    splash_png_paths: list[Path] = []
     if _PIGEON_EXT:
         try:
-            splash_paths = list_splash_png_paths(Path(_SCRIPT_DIR) / "pigeonAssets")
+            splash_png_paths = list_splash_png_paths(Path(_SCRIPT_DIR) / "pigeonAssets")
         except Exception:
-            splash_paths = []
+            splash_png_paths = []
 
     bootstrap_done: list[bool] = [False]
     splash_anim_done: list[bool] = [False]
+    # Mic EQ intro (bars rising) uses this as t0 so animation starts when splash lifts, not at UI build.
+    mic_viz_intro_start_mono: list[float | None] = [None]
 
     def _try_remove_splash_overlay() -> None:
-        if not splash_paths:
+        if not _PIGEON_EXT:
             return
         if not (bootstrap_done[0] and splash_anim_done[0]):
             return
@@ -560,6 +610,8 @@ def main() -> int:
         except tk.TclError:
             pass
         startup_ph[0] = None
+        if mic_viz_intro_start_mono[0] is None:
+            mic_viz_intro_start_mono[0] = time.monotonic()
 
     _tk_pack_orig = tk.Widget.pack
     _tk_grid_orig = tk.Widget.grid
@@ -567,7 +619,7 @@ def main() -> int:
     _splash_pump_next: list[float] = [0.0]
 
     def _splash_pump_maybe() -> None:
-        if not splash_paths or bootstrap_done[0]:
+        if not _PIGEON_EXT or bootstrap_done[0]:
             return
         now = time.monotonic()
         if now < _splash_pump_next[0]:
@@ -593,21 +645,28 @@ def main() -> int:
         _splash_pump_maybe()
         return r
 
-    if splash_paths:
-        splash_overlay = tk.Frame(shell, bg="#111", highlightthickness=0, bd=0)
+    if _PIGEON_EXT:
+        # Stay a direct child of ``shell`` (placed full-size). Do **not** pack into ``video_area`` after
+        # the video ``Label``: two ``pack(..., fill=BOTH, expand=True)`` siblings leave the second with
+        # zero height, so the splash would disappear. Transparent PNG pixels still show ``content_host``.
+        splash_overlay = tk.Frame(shell, bg="#000", highlightthickness=0, bd=0)
         splash_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        # Placed widgets can sit under later-packed siblings (e.g. ``hud_bar``); pin above ``content_host``.
         try:
-            splash_overlay.lift()
+            splash_overlay.lift(content_host)
         except tk.TclError:
-            pass
+            try:
+                splash_overlay.lift()
+            except tk.TclError:
+                pass
         startup_ph[0] = splash_overlay
-        splash_label = tk.Label(splash_overlay, bg="#111", bd=0)
+        splash_label = tk.Label(splash_overlay, bg="#000", bd=0)
         splash_label.pack(expand=True, fill="both")
         splash_photo: list[ImageTk.PhotoImage | None] = [None]
         splash_idx = [0]
         splash_t0 = [time.monotonic()]
         frame_ms = max(1, int(round(1000.0 / float(SPLASH_FPS))))
-        _splash_bg_bgr = (0x11, 0x11, 0x11)
+        _splash_bg_bgr = (0, 0, 0)
 
         def splash_tick() -> None:
             try:
@@ -615,32 +674,52 @@ def main() -> int:
                     return
             except tk.TclError:
                 return
+            ov_top = startup_ph[0]
+            if ov_top is not None:
+                try:
+                    ov_top.lift()
+                except tk.TclError:
+                    pass
+            n_disk = len(splash_png_paths)
+            ntot = n_disk if n_disk > 0 else FALLBACK_SPLASH_FRAME_COUNT
             if time.monotonic() - splash_t0[0] > float(SPLASH_MAX_DURATION_S):
-                splash_idx[0] = len(splash_paths)
+                splash_idx[0] = ntot
             i = splash_idx[0]
-            if i >= len(splash_paths):
+            if i >= ntot:
                 splash_anim_done[0] = True
                 _try_remove_splash_overlay()
                 return
-            bgra = load_splash_bgra(splash_paths[i])
+            if n_disk > 0:
+                bgra = load_splash_bgra(splash_png_paths[i])
+            else:
+                bgra = builtin_splash_bgra_frame(i, ntot, width=WINDOW_W, height=WINDOW_H)
             splash_idx[0] = i + 1
             if bgra is None:
                 root.after(0, splash_tick)
                 return
+            fade_mul = splash_end_fade_factor(
+                i, ntot, min(SPLASH_FADE_OUT_FRAMES, ntot)
+            )
             try:
-                bgr = composite_splash_over_bg(bgra, _splash_bg_bgr)
+                bgra = apply_splash_global_alpha(bgra, fade_mul)
             except Exception:
                 root.after(frame_ms, splash_tick)
                 return
-            if bgr.shape[1] != WINDOW_W or bgr.shape[0] != WINDOW_H:
-                bgr = cv2.resize(bgr, (WINDOW_W, WINDOW_H), interpolation=cv2.INTER_AREA)
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(rgb)
-            ph = splash_photo[0]
-            if ph is None or ph.width() != pil_img.width or ph.height() != pil_img.height:
-                splash_photo[0] = ImageTk.PhotoImage(pil_img)
-            else:
-                ph.paste(pil_img)
+            if bgra.shape[1] != WINDOW_W or bgra.shape[0] != WINDOW_H:
+                bgra = cv2.resize(bgra, (WINDOW_W, WINDOW_H), interpolation=cv2.INTER_AREA)
+            try:
+                pil_rgba = bgra_to_pil_rgba(bgra)
+                splash_photo[0] = ImageTk.PhotoImage(image=pil_rgba)
+            except Exception:
+                try:
+                    bgr = composite_splash_over_bg(bgra, _splash_bg_bgr)
+                    if bgr.shape[1] != WINDOW_W or bgr.shape[0] != WINDOW_H:
+                        bgr = cv2.resize(bgr, (WINDOW_W, WINDOW_H), interpolation=cv2.INTER_AREA)
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                    splash_photo[0] = ImageTk.PhotoImage(image=Image.fromarray(rgb))
+                except Exception:
+                    root.after(frame_ms, splash_tick)
+                    return
             splash_label.configure(image=splash_photo[0])
             root.after(frame_ms, splash_tick)
 
@@ -648,8 +727,8 @@ def main() -> int:
         loading = tk.Label(
             content_host,
             text="Starting Pigeon…\n\n"
-            "Tab cycles developer mode: off → grid overlay → settings → off. "
-            "Return opens the command bar while in developer mode. "
+            "Shift+Tab toggles Settings ↔ off. Key 5 shows the design grid overlay. Tab opens Settings. "
+            "Return opens the command bar in Settings, grid overlay (5), or legacy grid mode. "
             "Esc closes the bar or quits. F10 / double-click toggles the display. "
             "Space = play/pause on the selected Player (Apple TV / Roku) when set; else TMDb backdrop "
             "+ logo when loaded; else landing brightness pulse.",
@@ -663,6 +742,14 @@ def main() -> int:
 
     root.update_idletasks()
     root.update()
+    if _PIGEON_EXT and startup_ph[0] is not None:
+        try:
+            startup_ph[0].lift(content_host)
+        except tk.TclError:
+            try:
+                startup_ph[0].lift()
+            except tk.TclError:
+                pass
 
     paused_interval_ms = 33
 
@@ -671,7 +758,7 @@ def main() -> int:
 
         cap = None
 
-        if not splash_paths:
+        if not _PIGEON_EXT:
             _w0 = startup_ph[0]
             if _w0 is not None:
                 try:
@@ -1011,6 +1098,10 @@ def main() -> int:
             "query": None,
             "prefer": "auto",
             "last_metadata": None,
+            # Last TMDb worker actually started (see spawn_tmdb_poster_fetch); for view 4 debug.
+            "last_tmdb_fetch_input": None,
+            "last_tmdb_fetch_refined": None,
+            "last_tmdb_fetch_prefer": None,
         }
         tmdb_retry_rule_idx = [0]
         tmdb_adv_manual_btn_holder: list[tk.Button | None] = [None]
@@ -1172,19 +1263,9 @@ def main() -> int:
         content_buttons_row.pack(anchor=tk.W, pady=(0, 6))
         # Purge is parented here after handlers. TMDb (Manual Fetch, Report Failure, retry log) lives on Advanced.
 
-        # HUD is placed on top of the bottom of the shell (does not resize the video — same 800×400 image).
-        hud_bar = tk.Frame(shell, height=OVERLAY_HUD_H, bg="#243949")
-        hud_bar.pack_propagate(False)
-        hud = tk.Label(
-            hud_bar,
-            text="",
-            fg="#f2f2f2",
-            bg="#243949",
-            font=("Helvetica", 11),
-            wraplength=WINDOW_W - 24,
-            justify="center",
-        )
-        hud.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
+        # Bottom “info bar” HUD removed; developer shortcuts are Shift+Tab (cycle) / Tab (settings).
+        hud_bar = None
+        hud = None
 
         fps_sched = _default_render_fps()
         display_dims = [WINDOW_W, WINDOW_H]
@@ -1215,6 +1296,7 @@ def main() -> int:
         _mic_viz_composite_ms = max(1, int(round(1000.0 / _MIC_VIZ_COMPOSITE_FPS)))
 
         playing = False
+        display_view_holder: list[DisplayView] = [DisplayView.ONE]
         last_frame: np.ndarray | None = landing_scene_design_bgr
         brightness_current = LANDING_DISPLAY_BRIGHTNESS
         brightness_from = LANDING_DISPLAY_BRIGHTNESS
@@ -1288,10 +1370,78 @@ def main() -> int:
                 return 1.0
             return CLOCK_SAVER_DIM_OPACITY
 
+        def _view_one_insufficient() -> bool:
+            """True → effective view falls back to TWO (visualizer + art)."""
+            if not _PIGEON_EXT:
+                return True
+            if use_backdrop_scene and backdrop_master_bgr is not None:
+                return False
+            if playing:
+                return False
+            row = streaming_slot_holder[0]
+            if row and row_is_playback_apple_tv(row):
+                md = apple_tv_auto_state.get("last_metadata")
+                if isinstance(md, dict):
+                    if any(
+                        str(md.get(k) or "").strip()
+                        for k in (
+                            "title",
+                            "artist",
+                            "album",
+                            "series_title",
+                            "series_name",
+                            "query",
+                        )
+                    ):
+                        return False
+            if last_frame is not None and last_frame is not landing_scene_design_bgr:
+                return False
+            return True
+
+        def _effective_display_view() -> DisplayView:
+            v = display_view_holder[0]
+            if v == DisplayView.ONE and _view_one_insufficient():
+                return DisplayView.TWO
+            return v
+
+        def _design_grid_overlay_active() -> bool:
+            """19×8 design grid on the composite (developer GRID phase or view 5)."""
+            return dev_phase == DevPhase.GRID or display_view_holder[0] == DisplayView.FIVE
+
+        def _clock_saver_for_compose(now: float) -> bool:
+            if clock_saver_composite_bgra is None:
+                return False
+            if dev_phase != DevPhase.OFF:
+                return False
+            if not scene_enabled:
+                return False
+            if _effective_display_view() == DisplayView.FOUR:
+                return False
+            if _effective_display_view() == DisplayView.THREE:
+                return True
+            return _clock_saver_active(now)
+
+        def _app_logo_clock_saver_style_now() -> bool:
+            """Dim, row-2–top app logo layout when there is no TMDb still (letterbox master) in saver contexts."""
+            if not backdrop_app_logo_letterbox_fit:
+                return False
+            return _effective_display_view() == DisplayView.THREE or _clock_saver_for_compose(
+                time.monotonic()
+            )
+
+        def _backdrop_bgr_for_view_two() -> np.ndarray | None:
+            if use_backdrop_scene and backdrop_master_bgr is not None:
+                return backdrop_master_bgr
+            if saved_backdrop_master_bgr is not None:
+                return saved_backdrop_master_bgr
+            return None
+
         def _clock_saver_backdrop_blackout_mix(now: float) -> float:
+            if _effective_display_view() == DisplayView.THREE:
+                return 0.0
             if not use_backdrop_scene or backdrop_master_bgr is None:
                 return 0.0
-            if not _clock_saver_active(now):
+            if not _clock_saver_for_compose(now):
                 return 0.0
             t0 = clock_saver_bd_enter_mono[0]
             if t0 is None:
@@ -1452,7 +1602,11 @@ def main() -> int:
                     return None
                 h0, w0 = raw.shape[:2]
                 if w0 != DESIGN_W or h0 != DESIGN_H:
-                    raw = cv2.resize(raw, (DESIGN_W, DESIGN_H), interpolation=cv2.INTER_LINEAR)
+                    raw = cv2.resize(
+                        raw,
+                        (DESIGN_W, DESIGN_H),
+                        interpolation=cv_resize_interp(w0, h0, DESIGN_W, DESIGN_H),
+                    )
                 top_gradient_design_bgra[0] = raw
                 return raw
             except Exception:
@@ -1476,7 +1630,8 @@ def main() -> int:
             if tg is None:
                 return
             x, y, rw, rh = _design_rect_to_target(0, 0, DESIGN_W, DESIGN_H, cap_w, cap_h)
-            patch = cv2.resize(tg, (rw, rh), interpolation=cv2.INTER_LINEAR)
+            _gh, _gw = tg.shape[:2]
+            patch = cv2.resize(tg, (rw, rh), interpolation=cv_resize_interp(_gw, _gh, rw, rh))
             sub = base[y : y + rh, x : x + rw]
             sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
 
@@ -1549,7 +1704,7 @@ def main() -> int:
 
             vol = _receiver_volume_display_line(receiver_overlay_state.get("volume", ""))
             playback_overlay_flags["clock_saver_volume_only"] = bool(
-                _clock_saver_active(time.monotonic()) and vol
+                _clock_saver_for_compose(time.monotonic()) and vol
             )
 
         def _warm_playback_overlay_blits() -> None:
@@ -1596,11 +1751,24 @@ def main() -> int:
         def _maybe_blend_mic_visualizer(bgr_plane: np.ndarray) -> None:
             if not _PIGEON_EXT or _blend_mic_visualizer is None:
                 return
+            evm = _effective_display_view()
+            if evm == DisplayView.TWO:
+                mic_on = True
+            elif evm in (DisplayView.THREE, DisplayView.FOUR):
+                mic_on = False
+            else:
+                mic_on = not use_backdrop_scene
+            intro_t0 = mic_viz_intro_start_mono[0]
+            landing_elapsed_s = (
+                time.monotonic() - intro_t0
+                if intro_t0 is not None
+                else time.monotonic() - _pigeon_ui_started_mono
+            )
             _blend_mic_visualizer(
                 bgr_plane,
                 time.monotonic(),
-                active=not use_backdrop_scene,
-                landing_elapsed_s=time.monotonic() - _pigeon_ui_started_mono,
+                active=mic_on,
+                landing_elapsed_s=landing_elapsed_s,
             )
 
         def compose_display_fast_no_grid(
@@ -1611,6 +1779,46 @@ def main() -> int:
         ) -> np.ndarray:
             """Video at display size + poster/clock blits (no full design canvas). Used when developer grid is off."""
             assert _PIGEON_EXT
+            if _effective_display_view() == DisplayView.TWO:
+                from pigeon.image_ui_protocol import build_backdrop_design_layer_bgr
+
+                _set_playback_overlay_clock_saver_volume_flag()
+                _warm_tmdb_logo_patch()
+                dw, dh = display_dims[0], display_dims[1]
+                cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
+                bm2 = _backdrop_bgr_for_view_two()
+                if bm2 is not None:
+                    bd2 = build_backdrop_design_layer_bgr(
+                        bm2,
+                        app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit,
+                        app_logo_clock_saver_style=_app_logo_clock_saver_style_now(),
+                    )
+                    lit2 = _apply_brightness(bd2, brightness)
+                    fit2 = SceneFit(target_w=cap_w, target_h=cap_h)
+                    base2 = fit2.scale_and_crop(lit2)
+                else:
+                    sb, sg, sr = get_stage_bgr()
+                    base2 = np.empty((cap_h, cap_w, 3), dtype=np.uint8)
+                    base2[:] = (sb, sg, sr)
+                _maybe_blend_mic_visualizer(base2)
+                if (
+                    tmdb_logo_patch_bgra is not None
+                    and tmdb_logo_widget is not None
+                    and alpha_blend_bgra_over_bgr is not None
+                ):
+                    wx, wy, ww, wh = tmdb_logo_widget.design_rect()
+                    x, y, rw, rh = _design_rect_to_target(wx, wy, ww, wh, cap_w, cap_h)
+                    _lh, _lw = tmdb_logo_patch_bgra.shape[:2]
+                    patch = cv2.resize(
+                        tmdb_logo_patch_bgra,
+                        (rw, rh),
+                        interpolation=cv_resize_interp(_lw, _lh, rw, rh),
+                    )
+                    sub = base2[y : y + rh, x : x + rw]
+                    sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
+                if use_cap:
+                    return _resize_bgr_to_dims(dw, dh, base2)
+                return base2
             _set_playback_overlay_clock_saver_volume_flag()
             fast_sig = (
                 bool(use_backdrop_scene),
@@ -1621,9 +1829,7 @@ def main() -> int:
                 _playback_overlay_fast_sig[0] = fast_sig
                 _warm_playback_overlay_blits()
             dw, dh = display_dims[0], display_dims[1]
-            cap_w = min(dw, MAX_FAST_COMPOSITE_W)
-            cap_h = max(1, int(round(dh * (cap_w / float(dw))))) if dw > 0 else dh
-            use_cap = cap_w < dw
+            cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
 
             if frame_bgr is None or frame_bgr.size == 0:
                 sb, sg, sr = get_stage_bgr()
@@ -1632,12 +1838,22 @@ def main() -> int:
             else:
                 lit = _apply_brightness(frame_bgr, brightness)
                 if frame_is_display_sized:
-                    base = lit
+                    if use_cap and (
+                        int(lit.shape[1]) != cap_w or int(lit.shape[0]) != cap_h
+                    ):
+                        _lh, _lw = lit.shape[:2]
+                        base = cv2.resize(
+                            lit,
+                            (cap_w, cap_h),
+                            interpolation=cv_resize_interp(_lw, _lh, cap_w, cap_h),
+                        )
+                    else:
+                        base = lit
                 else:
                     fit = SceneFit(target_w=cap_w, target_h=cap_h) if use_cap else _disp_fit()
                     base = fit.scale_and_crop(lit)
             now_cs = time.monotonic()
-            cs = _clock_saver_active(now_cs)
+            cs = _clock_saver_for_compose(now_cs)
             if cs and use_backdrop_scene and backdrop_master_bgr is not None:
                 if clock_saver_bd_enter_mono[0] is None:
                     clock_saver_bd_enter_mono[0] = now_cs
@@ -1657,18 +1873,32 @@ def main() -> int:
                         if status_bar_widget is not None
                         else None
                     )
-                    (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
-                        shadow_bgr=acc_cs,
-                        layer_opacity=_clock_saver_layer_opacity(now_cs),
-                        clock_anchor_row=CLOCK_ANCHOR_ROW,
-                        clock_anchor_col=CLOCK_ANCHOR_COL,
-                    )
+                    _cs_dim = _clock_saver_layer_opacity(now_cs)
+                    if _effective_display_view() == DisplayView.THREE:
+                        (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                            shadow_bgr=acc_cs,
+                            layer_opacity=_cs_dim,
+                            time_layer_opacity=1.0,
+                            date_layer_opacity=_cs_dim,
+                            clock_anchor_row=CLOCK_ANCHOR_ROW,
+                            clock_anchor_col=CLOCK_ANCHOR_COL,
+                        )
+                    else:
+                        (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                            shadow_bgr=acc_cs,
+                            layer_opacity=_cs_dim,
+                            clock_anchor_row=CLOCK_ANCHOR_ROW,
+                            clock_anchor_col=CLOCK_ANCHOR_COL,
+                        )
                     for cs_bgra, (sx, sy, sw, sh) in (
                         (time_bgra, t_rect),
                         (date_bgra, d_rect),
                     ):
                         x, y, rw, rh = _design_rect_to_target(sx, sy, sw, sh, cap_w, cap_h)
-                        patch = cv2.resize(cs_bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                        _ch, _cw = cs_bgra.shape[:2]
+                        patch = cv2.resize(
+                            cs_bgra, (rw, rh), interpolation=cv_resize_interp(_cw, _ch, rw, rh)
+                        )
                         sub = base[y : y + rh, x : x + rw]
                         sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
                     if (
@@ -1679,7 +1909,12 @@ def main() -> int:
                         for pb in playback_overlay_blits:
                             x0, y0, ww, wh = int(pb.x), int(pb.y), int(pb.w), int(pb.h)
                             x, y, rw, rh = _design_rect_to_target(x0, y0, ww, wh, cap_w, cap_h)
-                            patch = cv2.resize(pb.bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                            _ph, _pw = pb.bgra.shape[:2]
+                            patch = cv2.resize(
+                                pb.bgra,
+                                (rw, rh),
+                                interpolation=cv_resize_interp(_pw, _ph, rw, rh),
+                            )
                             sub = base[y : y + rh, x : x + rw]
                             sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
             else:
@@ -1689,23 +1924,32 @@ def main() -> int:
                 ):
                     gx, gy, gw, gh, grad_bgra = playback_lower_gradient_bgra()
                     x, y, rw, rh = _design_rect_to_target(gx, gy, gw, gh, cap_w, cap_h)
-                    patch = cv2.resize(grad_bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                    _gh, _gw = grad_bgra.shape[:2]
+                    patch = cv2.resize(
+                        grad_bgra, (rw, rh), interpolation=cv_resize_interp(_gw, _gh, rw, rh)
+                    )
                     sub = base[y : y + rh, x : x + rw]
                     sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
-                _refresh_clock_patch_bgra()
-                if (
-                    clock_patch_bgra is not None
-                    and clock_widget is not None
-                    and rect_for_span_at_cell is not None
-                    and alpha_blend_bgra_over_bgr is not None
-                ):
-                    sw, sh = clock_widget.grid_span
-                    ar, ac = clock_widget.grid_anchor
-                    wx, wy, ww, wh = rect_for_span_at_cell(sw, sh, row_1based=ar, col_1based=ac)
-                    x, y, rw, rh = _design_rect_to_target(wx, wy, ww, wh, cap_w, cap_h)
-                    patch = cv2.resize(clock_patch_bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
-                    sub = base[y : y + rh, x : x + rw]
-                    sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
+                if _effective_display_view() != DisplayView.FOUR:
+                    _refresh_clock_patch_bgra()
+                    if (
+                        clock_patch_bgra is not None
+                        and clock_widget is not None
+                        and rect_for_span_at_cell is not None
+                        and alpha_blend_bgra_over_bgr is not None
+                    ):
+                        sw, sh = clock_widget.grid_span
+                        ar, ac = clock_widget.grid_anchor
+                        wx, wy, ww, wh = rect_for_span_at_cell(sw, sh, row_1based=ar, col_1based=ac)
+                        x, y, rw, rh = _design_rect_to_target(wx, wy, ww, wh, cap_w, cap_h)
+                        _kh, _kw = clock_patch_bgra.shape[:2]
+                        patch = cv2.resize(
+                            clock_patch_bgra,
+                            (rw, rh),
+                            interpolation=cv_resize_interp(_kw, _kh, rw, rh),
+                        )
+                        sub = base[y : y + rh, x : x + rw]
+                        sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
                 if (
                     dev_phase == DevPhase.OFF
                     and location_toast_patch_bgra is not None
@@ -1726,35 +1970,56 @@ def main() -> int:
                         )
                         if patch_lt is not None:
                             x, y, rw, rh = _design_rect_to_target(lwx, lwy, lww, lwh, cap_w, cap_h)
-                            patch = cv2.resize(patch_lt, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                            _th, _tw = patch_lt.shape[:2]
+                            patch = cv2.resize(
+                                patch_lt,
+                                (rw, rh),
+                                interpolation=cv_resize_interp(_tw, _th, rw, rh),
+                            )
                             sub = base[y : y + rh, x : x + rw]
                             sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
                 if status_bar_blits and alpha_blend_bgra_over_bgr is not None:
                     for sb in status_bar_blits:
                         x0, y0, ww, wh = int(sb.x), int(sb.y), int(sb.w), int(sb.h)
                         x, y, rw, rh = _design_rect_to_target(x0, y0, ww, wh, cap_w, cap_h)
-                        patch = cv2.resize(sb.bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                        _bh, _bw = sb.bgra.shape[:2]
+                        patch = cv2.resize(
+                            sb.bgra,
+                            (rw, rh),
+                            interpolation=cv_resize_interp(_bw, _bh, rw, rh),
+                        )
                         sub = base[y : y + rh, x : x + rw]
                         sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
                 if playback_overlay_blits and alpha_blend_bgra_over_bgr is not None:
                     for pb in playback_overlay_blits:
                         x0, y0, ww, wh = int(pb.x), int(pb.y), int(pb.w), int(pb.h)
                         x, y, rw, rh = _design_rect_to_target(x0, y0, ww, wh, cap_w, cap_h)
-                        patch = cv2.resize(pb.bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                        _ph, _pw = pb.bgra.shape[:2]
+                        patch = cv2.resize(
+                            pb.bgra,
+                            (rw, rh),
+                            interpolation=cv_resize_interp(_pw, _ph, rw, rh),
+                        )
                         sub = base[y : y + rh, x : x + rw]
                         sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
                 if (
-                    tmdb_logo_patch_bgra is not None
+                    _effective_display_view() != DisplayView.FOUR
+                    and tmdb_logo_patch_bgra is not None
                     and tmdb_logo_widget is not None
                     and alpha_blend_bgra_over_bgr is not None
                 ):
                     wx, wy, ww, wh = tmdb_logo_widget.design_rect()
                     x, y, rw, rh = _design_rect_to_target(wx, wy, ww, wh, cap_w, cap_h)
-                    patch = cv2.resize(tmdb_logo_patch_bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                    _lh, _lw = tmdb_logo_patch_bgra.shape[:2]
+                    patch = cv2.resize(
+                        tmdb_logo_patch_bgra,
+                        (rw, rh),
+                        interpolation=cv_resize_interp(_lw, _lh, rw, rh),
+                    )
                     sub = base[y : y + rh, x : x + rw]
                     sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
             if use_cap:
-                return cv2.resize(base, (dw, dh), interpolation=cv2.INTER_LINEAR)
+                return _resize_bgr_to_dims(dw, dh, base)
             return base
 
         def compose_display_from_source(
@@ -1785,16 +2050,20 @@ def main() -> int:
                 else:
                     fit_d = SceneFit(target_w=DESIGN_W, target_h=DESIGN_H)
                     canvas = fit_d.scale_and_crop(lit)
-            # All widget/grid math is in design pixels (5126×2160). If the base layer is off-size
+            # All widget/grid math is in design pixels (DESIGN_W×DESIGN_H). If the base layer is off-size
             # (e.g. a bad master path), resize so overlays are not clipped on the left before scaling to the window.
             ch_can, cw_can = int(canvas.shape[0]), int(canvas.shape[1])
             if cw_can != DESIGN_W or ch_can != DESIGN_H:
-                canvas = cv2.resize(canvas, (DESIGN_W, DESIGN_H), interpolation=cv2.INTER_LINEAR)
+                canvas = cv2.resize(
+                    canvas,
+                    (DESIGN_W, DESIGN_H),
+                    interpolation=cv_resize_interp(cw_can, ch_can, DESIGN_W, DESIGN_H),
+                )
             if not canvas.flags["C_CONTIGUOUS"]:
                 canvas = np.ascontiguousarray(canvas)
             _set_playback_overlay_clock_saver_volume_flag()
             now_cs = time.monotonic()
-            cs = _clock_saver_active(now_cs) and not show_grid
+            cs = _clock_saver_for_compose(now_cs) and not show_grid
             if cs and use_backdrop_scene:
                 if clock_saver_bd_enter_mono[0] is None:
                     clock_saver_bd_enter_mono[0] = now_cs
@@ -1813,12 +2082,23 @@ def main() -> int:
                         if status_bar_widget is not None
                         else None
                     )
-                    (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
-                        shadow_bgr=acc_cs,
-                        layer_opacity=_clock_saver_layer_opacity(now_cs),
-                        clock_anchor_row=CLOCK_ANCHOR_ROW,
-                        clock_anchor_col=CLOCK_ANCHOR_COL,
-                    )
+                    _cs_dim_d = _clock_saver_layer_opacity(now_cs)
+                    if _effective_display_view() == DisplayView.THREE:
+                        (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                            shadow_bgr=acc_cs,
+                            layer_opacity=_cs_dim_d,
+                            time_layer_opacity=1.0,
+                            date_layer_opacity=_cs_dim_d,
+                            clock_anchor_row=CLOCK_ANCHOR_ROW,
+                            clock_anchor_col=CLOCK_ANCHOR_COL,
+                        )
+                    else:
+                        (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                            shadow_bgr=acc_cs,
+                            layer_opacity=_cs_dim_d,
+                            clock_anchor_row=CLOCK_ANCHOR_ROW,
+                            clock_anchor_col=CLOCK_ANCHOR_COL,
+                        )
                     for cs_bgra, (sx, sy, sw, sh) in (
                         (time_bgra, t_rect),
                         (date_bgra, d_rect),
@@ -1828,11 +2108,15 @@ def main() -> int:
                     if playback_overlay_flags.get("clock_saver_volume_only") and playback_overlay_widget is not None:
                         playback_overlay_widget.render(canvas)
             else:
-                if playback_lower_gradient_bgra is not None and alpha_blend_bgra_over_bgr is not None:
+                if (
+                    not show_grid
+                    and playback_lower_gradient_bgra is not None
+                    and alpha_blend_bgra_over_bgr is not None
+                ):
                     gx, gy, gw, gh, grad_bgra = playback_lower_gradient_bgra()
                     sub = canvas[gy : gy + gh, gx : gx + gw]
                     sub[:] = alpha_blend_bgra_over_bgr(sub, grad_bgra)
-                if clock_widget is not None:
+                if clock_widget is not None and _effective_display_view() != DisplayView.FOUR:
                     clock_widget.render(canvas)
                 if (
                     not show_grid
@@ -1856,12 +2140,12 @@ def main() -> int:
                         if patch_lt is not None:
                             sub = canvas[lwy : lwy + lwh, lwx : lwx + lww]
                             sub[:] = alpha_blend_bgra_over_bgr(sub, patch_lt)
-                if status_bar_widget is not None:
+                if not show_grid and status_bar_widget is not None:
                     status_bar_widget.render(canvas)
-                if playback_overlay_widget is not None:
+                if not show_grid and playback_overlay_widget is not None:
                     playback_overlay_flags["show_paused_row"] = _show_paused_row_overlay()
                     playback_overlay_widget.render(canvas)
-                if tmdb_logo_widget is not None:
+                if tmdb_logo_widget is not None and _effective_display_view() != DisplayView.FOUR:
                     tmdb_logo_widget.render(
                         canvas,
                         title_key_str=active_tmdb_title_key,
@@ -1874,35 +2158,206 @@ def main() -> int:
             # Grid: uniform letterbox so narrow windows still show the full design width. Theater/backdrop:
             # scale to height and center-crop width (fills the window, no pillarbox bars).
             _use_design_letterbox = bool(scale_uniform_letterbox is not None and show_grid)
-            if tw > MAX_FAST_COMPOSITE_W:
-                cw = MAX_FAST_COMPOSITE_W
-                ch = max(1, int(round(th * (cw / float(tw)))))
+            cw, ch, cap_down = _composite_cap_dims(tw, th)
+            if cap_down:
                 if _use_design_letterbox:
                     out = scale_uniform_letterbox(canvas, cw, ch)
                 else:
                     out = scale_height_and_center_crop(canvas, cw, ch)
-                return cv2.resize(out, (tw, th), interpolation=cv2.INTER_LINEAR)
+                return _resize_bgr_to_dims(tw, th, out)
             if _use_design_letterbox:
                 return scale_uniform_letterbox(canvas, tw, th)
             return scale_height_and_center_crop(canvas, tw, th)
 
+        def _collect_view_four_raw_title_lines() -> list[tuple[str, bool]]:
+            """View 4: streaming label, rawTitle fields, last TMDb fetch (if any)."""
+            rows: list[tuple[str, bool]] = []
+
+            def _ln(s: str) -> None:
+                rows.append((s, False))
+
+            lm_rt = apple_tv_auto_state.get("last_metadata")
+            _svc_label = str(streaming_badge_state.get("label") or "").strip()
+            _svc_app = str(lm_rt.get("app_name") or "").strip() if isinstance(lm_rt, dict) else ""
+            if _svc_label:
+                _ln(f"streamingService={_svc_label!r}")
+            elif _svc_app:
+                _ln(f"streamingService={_svc_app!r}")
+
+            if not isinstance(lm_rt, dict):
+                _ln("rawTitle: (no last_metadata dict)")
+            else:
+                try:
+                    from pigeon.raw_title import raw_title_from_metadata_dict
+
+                    rt = raw_title_from_metadata_dict(lm_rt)
+                    _ln(f"rawTitle.source={rt.source!r}")
+                    for fn in (
+                        "raw_title",
+                        "raw_series_name",
+                        "raw_artist",
+                        "raw_album",
+                        "raw_episode_title",
+                        "raw_query",
+                        "season_index",
+                        "episode_index",
+                        "layer_series_title",
+                        "layer_series_number",
+                        "layer_episode_number",
+                        "layer_episode_title",
+                        "media_type_label",
+                    ):
+                        _ln(f"rawTitle.{fn}={getattr(rt, fn)!r}")
+                    if rt.notes:
+                        _ln(f"rawTitle.notes={rt.notes!r}")
+                    sig = rt.training_signature_normalized()
+                    if sig:
+                        _ln(f"rawTitle.training_signature_normalized={sig!r}")
+                except Exception as e:
+                    _ln(f"rawTitle err={e}")
+            if isinstance(lm_rt, dict):
+                _pp = str(lm_rt.get("prefer_pyatv_media") or "").strip().lower()
+                if _pp in ("auto", "tv", "movie"):
+                    _ln(f"metadata.prefer_pyatv_media={_pp!r}")
+                _ip = str(lm_rt.get("inferred_prefer") or "").strip().lower()
+                if _ip in ("auto", "tv", "movie"):
+                    _ln(f"metadata.prefer_tmdb={_ip!r}")
+            _ti = apple_tv_auto_state.get("last_tmdb_fetch_input")
+            _tr = apple_tv_auto_state.get("last_tmdb_fetch_refined")
+            _tp = apple_tv_auto_state.get("last_tmdb_fetch_prefer")
+            if _ti is not None and str(_ti).strip():
+                _ln(f"tmdbFetch.input_query={str(_ti)!r}")
+            if _tr is not None and str(_tr).strip():
+                _ln(f"tmdbFetch.refined_query={str(_tr)!r}")
+            if _tp is not None and str(_tp).strip():
+                _ln(f"tmdbFetch.prefer={str(_tp)!r}")
+            return rows
+
+        def _blend_view_four_debug(bgr: np.ndarray) -> np.ndarray:
+            if _effective_display_view() != DisplayView.FOUR:
+                return bgr
+            out = bgr.copy()
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            mx = 10
+            my_top = 12
+            my_bot = 10
+            H, W = int(out.shape[0]), int(out.shape[1])
+            max_w = max(24, W - 2 * mx)
+            raw_debug_lines = _collect_view_four_raw_title_lines()
+            _any_bold = bool(raw_debug_lines)
+
+            def _vf_thick(sc: float) -> int:
+                return 2 if sc >= 0.48 else 1
+
+            def _vf_wrap_paragraph(text: str, sc: float, thick: int) -> list[str]:
+                t = str(text).replace("\n", " ").strip()
+                if not t:
+                    return []
+                words = t.split()
+                lines_out: list[str] = []
+                cur: str | None = None
+                for w in words:
+                    trial = w if cur is None else f"{cur} {w}"
+                    tw, _ = cv2.getTextSize(trial, font, sc, thick)[0]
+                    if tw <= max_w:
+                        cur = trial
+                    else:
+                        if cur is not None:
+                            lines_out.append(cur)
+                            cur = None
+                        tw_w, _ = cv2.getTextSize(w, font, sc, thick)[0]
+                        if tw_w <= max_w:
+                            cur = w
+                        else:
+                            chunk = ""
+                            for ch in w:
+                                t2 = chunk + ch
+                                tw2, _ = cv2.getTextSize(t2, font, sc, thick)[0]
+                                if tw2 <= max_w:
+                                    chunk = t2
+                                else:
+                                    if chunk:
+                                        lines_out.append(chunk)
+                                    chunk = ch
+                            cur = chunk if chunk else None
+                if cur is not None:
+                    lines_out.append(cur)
+                return lines_out
+
+            def _vf_layout(sc: float) -> tuple[list[tuple[str, bool]], int, int, int]:
+                thick_n = _vf_thick(sc)
+                thick_layout = max(thick_n + 2, 3) if _any_bold else thick_n
+                phys: list[tuple[str, bool]] = []
+                for raw, is_bold in raw_debug_lines:
+                    twrap = thick_layout if is_bold else thick_n
+                    for pl in _vf_wrap_paragraph(raw, sc, twrap):
+                        phys.append((pl, is_bold))
+                if not phys:
+                    phys = [("(no rawTitle lines yet)", False)]
+                (_rw, th), bl = cv2.getTextSize("|pqgy", font, sc, thick_layout)
+                line_step = max(th + 6, int(th + bl * 0.5) + 4)
+                return phys, line_step, th, bl
+
+            def _vf_fits(sc: float) -> bool:
+                phys, line_step, th, bl = _vf_layout(sc)
+                n = len(phys)
+                need = my_top + th + (n - 1) * line_step + bl + my_bot
+                return need <= H
+
+            lo, hi = 0.52, min(2.15, max(0.75, H / 64.0))
+            if not _vf_fits(lo):
+                sc = lo
+                while sc > 0.28 and not _vf_fits(sc):
+                    sc -= 0.04
+            else:
+                for _ in range(32):
+                    mid = (lo + hi) * 0.5
+                    if _vf_fits(mid):
+                        lo = mid
+                    else:
+                        hi = mid
+                sc = lo
+
+            thick_n = _vf_thick(sc)
+            phys, line_step, th, _ = _vf_layout(sc)
+            y = my_top + th
+            color_dim = (220, 228, 238)
+            color_bold = (255, 255, 255)
+            for row, is_bold in phys:
+                t_draw = max(thick_n + 2, 3) if is_bold else thick_n
+                c = color_bold if is_bold else color_dim
+                cv2.putText(out, row, (mx, y), font, sc, c, t_draw, cv2.LINE_AA)
+                y += line_step
+            return out
+
         def _compose_shown_frame(frame_bgr: np.ndarray | None, brightness: float) -> np.ndarray:
-            if use_backdrop_scene and backdrop_master_bgr is not None:
+            if _PIGEON_EXT and _effective_display_view() == DisplayView.FOUR:
+                return _black_screen_bgr()
+            # View TWO is backdrop + title logo + mic only; skip full backdrop design layer.
+            if (
+                use_backdrop_scene
+                and backdrop_master_bgr is not None
+                and _effective_display_view() != DisplayView.TWO
+            ):
                 from pigeon.image_ui_protocol import build_backdrop_design_layer_bgr
 
                 if not _PIGEON_EXT:
                     # Legacy path: use backdrop-only display if extension isn't available.
                     bd = build_backdrop_design_layer_bgr(
-                        backdrop_master_bgr, app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit
+                        backdrop_master_bgr,
+                        app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit,
+                        app_logo_clock_saver_style=_app_logo_clock_saver_style_now(),
                     )
                     return compose_display_from_source(bd, brightness, show_grid=False, frame_is_design_sized=True)
                 bd = build_backdrop_design_layer_bgr(
-                    backdrop_master_bgr, app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit
+                    backdrop_master_bgr,
+                    app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit,
+                    app_logo_clock_saver_style=_app_logo_clock_saver_style_now(),
                 )
                 return compose_display_from_source(
                     bd,
                     brightness,
-                    show_grid=(dev_phase == DevPhase.GRID),
+                    show_grid=_design_grid_overlay_active(),
                     frame_is_design_sized=True,
                 )
 
@@ -1911,13 +2366,12 @@ def main() -> int:
                     return _black_screen_bgr()
                 lit = _apply_brightness(frame_bgr, brightness)
                 dw, dh = display_dims[0], display_dims[1]
-                cw = min(dw, MAX_FAST_COMPOSITE_W)
-                ch = max(1, int(round(dh * (cw / float(dw))))) if dw > 0 else dh
+                cw, ch, cap_down = _composite_cap_dims(dw, dh)
                 small = SceneFit(target_w=cw, target_h=ch).scale_and_crop(lit)
-                if cw < dw:
-                    return cv2.resize(small, (dw, dh), interpolation=cv2.INTER_LINEAR)
+                if cap_down:
+                    return _resize_bgr_to_dims(dw, dh, small)
                 return small
-            if dev_phase == DevPhase.GRID and _PIGEON_EXT:
+            if _PIGEON_EXT and _design_grid_overlay_active():
                 return compose_display_from_source(frame_bgr, brightness, show_grid=True)
             return compose_display_fast_no_grid(frame_bgr, brightness)
 
@@ -1952,8 +2406,7 @@ def main() -> int:
 
         def _layout_chrome() -> None:
             dw, dh = display_dims[0], display_dims[1]
-            ui = _ui_scale()
-            hud.configure(wraplength=max(80, dw - 24), font=("Helvetica", max(8, int(11 * ui))))
+            _ui_scale()
             if command_entry_visible:
                 place_command_bar()
             if dev_phase == DevPhase.SETTINGS:
@@ -1965,13 +2418,8 @@ def main() -> int:
         def place_command_bar() -> None:
             dw, dh = display_dims[0], display_dims[1]
             ui = _ui_scale()
-            hud_h = max(28, int(OVERLAY_HUD_H * ui))
             bar_h = max(24, int(32 * ui))
-            # Settings has no bottom HUD strip; grid keeps it for shortcuts help.
-            if dev_phase == DevPhase.OFF or dev_phase == DevPhase.SETTINGS:
-                yb = dh - bar_h - int(4 * ui)
-            else:
-                yb = dh - hud_h - bar_h - int(4 * ui)
+            yb = dh - bar_h - int(4 * ui)
             command_bar.place(x=0, y=yb, width=dw, height=bar_h)
 
         def hide_command_entry(_event=None) -> None:
@@ -2042,9 +2490,6 @@ def main() -> int:
             was_phase = prev_dev_phase_for_location_toast[0]
             _apply_dev_phase_widgets()
             _layout_chrome()
-            dw, dh = display_dims[0], display_dims[1]
-            ui = _ui_scale()
-            hud_h = max(28, int(OVERLAY_HUD_H * ui))
             if dev_phase == DevPhase.GRID:
                 root.title("Pigeon 0.5 — Developer mode (grid)")
                 label.configure(
@@ -2052,32 +2497,15 @@ def main() -> int:
                     highlightbackground="#0a84ff",
                     highlightcolor="#0a84ff",
                 )
-                hud.configure(
-                    text=(
-                        "Developer mode (grid) — Tab: next | Return: command bar | S: scene toggle | "
-                        "F10: landing → black → backdrop → landing (backdrop after TMDb) | "
-                        "+: series title training (fingerprint → TMDb) | Ctrl+Shift+M: TMDb match literal ↔ forgiving | "
-                        "? (Shift+/): TMDb retry (cycle movie / tv / alt query / auto) | dbl-click"
-                        + (
-                            ""
-                            if _PIGEON_EXT
-                            else " | (install: run from Pigeon_python folder so `pigeon` package loads for grid+poster)"
-                        )
-                    ),
-                )
-                hud_bar.place(x=0, y=dh - hud_h, width=dw, height=hud_h)
-                hud_bar.lift()
             elif dev_phase == DevPhase.SETTINGS:
                 root.title("Pigeon 0.5 — Developer mode (settings)")
                 try:
                     label.configure(highlightthickness=0)
                 except tk.TclError:
                     pass
-                hud_bar.place_forget()
             else:
                 root.title("")
                 label.configure(highlightthickness=0)
-                hud_bar.place_forget()
                 hide_command_entry()
             if dev_phase == DevPhase.SETTINGS:
                 _settings_bind_wheel_globals()
@@ -2111,7 +2539,12 @@ def main() -> int:
         def cycle_dev_phase(_event=None) -> str:
             nonlocal dev_phase, skip_cache
             _bump_pigeon_user_activity()
-            dev_phase = DevPhase((int(dev_phase) + 1) % 3)
+            if dev_phase == DevPhase.GRID:
+                dev_phase = DevPhase.OFF
+            elif dev_phase == DevPhase.OFF:
+                dev_phase = DevPhase.SETTINGS
+            else:
+                dev_phase = DevPhase.OFF
             skip_cache = None
             sync_developer_chrome()
             return "break"
@@ -2133,7 +2566,7 @@ def main() -> int:
         def toggle_scene(_event=None, *, require_overlay: bool = True) -> None:
             nonlocal cap, scene_enabled, last_frame, scaled_display, scaled_version, skip_cache, black_photo, playing, frame_interval_ms, use_backdrop_scene, backdrop_master_bgr
             _bump_pigeon_user_activity()
-            if require_overlay and dev_phase != DevPhase.GRID:
+            if require_overlay and not _design_grid_overlay_active():
                 return
 
             if scene_enabled:
@@ -2178,11 +2611,7 @@ def main() -> int:
         _last_adv_shift_tab_mono = [0.0]
 
         def try_cycle_dev_phase(event: tk.Event | None) -> str | None:
-            if event is not None:
-                if getattr(event, "keysym", "") == "ISO_Left_Tab":
-                    return None
-                if int(getattr(event, "state", 0)) & 0x0001:
-                    return None
+            """Debounced OFF↔SETTINGS cycle (mouse / F9); design grid overlay is key 5."""
             now = time.monotonic()
             if now - _last_overlay_mono[0] < 0.08:
                 return "break"
@@ -2191,19 +2620,61 @@ def main() -> int:
             return "break"
 
         def on_tab_key(event: tk.Event) -> str | None:
-            return try_cycle_dev_phase(event)
+            """Plain Tab: toggle Settings ↔ OFF (never enters Grid)."""
+            if _widget_accepts_typing(event.widget):
+                return None
+            if getattr(event, "keysym", "") == "ISO_Left_Tab":
+                return None
+            st_tab = int(getattr(event, "state", 0))
+            if st_tab & 0x0001:
+                return None
+            if st_tab & 0x0004:
+                return None
+            _bump_pigeon_user_activity(event)
+            nonlocal dev_phase, skip_cache
+            if dev_phase == DevPhase.SETTINGS:
+                dev_phase = DevPhase.OFF
+            else:
+                dev_phase = DevPhase.SETTINGS
+            skip_cache = None
+            sync_developer_chrome()
+            return "break"
+
+        def on_shift_tab_dev_cycle(event: tk.Event) -> str | None:
+            """Shift+Tab: toggle Settings ↔ off (same as Tab; grid overlay is key 5)."""
+            if _widget_accepts_typing(event.widget):
+                return None
+            ks = getattr(event, "keysym", "") or ""
+            st = int(getattr(event, "state", 0))
+            if st & 0x0004:
+                return None
+            if ks != "ISO_Left_Tab" and not (ks == "Tab" and (st & 0x0001)):
+                return None
+            now = time.monotonic()
+            if now - _last_overlay_mono[0] < 0.08:
+                return "break"
+            _last_overlay_mono[0] = now
+            cycle_dev_phase()
+            return "break"
 
         def on_ctrl_tab(event: tk.Event) -> str | None:
+            if _widget_accepts_typing(event.widget):
+                return None
             if not (int(getattr(event, "state", 0)) & 0x0004):
                 return None
-            return try_cycle_dev_phase(None)
+            now = time.monotonic()
+            if now - _last_overlay_mono[0] < 0.08:
+                return "break"
+            _last_overlay_mono[0] = now
+            cycle_dev_phase()
+            return "break"
 
         def on_s_key(event: tk.Event) -> str | None:
             keysym = (getattr(event, "keysym", "") or "").lower()
             ch = (getattr(event, "char", "") or "").lower()
             if keysym != "s" and ch != "s":
                 return None
-            if dev_phase != DevPhase.GRID:
+            if not _design_grid_overlay_active():
                 return None
             now = time.monotonic()
             if now - _last_s_mono[0] < 0.08:
@@ -2235,6 +2706,7 @@ def main() -> int:
                     display_dims[0],
                     display_dims[1],
                     app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit,
+                    app_logo_clock_saver_style=_app_logo_clock_saver_style_now(),
                 )
             else:
                 scaled_display = None
@@ -2303,7 +2775,7 @@ def main() -> int:
             if now - _last_f10_mono[0] < 0.12:
                 return "break"
             _last_f10_mono[0] = now
-            if dev_phase == DevPhase.GRID:
+            if _design_grid_overlay_active():
                 f10_cycle_scene_grid()
             else:
                 toggle_scene(require_overlay=False)
@@ -2324,7 +2796,7 @@ def main() -> int:
 
         def show_command_entry(_event=None) -> None:
             nonlocal command_entry_visible
-            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS):
+            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS) and display_view_holder[0] != DisplayView.FIVE:
                 return
             command_entry_visible = True
             place_command_bar()
@@ -2359,11 +2831,15 @@ def main() -> int:
             """TMDb search + download + poster pipeline on a worker thread."""
             from pigeon.tmdb_poster import is_degenerate_tmdb_query, refine_tmdb_search_query
 
-            q = refine_tmdb_search_query(query.strip()) or ""
+            q_in = (query or "").strip()
+            q = refine_tmdb_search_query(q_in) or ""
             if not q:
                 return
             if is_degenerate_tmdb_query(q):
                 return
+            apple_tv_auto_state["last_tmdb_fetch_input"] = q_in
+            apple_tv_auto_state["last_tmdb_fetch_refined"] = q
+            apple_tv_auto_state["last_tmdb_fetch_prefer"] = str(prefer or "auto").strip() or "auto"
 
             def _backdrop_from_current_app_logo() -> np.ndarray | None:
                 """If TMDb has no backdrop, letterbox the app logo on black (≤90% of window W×H, never cropped)."""
@@ -2598,6 +3074,9 @@ def main() -> int:
                 apple_tv_auto_state["tmdb_key"] = None
                 apple_tv_auto_state["query"] = None
                 apple_tv_auto_state["last_metadata"] = None
+                apple_tv_auto_state["last_tmdb_fetch_input"] = None
+                apple_tv_auto_state["last_tmdb_fetch_refined"] = None
+                apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
                 apple_tv_playback_clock.clear()
                 apple_tv_playback_clock.update(
                     {
@@ -2648,6 +3127,9 @@ def main() -> int:
                     apple_tv_auto_state["tmdb_key"] = None
                     apple_tv_auto_state["query"] = None
                     apple_tv_auto_state["last_metadata"] = None
+                    apple_tv_auto_state["last_tmdb_fetch_input"] = None
+                    apple_tv_auto_state["last_tmdb_fetch_refined"] = None
+                    apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
                     apple_tv_playback_clock.clear()
                     apple_tv_playback_clock.update(
                         {
@@ -3175,6 +3657,9 @@ def main() -> int:
             apple_tv_auto_state["tmdb_key"] = None
             apple_tv_auto_state["query"] = None
             apple_tv_auto_state["last_metadata"] = None
+            apple_tv_auto_state["last_tmdb_fetch_input"] = None
+            apple_tv_auto_state["last_tmdb_fetch_refined"] = None
+            apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
             apple_tv_playback_clock.clear()
             apple_tv_playback_clock.update(
                 {
@@ -3266,6 +3751,9 @@ def main() -> int:
             apple_tv_auto_state["tmdb_key"] = None
             apple_tv_auto_state["query"] = None
             apple_tv_auto_state["last_metadata"] = None
+            apple_tv_auto_state["last_tmdb_fetch_input"] = None
+            apple_tv_auto_state["last_tmdb_fetch_refined"] = None
+            apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
             apple_tv_playback_clock.clear()
             apple_tv_playback_clock.update(
                 {
@@ -4511,6 +4999,9 @@ def main() -> int:
             apple_tv_auto_state["tmdb_key"] = None
             apple_tv_auto_state["query"] = None
             apple_tv_auto_state["last_metadata"] = None
+            apple_tv_auto_state["last_tmdb_fetch_input"] = None
+            apple_tv_auto_state["last_tmdb_fetch_refined"] = None
+            apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
             apple_tv_dashboard_track["last_poll_ok"] = None
             apple_tv_dashboard_track["consecutive_fail"] = 0
             if playback_overlay_widget is not None:
@@ -5074,6 +5565,9 @@ def main() -> int:
             apple_tv_auto_state["content_key"] = None
             apple_tv_auto_state["query"] = None
             apple_tv_auto_state["prefer"] = "auto"
+            apple_tv_auto_state["last_tmdb_fetch_input"] = None
+            apple_tv_auto_state["last_tmdb_fetch_refined"] = None
+            apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
             lm = apple_tv_auto_state.get("last_metadata")
             if isinstance(lm, dict):
                 lm["query"] = ""
@@ -5159,6 +5653,61 @@ def main() -> int:
                 except Exception as e:
                     ok_w, msg_w, metadata_w = False, str(e), None
 
+                # Roku ECP calls can block for multi-second HTTP timeouts; never run them on the Tk thread
+                # or the whole UI (including the mic visualizer) freezes on every poll cadence.
+                wk_roku_nm: str | None = None
+                md_poll_w = metadata_w if isinstance(metadata_w, dict) else None
+                md_act_w = md_poll_w is not None and not _atv_metadata_is_content_idle(md_poll_w)
+                pyatv_has_app_w = False
+                if md_act_w:
+                    pyatv_has_app_w = bool(
+                        str(md_poll_w.get("app_name") or "").strip()
+                        or str(md_poll_w.get("app_id") or "").strip()
+                    )
+                if not pyatv_has_app_w:
+                    try:
+                        from pigeon.roku_ecp import (
+                            fetch_roku_active_app_name,
+                            resolve_roku_ecp_base_url_for_row,
+                        )
+
+                        row0_wk = streaming_slot_holder[0]
+                        rb_wk = resolve_roku_ecp_base_url_for_row(row0_wk) if row0_wk else ""
+                        if rb_wk:
+                            t_nm = fetch_roku_active_app_name(rb_wk)
+                            if t_nm:
+                                wk_roku_nm = t_nm
+                    except Exception:
+                        wk_roku_nm = None
+
+                pyatv_tmdb_eligible_w = False
+                if ok_w and metadata_w:
+                    from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+                    _q_wk = str(metadata_w.get("query") or "").strip()
+                    if (
+                        _q_wk
+                        and not is_degenerate_tmdb_query(_q_wk)
+                        and not _atv_metadata_is_content_idle(metadata_w)
+                    ):
+                        pyatv_tmdb_eligible_w = True
+
+                wk_roku_title: tuple[bool, str, str | None] | None = None
+                if not pyatv_tmdb_eligible_w:
+                    row0_nf_wk = streaming_slot_holder[0]
+                    if row0_nf_wk is not None and not row_is_playback_apple_tv(row0_nf_wk):
+                        try:
+                            from pigeon.roku_ecp import (
+                                fetch_roku_title_for_metadata,
+                                resolve_roku_ecp_base_url_for_row,
+                            )
+
+                            rb_nf_wk = resolve_roku_ecp_base_url_for_row(row0_nf_wk)
+                            if rb_nf_wk:
+                                wk_roku_title = fetch_roku_title_for_metadata(rb_nf_wk, timeout=6.0)
+                        except Exception:
+                            wk_roku_title = None
+
                 def finish() -> None:
                     nonlocal skip_cache
                     apple_tv_auto_state["running"] = False
@@ -5235,6 +5784,9 @@ def main() -> int:
                         if ok_w:
                             _update_atv_interaction_from_poll_metadata(metadata_w)
                         prefer_snap = _tmdb_pref_from_metadata(metadata_w)
+                        _ppm = str(metadata_w.get("prefer_pyatv_media") or "").strip().lower()
+                        if _ppm not in ("auto", "tv", "movie"):
+                            _ppm = "auto"
                         apple_tv_auto_state["last_metadata"] = {
                             "query": str(metadata_w.get("query") or "").strip(),
                             "title": str(metadata_w.get("title") or "").strip(),
@@ -5246,6 +5798,7 @@ def main() -> int:
                             "position": metadata_w.get("position"),
                             "device_state": str(metadata_w.get("device_state") or "").strip(),
                             "inferred_prefer": prefer_snap,
+                            "prefer_pyatv_media": _ppm,
                             "content_key": _content_key_from_metadata(metadata_w),
                             "app_name": str(metadata_w.get("app_name") or "").strip(),
                             "app_id": str(metadata_w.get("app_id") or "").strip(),
@@ -5270,32 +5823,9 @@ def main() -> int:
                                         skip_cache = None
                                         render_once()
                     md_poll = metadata_w if isinstance(metadata_w, dict) else None
-                    md_act = md_poll is not None and not _atv_metadata_is_content_idle(md_poll)
-                    pyatv_has_app = False
-                    if md_act:
-                        pyatv_has_app = bool(
-                            str(md_poll.get("app_name") or "").strip()
-                            or str(md_poll.get("app_id") or "").strip()
-                        )
-                    roku_nm: str | None = None
-                    if not pyatv_has_app:
-                        try:
-                            from pigeon.roku_ecp import (
-                                fetch_roku_active_app_name,
-                                resolve_roku_ecp_base_url_for_row,
-                            )
-
-                            row0 = streaming_slot_holder[0]
-                            rb = resolve_roku_ecp_base_url_for_row(row0) if row0 else ""
-                            if rb:
-                                t = fetch_roku_active_app_name(rb)
-                                if t:
-                                    roku_nm = t
-                        except Exception:
-                            roku_nm = None
                     _sync_streaming_badge_from_playback_sources(
                         md_poll,
-                        roku_app_name=roku_nm,
+                        roku_app_name=wk_roku_nm,
                     )
                     pyatv_tmdb_eligible = False
                     if ok_w and metadata_w:
@@ -5317,59 +5847,50 @@ def main() -> int:
                                 apple_tv_auto_state["prefer"] = prefer
                                 spawn_tmdb_poster_fetch(query, prefer=prefer)
                         _return_to_landing_if_atv_idle(metadata_w)
-                    if not pyatv_tmdb_eligible:
-                        row0_nf = streaming_slot_holder[0]
-                        if row0_nf is not None and not row_is_playback_apple_tv(row0_nf):
-                            try:
-                                from pigeon.roku_ecp import (
-                                    fetch_roku_title_for_metadata,
-                                    resolve_roku_ecp_base_url_for_row,
-                                )
-                                from pigeon.tmdb_poster import is_degenerate_tmdb_query
+                    if not pyatv_tmdb_eligible and wk_roku_title is not None:
+                        try:
+                            from pigeon.tmdb_poster import is_degenerate_tmdb_query
 
-                                rb_nf = resolve_roku_ecp_base_url_for_row(row0_nf)
-                                if rb_nf:
-                                    r_ok, _rmsg, rtitle = fetch_roku_title_for_metadata(
-                                        rb_nf, timeout=6.0
+                            r_ok, _rmsg, rtitle = wk_roku_title
+                            if (
+                                r_ok
+                                and rtitle
+                                and not is_degenerate_tmdb_query(rtitle)
+                            ):
+                                r_md: dict[str, object] = {
+                                    "query": str(rtitle).strip(),
+                                    "title": str(rtitle).strip(),
+                                    "artist": "",
+                                    "series_name": "",
+                                    "album": "",
+                                    "media_type": "",
+                                    "total_time": None,
+                                    "position": None,
+                                    "device_state": "Playing",
+                                    "app_name": str(wk_roku_nm or ""),
+                                    "app_id": "",
+                                    "prefer_pyatv_media": "auto",
+                                }
+                                prefer_r = _tmdb_pref_from_metadata(r_md)
+                                r_md["inferred_prefer"] = prefer_r
+                                r_md["content_key"] = _content_key_from_metadata(r_md)
+                                apple_tv_auto_state["last_metadata"] = r_md
+                                _update_status_bar_from_metadata(r_md)
+                                md_for_status = r_md
+                                prev_rk = apple_tv_auto_state.get("content_key")
+                                r_ck = r_md.get("content_key")
+                                if r_ck and r_ck != prev_rk:
+                                    apple_tv_auto_state["content_key"] = r_ck
+                                    apple_tv_auto_state["query"] = str(rtitle).strip()
+                                    apple_tv_auto_state["prefer"] = "auto"
+                                    spawn_tmdb_poster_fetch(
+                                        str(rtitle).strip(), prefer="auto"
                                     )
-                                    if (
-                                        r_ok
-                                        and rtitle
-                                        and not is_degenerate_tmdb_query(rtitle)
-                                    ):
-                                        r_md: dict[str, object] = {
-                                            "query": str(rtitle).strip(),
-                                            "title": str(rtitle).strip(),
-                                            "artist": "",
-                                            "series_name": "",
-                                            "album": "",
-                                            "media_type": "",
-                                            "total_time": None,
-                                            "position": None,
-                                            "device_state": "Playing",
-                                            "app_name": str(roku_nm or ""),
-                                            "app_id": "",
-                                        }
-                                        prefer_r = _tmdb_pref_from_metadata(r_md)
-                                        r_md["inferred_prefer"] = prefer_r
-                                        r_md["content_key"] = _content_key_from_metadata(r_md)
-                                        apple_tv_auto_state["last_metadata"] = r_md
-                                        _update_status_bar_from_metadata(r_md)
-                                        md_for_status = r_md
-                                        prev_rk = apple_tv_auto_state.get("content_key")
-                                        r_ck = r_md.get("content_key")
-                                        if r_ck and r_ck != prev_rk:
-                                            apple_tv_auto_state["content_key"] = r_ck
-                                            apple_tv_auto_state["query"] = str(rtitle).strip()
-                                            apple_tv_auto_state["prefer"] = "auto"
-                                            spawn_tmdb_poster_fetch(
-                                                str(rtitle).strip(), prefer="auto"
-                                            )
-                                        if not pyatv_ok:
-                                            apple_tv_dashboard_track["last_poll_ok"] = True
-                                            apple_tv_dashboard_track["consecutive_fail"] = 0
-                            except Exception:
-                                pass
+                                if not pyatv_ok:
+                                    apple_tv_dashboard_track["last_poll_ok"] = True
+                                    apple_tv_dashboard_track["consecutive_fail"] = 0
+                        except Exception:
+                            pass
                     _sync_status_bar_visibility_for_playback(md_for_status)
                     root.after(APPLE_TV_POLL_MS, _apple_tv_auto_poll_tick)
 
@@ -5579,7 +6100,7 @@ def main() -> int:
 
         def submit_command_entry(_event=None) -> str:
             nonlocal skip_cache
-            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS):
+            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS) and display_view_holder[0] != DisplayView.FIVE:
                 return "break"
             _bump_pigeon_user_activity()
             now_sub = time.monotonic()
@@ -5643,8 +6164,6 @@ def main() -> int:
             shell,
             video_area,
             label,
-            hud_bar,
-            hud,
             command_bar,
             settings_frame,
             settings_scroll_outer,
@@ -5652,7 +6171,8 @@ def main() -> int:
             settings_inner,
             settings_footer_row,
         ):
-            _prepend_hotkey_bindtag(w)
+            if w is not None:
+                _prepend_hotkey_bindtag(w)
 
         for seq in ("<KeyPress-Tab>", "<Key-Tab>"):
             root.bind_class(HOTKEY_BINDTAG, seq, on_tab_key)
@@ -5663,21 +6183,31 @@ def main() -> int:
 
         def on_return_overlay_command(event: tk.Event) -> str | None:
             _bump_pigeon_user_activity(event)
-            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS):
-                return None
             w = event.widget
             if w == command_entry or str(w) == str(command_entry):
                 return None
             if _widget_accepts_typing(w):
                 return None
-            if command_entry_visible:
-                try:
-                    command_entry.focus_force()
-                except tk.TclError:
-                    command_entry.focus_set()
-            else:
-                show_command_entry()
-            return "break"
+            if dev_phase in (DevPhase.GRID, DevPhase.SETTINGS) or display_view_holder[0] == DisplayView.FIVE:
+                if command_entry_visible:
+                    try:
+                        command_entry.focus_force()
+                    except tk.TclError:
+                        command_entry.focus_set()
+                else:
+                    show_command_entry()
+                return "break"
+            if _PIGEON_EXT:
+                from pigeon.player_remote import queue_player_remote_action
+
+                queue_player_remote_action(
+                    streaming_slot_holder[0],
+                    current_apple_tv=current_apple_tv,
+                    action="select",
+                    apple_tv_busy=apple_tv_busy,
+                )
+                return "break"
+            return None
 
         root.bind_all("<KeyPress-Tab>", on_tab_key)
         root.bind_all("<Key-Tab>", on_tab_key)
@@ -5764,6 +6294,108 @@ def main() -> int:
         for _space_seq in ("<space>", "<KeyPress-space>"):
             root.bind_all(_space_seq, on_space_play)
 
+        def on_display_view_digit(event: tk.Event) -> str | None:
+            if _widget_accepts_typing(event.widget):
+                return None
+            if not _PIGEON_EXT:
+                return None
+            ch = getattr(event, "char", "") or ""
+            if ch not in "12345":
+                return None
+            nonlocal skip_cache
+            display_view_holder[0] = DisplayView(int(ch))
+            skip_cache = None
+            _bump_pigeon_user_activity(event)
+            return "break"
+
+        for _dv_ch in ("1", "2", "3", "4", "5"):
+            root.bind_all(f"<KeyPress-{_dv_ch}>", on_display_view_digit)
+
+        def on_arrow_remote(event: tk.Event) -> str | None:
+            if _widget_accepts_typing(event.widget):
+                return None
+            if not _PIGEON_EXT:
+                return None
+            ks = getattr(event, "keysym", "") or ""
+            if ks not in ("Up", "Down", "Left", "Right"):
+                return None
+            from pigeon.player_remote import queue_player_remote_action
+
+            st = int(getattr(event, "state", 0))
+            if st & 0x0004:
+                return None
+            sh = bool(st & 0x0001)
+            meta_cmd = (
+                bool(st & 0x100000)
+                or bool(st & 0x080000)
+                or bool(st & 0x0008)
+                or bool(st & 0x20000)
+            )
+            row = streaming_slot_holder[0]
+            if meta_cmd:
+                cmd_map = {
+                    "Up": "power_on",
+                    "Down": "power_off",
+                    "Left": "back",
+                    "Right": "home",
+                }
+                act = cmd_map.get(ks)
+                if act:
+                    queue_player_remote_action(
+                        row,
+                        current_apple_tv=current_apple_tv,
+                        action=act,
+                        apple_tv_busy=apple_tv_busy,
+                    )
+                return "break"
+            if sh:
+                if ks == "Up":
+                    queue_player_remote_action(
+                        row,
+                        current_apple_tv=current_apple_tv,
+                        action="volume_up",
+                        apple_tv_busy=apple_tv_busy,
+                    )
+                elif ks == "Down":
+                    queue_player_remote_action(
+                        row,
+                        current_apple_tv=current_apple_tv,
+                        action="volume_down",
+                        apple_tv_busy=apple_tv_busy,
+                    )
+                elif ks == "Left":
+                    queue_player_remote_action(
+                        row,
+                        current_apple_tv=current_apple_tv,
+                        action="skip_back",
+                        apple_tv_busy=apple_tv_busy,
+                    )
+                elif ks == "Right":
+                    queue_player_remote_action(
+                        row,
+                        current_apple_tv=current_apple_tv,
+                        action="skip_fwd",
+                        apple_tv_busy=apple_tv_busy,
+                    )
+                return "break"
+            nav = {
+                "Up": "nav_up",
+                "Down": "nav_down",
+                "Left": "nav_left",
+                "Right": "nav_right",
+            }.get(ks)
+            if nav:
+                queue_player_remote_action(
+                    row,
+                    current_apple_tv=current_apple_tv,
+                    action=nav,
+                    apple_tv_busy=apple_tv_busy,
+                )
+            return "break"
+
+        for _ak in ("<KeyPress-Up>", "<KeyPress-Down>", "<KeyPress-Left>", "<KeyPress-Right>"):
+            root.bind_all(_ak, on_arrow_remote)
+
         def on_escape(event: tk.Event) -> str | None:
             _bump_pigeon_user_activity(event)
             if command_entry_visible:
@@ -5776,10 +6408,13 @@ def main() -> int:
         root.bind_all("<KeyPress-F9>", lambda e: try_cycle_dev_phase(None))
         root.bind_all("<KeyPress-F10>", on_f10_key)
 
-        def on_shift_tab_advanced(event: tk.Event) -> str | None:
+        def on_ctrl_shift_tab_advanced(event: tk.Event) -> str | None:
             if _widget_accepts_typing(event.widget):
                 return None
             if not _PIGEON_EXT:
+                return None
+            st = int(getattr(event, "state", 0))
+            if not (st & 0x0004) or not (st & 0x0001):
                 return None
             _bump_pigeon_user_activity(event)
             now = time.monotonic()
@@ -5790,11 +6425,17 @@ def main() -> int:
             return "break"
 
         for _adv_hot in (
+            "<Control-Shift-KeyPress-Tab>",
+            "<Control-Shift-Key-Tab>",
+            "<Control-Shift-KeyPress-ISO_Left_Tab>",
+        ):
+            root.bind_all(_adv_hot, on_ctrl_shift_tab_advanced)
+        for _stab in (
             "<KeyPress-ISO_Left_Tab>",
             "<Shift-KeyPress-Tab>",
             "<Shift-Key-Tab>",
         ):
-            root.bind_all(_adv_hot, on_shift_tab_advanced)
+            root.bind_all(_stab, on_shift_tab_dev_cycle)
         for _tmdb_key in ("<KeyPress-question>", "<Shift-KeyPress-slash>"):
             root.bind_all(_tmdb_key, on_tmdb_retry_hotkey)
 
@@ -5822,7 +6463,7 @@ def main() -> int:
             _bump_pigeon_user_activity(event)
             if not _PIGEON_EXT:
                 return None
-            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS):
+            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS) and display_view_holder[0] != DisplayView.FIVE:
                 return None
             if _widget_accepts_typing(event.widget):
                 return None
@@ -5941,7 +6582,11 @@ def main() -> int:
                 from pigeon.image_ui_protocol import backdrop_scene_bgr_for_display
 
                 scaled_display = backdrop_scene_bgr_for_display(
-                    backdrop_master_bgr, w, h, app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit
+                    backdrop_master_bgr,
+                    w,
+                    h,
+                    app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit,
+                    app_logo_clock_saver_style=_app_logo_clock_saver_style_now(),
                 )
                 scaled_version += 1
             sync_developer_chrome()
@@ -6071,27 +6716,24 @@ def main() -> int:
             ta_toast = _location_toast_alpha(now) if _PIGEON_EXT else 0.0
             location_toast_animating = _PIGEON_EXT and 0.0 < ta_toast < 1.0
             location_toast_cache_key = int(round(ta_toast * 1000)) if _PIGEON_EXT else 0
-            clock_saver_cache_key = 1 if (_PIGEON_EXT and _clock_saver_active(now)) else 0
+            clock_saver_cache_key = 1 if (_PIGEON_EXT and _clock_saver_for_compose(now)) else 0
             clock_saver_peek_cache_key = (
                 1 if (_PIGEON_EXT and now < clock_saver_peek_until_mono[0]) else 0
             )
             # Mic EQ intro is driven by per-frame ``mic_viz_cache_key``; no separate wordmark phase.
             startup_wm_cache_key = 0
             paused_row_cache_key = 1 if (_PIGEON_EXT and _show_paused_row_overlay()) else 0
-            mic_viz_cache_key = (
-                int(now * _MIC_VIZ_COMPOSITE_FPS)
-                if (
-                    _PIGEON_EXT
-                    and _blend_mic_visualizer is not None
-                    and not use_backdrop_scene
-                )
-                else 0
-            )
-            mic_eq_needs_composite = (
+            _ev_mic = _effective_display_view() if _PIGEON_EXT else DisplayView.ONE
+            _mic_on = (
                 _PIGEON_EXT
                 and _blend_mic_visualizer is not None
-                and not use_backdrop_scene
+                and _ev_mic not in (DisplayView.THREE, DisplayView.FOUR)
+                and (_ev_mic == DisplayView.TWO or not use_backdrop_scene)
             )
+            mic_viz_cache_key = (
+                int(now * _MIC_VIZ_COMPOSITE_FPS) if _mic_on else 0
+            )
+            mic_eq_needs_composite = _mic_on
             if _PIGEON_EXT and status_bar_widget is not None:
                 if status_bar_widget.set_theater_dim_suppressed(idle_s_here >= 0.5):
                     _warm_status_bar_blits()
@@ -6122,6 +6764,8 @@ def main() -> int:
                     scaled_version,
                     b_key,
                     int(dev_phase),
+                    int(display_view_holder[0]),
+                    int(_effective_display_view()),
                     tick_key,
                     display_dims[0],
                     display_dims[1],
@@ -6144,7 +6788,11 @@ def main() -> int:
                 shown = _compose_shown_frame(
                     last_frame if not use_backdrop_scene else None, b_scene
                 )
-                if lerp_bgr_red_monochrome is not None:
+                shown = _blend_view_four_debug(shown)
+                if (
+                    lerp_bgr_red_monochrome is not None
+                    and _effective_display_view() != DisplayView.FOUR
+                ):
                     sm = max(0.0, min(1.0, _compose_idle_strength_holder[0]))
                     if sm > 1e-6:
                         shown = lerp_bgr_red_monochrome(shown, sm)
@@ -6162,6 +6810,8 @@ def main() -> int:
                     scaled_version,
                     b_key,
                     int(dev_phase),
+                    int(display_view_holder[0]),
+                    int(_effective_display_view()),
                     tick_key,
                     display_dims[0],
                     display_dims[1],
@@ -6347,7 +6997,7 @@ def main() -> int:
         render_once()
         root.after(600, _receiver_poll_tick)
 
-        if splash_paths:
+        if _PIGEON_EXT:
             tk.Widget.pack = _tk_pack_orig  # type: ignore[method-assign]
             tk.Widget.grid = _tk_grid_orig  # type: ignore[method-assign]
             tk.Widget.place = _tk_place_orig  # type: ignore[method-assign]
@@ -6358,9 +7008,10 @@ def main() -> int:
         bootstrap_done[0] = True
         _try_remove_splash_overlay()
 
-    if splash_paths:
-        root.after(0, splash_tick)
-        root.after(0, bootstrap)
+    if _PIGEON_EXT:
+        # Paint at least one splash frame before heavy bootstrap (pack/grid pump interleaves updates).
+        root.after_idle(splash_tick)
+        root.after(1, bootstrap)
     else:
         root.after(1, bootstrap)
     try:

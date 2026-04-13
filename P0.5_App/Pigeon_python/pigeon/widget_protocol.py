@@ -1,4 +1,4 @@
-"""Widget contract: each widget draws into a shared 5126×2160 BGR canvas."""
+"""Widget contract: each widget draws into a shared DESIGN_W×DESIGN_H BGR canvas."""
 
 from __future__ import annotations
 

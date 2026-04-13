@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.compositing import alpha_blend_bgra_over_bgr
+from pigeon.compositing import alpha_blend_bgra_over_bgr, cv_resize_interp
 from pigeon.design import rect_for_span_at_cell, rect_for_span_top_right_at_cell
 from pigeon.image_ui_protocol import load_image_bgra
 from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_medium
@@ -129,8 +129,7 @@ class TmdbLogoWidget:
         scale = min(w / float(sw), h / float(sh)) * self._fit_scale
         tw = max(1, int(round(sw * scale)))
         th = max(1, int(round(sh * scale)))
-        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-        resized = cv2.resize(src, (tw, th), interpolation=interp)
+        resized = cv2.resize(src, (tw, th), interpolation=cv_resize_interp(sw, sh, tw, th))
 
         out = np.zeros((h, w, 4), dtype=np.uint8)
         x0 = max(0, (w - tw) // 2)

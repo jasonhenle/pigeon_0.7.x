@@ -1,7 +1,7 @@
 """
 Grid overlay for Pigeon (single extension point as overlays grow).
 
-Main stage: full 19×8 design grid at 5126×2160, then mapped to the 2:1 display.
+Main stage: full 19×8 design grid at design resolution, then mapped to the display.
 Widget shell: local grid on a cropped region or full-stage overlay for alignment checks.
 """
 

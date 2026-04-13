@@ -1,10 +1,11 @@
-"""5126×2160 shell per widget: full design canvas + optional cropped preview for testing."""
+"""Design-resolution shell per widget: full canvas + optional cropped preview for testing."""
 
 from __future__ import annotations
 
 import cv2
 import numpy as np
 
+from pigeon.compositing import cv_resize_interp
 from pigeon.design import DESIGN_H, DESIGN_W, rect_for_span_at_cell, rect_for_span_from_origin
 from pigeon.overlay import (
     blend_overlay_bgr,
@@ -34,7 +35,7 @@ class WidgetShell:
         return np.zeros((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
 
     def render_full(self) -> np.ndarray:
-        """5126×2160 BGR after widget draw."""
+        """Full design BGR after widget draw."""
         canvas = self.blank_canvas_bgr()
         self._widget.render(canvas)
         return canvas
@@ -99,7 +100,9 @@ class WidgetShell:
         scale = min(max_w / float(cw), max_h / float(ch))
         out_w = max(1, int(round(cw * scale)))
         out_h = max(1, int(round(ch * scale)))
-        resized = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(
+            crop, (out_w, out_h), interpolation=cv_resize_interp(cw, ch, out_w, out_h)
+        )
         canvas = np.zeros((max_h, max_w, 3), dtype=np.uint8)
         ox = (max_w - out_w) // 2
         oy = (max_h - out_h) // 2

@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.compositing import alpha_blend_bgra_over_bgr
+from pigeon.compositing import alpha_blend_bgra_over_bgr, cv_resize_interp
 from pigeon.design import rect_for_span_at_cell, rect_for_span_top_right_at_cell
 from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold
 from pigeon.image_ui_protocol import load_image_bgra
@@ -21,8 +21,8 @@ AUDIO_CONFIG_SCALE = 0.9
 
 # Volume line: fixed cap as a fraction of the cell height (no size animation).
 VOLUME_TEXT_FIT_H = 0.52
-# Volume glyph opacity vs other overlay text (0–255 alpha).
-_VOLUME_TEXT_RGBA = (255, 255, 255, 128)
+# Volume glyph opacity vs other overlay text (0–255 alpha); ~20% for subtle readout.
+_VOLUME_TEXT_RGBA = (255, 255, 255, 51)
 
 PATCH_LAYER_WORDMARK = "wordmark"  # legacy layer id; wordmark blit removed
 PATCH_LAYER_STREAMING_BADGE = "streaming_badge"
@@ -103,10 +103,14 @@ def compose_playback_volume_widget_line(
     roku_tv_volume_percent: str,
 ) -> str:
     """
-    Volume widget text: **0 = silent, 100 = max** when the player exposes a 0–100 level
-    (Apple TV via pyatv, Roku TV via device-info). Otherwise falls back to usable Denon text.
+    Prefer AV receiver readout (dB, %, level) when the poll returns a usable string; otherwise
+    Apple TV ``volume_percent`` (0–100) or Roku TV device level.
     """
     from pigeon.app_state import row_is_playback_apple_tv
+
+    denon_line = _denon_volume_as_widget_line(denon_vol_effective)
+    if denon_line and _receiver_volume_display_line(denon_line):
+        return denon_line
 
     is_apple = bool(stream_row) and row_is_playback_apple_tv(stream_row)
     if is_apple:
@@ -119,9 +123,6 @@ def compose_playback_volume_widget_line(
         if tv.isdigit() and 0 <= int(tv) <= 100:
             return tv
 
-    denon_line = _denon_volume_as_widget_line(denon_vol_effective)
-    if denon_line and _receiver_volume_display_line(denon_line):
-        return denon_line
     return ""
 
 
@@ -277,8 +278,9 @@ def _image_contain_center_bgra(
     scale = min(w / float(sw), h / float(sh))
     tw = max(1, int(round(sw * scale)))
     th = max(1, int(round(sh * scale)))
-    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    resized = cv2.resize(src_bgra, (tw, th), interpolation=interp)
+    resized = cv2.resize(
+        src_bgra, (tw, th), interpolation=cv_resize_interp(sw, sh, tw, th)
+    )
     out = np.zeros((h, w, 4), dtype=np.uint8)
     x0 = max(0, (w - tw) // 2)
     y0 = max(0, (h - th) // 2)
@@ -314,9 +316,9 @@ class AudioConfig:
     badge_span: tuple[int, int] = (2, 1)
     audio_row: int | float = 7.5
     audio_span_wide: int = 4
-    # Volume: top-left at grid [row, col] = [7.5, 3].
-    volume_anchor_row: int | float = 7.5
-    volume_anchor_col: int = 3
+    # Volume: top-left anchor (1-based grid); [8.5, 1.5] = half cell down + left from [8, 2].
+    volume_anchor_row: int | float = 8.5
+    volume_anchor_col: int | float = 1.5
     volume_span_wide: int = 5
     volume_span_tall: int = 1
 

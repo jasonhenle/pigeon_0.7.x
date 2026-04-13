@@ -48,7 +48,7 @@ from pigeon.media_cache import (
     find_cached_reformatted_asset,
     title_key,
 )
-from pigeon.media_folders import pigeon_pulled_media_dir
+from pigeon.media_folders import pigeon_pulled_media_dir, trim_pulled_media_dir
 
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 POSTER_SIZE = "w780"  # good balance before local 1800-wide pipeline
@@ -180,6 +180,7 @@ _DEGENERATE_TMDB_QUERIES = frozenset(
         "settings",
         "hbo max",
         "hbomax",
+        "nbc",
     }
 )
 
@@ -582,9 +583,12 @@ def resolve_tmdb_query_from_now_playing_fields(
     Build the TMDb search string from pyatv-style fields plus the heuristic ``base_query``.
 
     **Literal mode** (default, ``PIGEON_TMDB_MATCH_MODE=literal``): first substantive non-degenerate
-    field — ``base_query`` (Apple TV now-playing heuristics), then ``series_name``, ``album``,
-    ``artist``, ``title``, ``episode_title`` (``base_query`` first so Disney+/etc. fixes win over a
-    misleading raw ``series_name``).
+    field. Normally ``base_query`` (Apple TV heuristics) wins first so Disney+/etc. fixes beat a stale
+    ``series_name``. When ``series_name`` and ``title`` disagree but ``base_query`` is just the episode
+    ``title``, ``series_name`` is tried first so TV rows are not reduced to movie-style title-only
+    metadata. If the chosen string is still just the episode line but combined metadata matches a
+    Peacock/NBC late-night franchise (same substring map as forgiving mode), the canonical series
+    title is used instead.
 
     **Forgiving mode** (``forgiving=True`` or env ``forgiving``): prefer canonical series titles,
     sketch–show compounds, Peacock NBC blob rules, episode hints, etc.
@@ -598,12 +602,66 @@ def resolve_tmdb_query_from_now_playing_fields(
 
     fg = tmdb_match_forgiving(override=forgiving)
     if not fg:
-        # ``base_query`` first: carries Apple TV impl fixes (Disney+ series_name quirks, Max album, etc.).
-        for x in (base_query, series_name, album, artist, title, episode_title):
+        bq = _field(base_query)
+        sn = _field(series_name)
+        ti = _field(title)
+        et = _field(episode_title)
+        # Episode/film title in base_query while series_name names the show → search the show, not the episode string.
+        bq_is_episode_like = bool(
+            bq
+            and (
+                (ti and bq.lower() == ti.lower())
+                or (et and bq.lower() == et.lower())
+            )
+        )
+        compound_disagrees_with_sn = False
+        if sn and ti:
+            cp_ti = colon_prefix_show_query(ti)
+            if cp_ti:
+                snl = sn.lower()
+                cpl = cp_ti.strip().lower()
+                til = ti.lower()
+                # Stale series_name (e.g. Disney+) while title is already ``NewShow - Episode``: trust base_query order.
+                if cpl != snl and snl not in til:
+                    compound_disagrees_with_sn = True
+        prefer_series_first = bool(
+            sn
+            and not is_degenerate_tmdb_query(sn)
+            and bq_is_episode_like
+            and not compound_disagrees_with_sn
+            and (
+                (ti and sn.lower() != ti.lower())
+                or (et and sn.lower() != et.lower())
+            )
+        )
+        if prefer_series_first:
+            ordered = (series_name, base_query, album, artist, title, episode_title)
+        else:
+            ordered = (base_query, series_name, album, artist, title, episode_title)
+        first_pick: str | None = None
+        for x in ordered:
             s = _field(x)
             if s and not is_degenerate_tmdb_query(s):
-                return s
-        return None
+                first_pick = s
+                break
+        if first_pick is None:
+            return None
+        # Literal mode used to return before forgiving Peacock/NBC blob rules; guest-only titles still need it.
+        blob_parts_lit: list[str] = []
+        for x in (base_query, series_name, title, episode_title, artist, album):
+            s = _field(x)
+            if s and not is_degenerate_tmdb_query(s):
+                blob_parts_lit.append(s)
+        norm_lit = _norm_query(" ".join(blob_parts_lit)) if blob_parts_lit else ""
+        nbc_lit = _canonical_series_from_nbc_late_night_blob(norm_lit)
+        if nbc_lit:
+            fp = first_pick.lower()
+            episode_like_pick = bool(
+                (ti and fp == ti.lower()) or (et and fp == et.lower())
+            )
+            if episode_like_pick and _norm_query(first_pick) != _norm_query(nbc_lit):
+                return nbc_lit
+        return first_pick
 
     ordered: list[str] = []
     for x in (base_query, series_name, title, episode_title, artist, album):
@@ -1145,9 +1203,9 @@ def _search_best_media_with_poster_one(
         return None, None
     pm = float(m.get("popularity") or 0.0)
     pt = float(t.get("popularity") or 0.0)
-    if pt > pm:
-        return t, "tv"
-    return m, "movie"
+    if pm > pt:
+        return m, "movie"
+    return t, "tv"
 
 
 def search_best_media_with_poster(
@@ -1155,7 +1213,7 @@ def search_best_media_with_poster(
 ) -> tuple[dict | None, MediaKind | None]:
     """
     Pick one movie or TV hit with a poster.
-    ``auto`` chooses whichever has higher TMDb ``popularity`` (ties → movie).
+    ``auto`` compares TMDb ``popularity``; TV wins ties (movie only if strictly more popular).
     """
     fg = tmdb_match_forgiving(override=forgiving)
     raw = (query or "").strip()
@@ -1200,15 +1258,15 @@ def _search_best_media_one(q: str, *, prefer: Prefer, forgiving: bool) -> tuple[
         return None, None
     pm = float(m.get("popularity") or 0.0)
     pt = float(t.get("popularity") or 0.0)
-    if pt > pm:
-        return t, "tv"
-    return m, "movie"
+    if pm > pt:
+        return m, "movie"
+    return t, "tv"
 
 
 def search_best_media(
     query: str, *, prefer: Prefer = "auto", forgiving: bool | None = None
 ) -> tuple[dict | None, MediaKind | None]:
-    """Pick one movie or TV hit by popularity (poster not required)."""
+    """Pick one movie or TV hit; ``auto`` uses popularity with TV winning ties."""
     fg = tmdb_match_forgiving(override=forgiving)
     raw = (query or "").strip()
     if raw and fg:
@@ -1384,7 +1442,10 @@ def fetch_tmdb_poster_to_pulled(
             "(Show: guest), Pigeon already tried shortened variants.",
             None,
         )
-    return download_poster_to_pulled(item, kind)
+    ok_p, msg_p, path_p = download_poster_to_pulled(item, kind)
+    if ok_p:
+        trim_pulled_media_dir()
+    return ok_p, msg_p, path_p
 
 
 def apply_tmdb_movie_query(
@@ -1396,8 +1457,8 @@ def apply_tmdb_movie_query(
 
     Always picks a **random** backdrop from TMDb image results (not served from cache).
 
-    Returns ``(ok, message, backdrop_master_bgr_or_none)`` where master is BGR scaled to 2160px tall
-    for the scene compositor, or None if no backdrop could be loaded.
+    Returns ``(ok, message, backdrop_master_bgr_or_none)`` where master is BGR scaled to uniform
+    design canvas height for the compositor, or None if no backdrop could be loaded.
     """
     q = query.strip()
     if not q:
@@ -1492,5 +1553,6 @@ def apply_tmdb_movie_query(
             parts.append("backdrop: download failed")
 
     summary = " | ".join(parts)
+    trim_pulled_media_dir()
     # Prefix title_key + display_title so the UI can render a text fallback when no English logo exists.
     return True, f"{tk}::{display_title}::{summary}", backdrop_master
