@@ -32,9 +32,10 @@ POSTER_MASTER_H = 2700
 BACKDROP_MASTER_HEIGHT = 2160
 # Design grid (1-based): patch top-left = top-left of this cell, bottom-right = bottom-right of this cell.
 BACKDROP_PATCH_TL_ROW_1BASED = 1
-BACKDROP_PATCH_TL_COL_1BASED = 2
+# Full grid width (cols 1–19): fewer stage-colored side margins around the still.
+BACKDROP_PATCH_TL_COL_1BASED = 1
 BACKDROP_PATCH_BR_ROW_1BASED = 8
-BACKDROP_PATCH_BR_COL_1BASED = 18
+BACKDROP_PATCH_BR_COL_1BASED = 19
 
 
 class PosterWidgetSize(Enum):

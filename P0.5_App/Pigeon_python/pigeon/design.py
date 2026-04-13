@@ -59,7 +59,7 @@ def rect_for_span_at_cell(
     squares_wide: int,
     squares_tall: int,
     *,
-    row_1based: int,
+    row_1based: int | float,
     col_1based: int,
     width: int = DESIGN_W,
     height: int = DESIGN_H,
@@ -70,12 +70,15 @@ def rect_for_span_at_cell(
     Pixel rectangle (x, y, w, h) for a widget whose **top-left** sits on grid cell [row, col] (1-based).
 
     squares_wide / squares_tall = span in grid cells.
+    ``row_1based`` may be fractional (e.g. 6.5 → half a cell higher than row 7).
     """
     g = get_grid_geometry(width=width, height=height, cols=cols, rows=rows)
     x = g.x0 + (col_1based - 1) * g.cell
-    y = g.y0 + (row_1based - 1) * g.cell
+    y = int(round(g.y0 + (float(row_1based) - 1.0) * g.cell))
     w = squares_wide * g.cell
     h = squares_tall * g.cell
+    y = max(0, min(y, height - h))
+    x = max(0, min(x, width - w))
     return (x, y, w, h)
 
 
@@ -83,7 +86,7 @@ def rect_for_span_top_right_at_cell(
     squares_wide: int,
     squares_tall: int,
     *,
-    row_1based: int,
+    row_1based: int | float,
     col_right_1based: float,
     width: int = DESIGN_W,
     height: int = DESIGN_H,
@@ -94,13 +97,14 @@ def rect_for_span_top_right_at_cell(
     Pixel rectangle (x, y, w, h) whose **top-right** aligns to grid coordinate (row, col_right_1based).
 
     ``col_right_1based`` may be fractional (e.g. 15.5 → half-cell); x = x0 + (col - 1) * cell - w.
+    ``row_1based`` may be fractional (half-cell vertical nudge).
     """
     g = get_grid_geometry(width=width, height=height, cols=cols, rows=rows)
     x_right = g.x0 + (float(col_right_1based) - 1.0) * g.cell
     w = squares_wide * g.cell
     h = squares_tall * g.cell
     x = int(round(x_right - w))
-    y = g.y0 + (row_1based - 1) * g.cell
+    y = int(round(g.y0 + (float(row_1based) - 1.0) * g.cell))
     x = max(0, min(x, width - w))
     y = max(0, min(y, height - h))
     return (x, y, w, h)

@@ -170,7 +170,7 @@ def fetch_roku_title_for_metadata(base_url: str, timeout: float = 8.0) -> tuple[
     except ET.ParseError:
         aa_root = None
 
-    state, title = _parse_media_player(mp_root)
+    state, title, roku_fields = _parse_media_player(mp_root)
     app_name = _parse_active_app(aa_root)
 
     try:
@@ -179,6 +179,17 @@ def fetch_roku_title_for_metadata(base_url: str, timeout: float = 8.0) -> tuple[
 
         def is_degenerate_tmdb_query(_q: str) -> bool:  # type: ignore[misc]
             return False
+
+    if roku_fields:
+        try:
+            from pigeon.raw_title import raw_title_from_roku_player_fields, tmdb_query_from_raw_title
+
+            rt = raw_title_from_roku_player_fields(roku_fields)
+            q_rt = tmdb_query_from_raw_title(rt, base_query=(title or "").strip() or None)
+            if q_rt and not is_degenerate_tmdb_query(q_rt):
+                return True, f"Roku @ {base}", q_rt
+        except ImportError:
+            pass
 
     t = (title or "").strip()
     if t and not is_degenerate_tmdb_query(t):
@@ -383,21 +394,21 @@ def roku_send_play_pause(*, base_url: str, timeout: float = 3.0) -> tuple[bool, 
         return False, str(e)
 
 
-def _parse_media_player(root: ET.Element | None) -> tuple[str, str]:
-    """Returns (state_lower, title_or_empty)."""
+def _parse_media_player(root: ET.Element | None) -> tuple[str, str, dict[str, str]]:
+    """Returns ``(state_lower, best_title_or_empty, player_tag_fields)``."""
     if root is None:
-        return "", ""
+        return "", "", {}
     player = None
     for el in root.iter():
         if _strip_ns(el.tag).lower() == "player":
             player = el
             break
     if player is None:
-        return "", ""
+        return "", "", {}
     state = (player.get("state") or "").strip().lower()
     fields = _collect_player_fields(player)
     title = _best_title_from_player_fields(fields)
-    return state, title
+    return state, title, fields
 
 
 def _parse_active_app(root: ET.Element | None) -> str:
@@ -471,6 +482,23 @@ def _parse_tv_volume_from_device_info(root: ET.Element | None, raw: str | None) 
     return ""
 
 
+def fetch_roku_tv_master_volume_string(base_url: str, timeout: float = 3.0) -> str:
+    """
+    TV master level from ``/query/device-info`` as a decimal string ``0``..``100``, or ``\"\"``.
+    """
+    base = normalize_roku_ecp_base(base_url) if (base_url or "").strip() else ""
+    if not base:
+        return ""
+    di_body = _fetch(f"{base}/query/device-info", timeout)
+    di_root = None
+    try:
+        if di_body and di_body.strip():
+            di_root = ET.fromstring(di_body)
+    except ET.ParseError:
+        di_root = None
+    return _parse_tv_volume_from_device_info(di_root, di_body)
+
+
 def _append_volume_suffix(line: str, vol: str) -> str:
     v = (vol or "").strip()
     if not v:
@@ -499,15 +527,15 @@ def _parse_tv_active_channel(root: ET.Element | None) -> str:
     return ""
 
 
-def fetch_roku_playback_line(base_url: str, timeout: float = 3.0) -> str:
+def fetch_roku_playback_line(base_url: str, timeout: float = 3.0) -> tuple[str, str]:
     """
-    One short line for the overlay volume row: ``Roku · …`` when something is playing
-    (or live TV channel text is available). When ``device-info`` exposes a TV volume level,
-    appends ``· vol N`` (e.g. ``· vol 22``). Returns empty when fully idle and no volume text.
+    Returns ``(line, tv_volume_percent)`` where *line* is a short ``Roku · …`` status string
+    (with ``· vol N`` appended when device-info exposes a TV level), and *tv_volume_percent*
+    is a ``0``..``100`` digit string or ``\"\"`` when unknown.
     """
     base = normalize_roku_ecp_base(base_url) if (base_url or "").strip() else ""
     if not base:
-        return ""
+        return "", ""
 
     di_body = _fetch(f"{base}/query/device-info", timeout)
     di_root = None
@@ -533,7 +561,7 @@ def fetch_roku_playback_line(base_url: str, timeout: float = 3.0) -> str:
     except ET.ParseError:
         aa_root = None
 
-    state, title = _parse_media_player(mp_root)
+    state, title, _roku_fields = _parse_media_player(mp_root)
     app_name = _parse_active_app(aa_root)
 
     inactive = ("", "close", "inactive", "none", "idle")
@@ -548,7 +576,7 @@ def fetch_roku_playback_line(base_url: str, timeout: float = 3.0) -> str:
         ch = _parse_tv_active_channel(tv_root)
         line = f"Roku · {ch}" if ch else ""
         out = _append_volume_suffix(line, vol_hint)
-        return out
+        return out, vol_hint
 
     parts = ["Roku"]
     if title:
@@ -557,7 +585,7 @@ def fetch_roku_playback_line(base_url: str, timeout: float = 3.0) -> str:
         parts.append(app_name)
     if state == "pause":
         parts.append("(paused)")
-    return _append_volume_suffix(" · ".join(parts), vol_hint)
+    return _append_volume_suffix(" · ".join(parts), vol_hint), vol_hint
 
 
 def probe_roku_ecp_at_address(address: str, timeout: float = 2.5) -> str:

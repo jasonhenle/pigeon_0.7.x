@@ -1,7 +1,8 @@
-"""Playback chrome: streaming badge, receiver-driven audio lines, subtle ``pigeon`` wordmark (grid-aligned)."""
+"""Playback chrome: streaming badge, receiver-driven audio lines (grid-aligned)."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,23 +19,24 @@ from pigeon.widgets.status_bar import DesignPatch
 # Service badge + audio lines (audioConfig): 10% smaller, centered in grid cells.
 AUDIO_CONFIG_SCALE = 0.9
 
-# Volume line: idle smaller type; boosted size clearly larger (readable animation without excess repaints).
-VOLUME_TEXT_FIT_H_BASE = 0.66
-VOLUME_TEXT_FIT_H_PEAK = 0.96
-# Quantization for overlay cache + ``pigeon_0_5`` skip-cache (smooth strength uses float between steps).
-VOLUME_TEXT_BOOST_SIG_STEPS = 400
+# Volume line: fixed cap as a fraction of the cell height (no size animation).
+VOLUME_TEXT_FIT_H = 0.52
+# Volume glyph opacity vs other overlay text (0–255 alpha).
+_VOLUME_TEXT_RGBA = (255, 255, 255, 128)
 
-PATCH_LAYER_WORDMARK = "wordmark"
+PATCH_LAYER_WORDMARK = "wordmark"  # legacy layer id; wordmark blit removed
 PATCH_LAYER_STREAMING_BADGE = "streaming_badge"
 PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"
 PATCH_LAYER_PAUSED_ROW = "paused_row"
 
-# Row 7, horizontally centered on grid column 10 (17 cells wide: cols 2–18).
+# Row 6.5 (aligned with TRT pill row); 17 cells wide cols 2–18, centered text.
 _PAUSED_ROW_TEXT = "paused"
 _PAUSED_ROW_SPAN_W = 17
 _PAUSED_ROW_SPAN_H = 1
-_PAUSED_ROW_GRID_ROW = 7
+_PAUSED_ROW_GRID_ROW = 6.5
 _PAUSED_ROW_GRID_COL = 2
+# Nudge in design pixels (negative = toward top of canvas).
+_PAUSED_ROW_OFFSET_Y_PX = -4
 _PAUSED_ROW_RGBA = (238, 240, 245, 242)
 
 
@@ -61,6 +63,67 @@ def _receiver_volume_display_line(raw: object) -> str:
     if s.lower() in ("n/a", "na", "none", "--"):
         return ""
     return s
+
+
+def volume_percent_to_widget_line(value: object) -> str:
+    """Map a player-reported level (0–100) to a short overlay string, or ``\"\"`` if unknown."""
+    if value is None:
+        return ""
+    try:
+        f = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    if f != f:  # NaN
+        return ""
+    p = int(max(0, min(100, round(f))))
+    return str(p)
+
+
+def _denon_volume_as_widget_line(effective: str) -> str:
+    """Normalize Denon-style strings for the volume row (mute → 0, ``NN%`` → ``NN``)."""
+    s = str(effective or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    if low in ("mute", "muted", "off"):
+        return "0"
+    m = re.search(r"(\d{1,3})\s*%", s)
+    if m:
+        n = int(m.group(1))
+        if 0 <= n <= 100:
+            return str(n)
+    return s
+
+
+def compose_playback_volume_widget_line(
+    *,
+    stream_row: dict[str, object] | None,
+    apple_tv_last_metadata: dict[str, object] | None,
+    denon_vol_effective: str,
+    roku_tv_volume_percent: str,
+) -> str:
+    """
+    Volume widget text: **0 = silent, 100 = max** when the player exposes a 0–100 level
+    (Apple TV via pyatv, Roku TV via device-info). Otherwise falls back to usable Denon text.
+    """
+    from pigeon.app_state import row_is_playback_apple_tv
+
+    is_apple = bool(stream_row) and row_is_playback_apple_tv(stream_row)
+    if is_apple:
+        md = apple_tv_last_metadata if isinstance(apple_tv_last_metadata, dict) else None
+        vp = volume_percent_to_widget_line(md.get("volume_percent") if md else None)
+        if vp:
+            return vp
+    else:
+        tv = str(roku_tv_volume_percent or "").strip()
+        if tv.isdigit() and 0 <= int(tv) <= 100:
+            return tv
+
+    denon_line = _denon_volume_as_widget_line(denon_vol_effective)
+    if denon_line and _receiver_volume_display_line(denon_line):
+        return denon_line
+    return ""
+
 
 # Large wordmark: top-left cell [2,3], bottom-right [5,15] → 13×4 cells.
 _PIGEON_WORDMARK = "pigeon"
@@ -148,26 +211,57 @@ def _text_patch_bgra(
     align: str = "left",
     fill_rgba: tuple[int, int, int, int] = (255, 255, 255, 255),
     fit_max_h: int | None = None,
+    edge_pad_px: int | None = None,
 ) -> np.ndarray:
     if w < 2 or h < 2 or not text:
         return np.zeros((h, w, 4), dtype=np.uint8)
-    pad = max(2, int(round(min(w, h) * 0.06)))
+    if edge_pad_px is not None:
+        pad = max(0, int(edge_pad_px))
+    else:
+        pad = max(2, int(round(min(w, h) * 0.06)))
     mw, mh = max(4, w - 2 * pad), max(4, h - 2 * pad)
     if fit_max_h is not None:
         mh = min(mh, max(4, fit_max_h))
     font = _fit_font_to_box(text, mw, mh)
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    l, t, r, b = draw.textbbox((0, 0), text, font=font)
-    tw, th = r - l, b - t
-    if align == "right":
-        x = w - pad - tw - l
-    elif align == "center":
-        x = (w - tw) // 2 - l
-    else:
-        x = pad - l
-    y = (h // 2) - (th // 2) - t
-    draw.text((x, y), text, font=font, fill=fill_rgba)
+    # Prefer anchor-based placement (Pillow 8+) so the left edge of ink matches ``pad`` for "left".
+    try:
+        if align == "right":
+            draw.text(
+                (w - pad, h // 2),
+                text,
+                font=font,
+                fill=fill_rgba,
+                anchor="rm",
+            )
+        elif align == "center":
+            draw.text(
+                (w // 2, h // 2),
+                text,
+                font=font,
+                fill=fill_rgba,
+                anchor="mm",
+            )
+        else:
+            draw.text(
+                (pad, h // 2),
+                text,
+                font=font,
+                fill=fill_rgba,
+                anchor="lm",
+            )
+    except (TypeError, ValueError):
+        l, t, r, b = draw.textbbox((0, 0), text, font=font)
+        tw, th = r - l, b - t
+        if align == "right":
+            x = w - pad - tw - l
+        elif align == "center":
+            x = (w - tw) // 2 - l
+        else:
+            x = pad - l
+        y = (h // 2) - (th // 2) - t
+        draw.text((x, y), text, font=font, fill=fill_rgba)
     rgba = np.asarray(img)
     return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
 
@@ -195,10 +289,12 @@ def _image_contain_center_bgra(
 @dataclass
 class AudioConfig:
     """
-    Optional ``pigeon`` wordmark in grid [2,3]–[5,15] (hidden when TMDb backdrop artwork is showing);
-    row 1: optional streaming-service badge with **top-right** on grid cell [1,17] (2-wide sits in cols 16–17);
+    Near top row: streaming-service badge with **top-right** on grid (default row 0.5, col 17); 2-wide sits in cols 16–17;
     up to three audio lines from ``receiver_state``
     (incoming, surround/config, volume); placeholder/unknown values are omitted.
+    Volume is drawn at grid cell ``[volume_anchor_row, volume_anchor_col]`` (1-based; rows may be fractional).
+    Left-aligned in the span (``edge_pad_px=0``); fixed type size (no boost animation).
+    Incoming and config stay in the right-aligned strip on ``audio_row``.
     """
 
     assets_dir: Path
@@ -210,17 +306,19 @@ class AudioConfig:
         default_factory=lambda: {"show": False, "filename": "", "label": ""}
     )
     overlay_flags: dict[str, bool] = field(
-        default_factory=lambda: {"hide_wordmark_for_artwork": False}
+        default_factory=lambda: {"show_paused_row": False, "clock_saver_volume_only": False}
     )
-    # 0 = smallest volume type; 1 = emphasized (driven by pigeon_0_5 volume-change animation).
-    volume_text_boost_strength: float = 0.0
-
-    badge_row: int = 1
+    badge_row: int | float = 0.5
     # Right edge of the badge aligns with the right edge of grid column 17 (see ``rect_for_span_top_right_at_cell``).
     badge_top_right_col_1based: float = 18.0
     badge_span: tuple[int, int] = (2, 1)
-    audio_row: int = 8
+    audio_row: int | float = 7.5
     audio_span_wide: int = 4
+    # Volume: top-left at grid [row, col] = [7.5, 3].
+    volume_anchor_row: int | float = 7.5
+    volume_anchor_col: int = 3
+    volume_span_wide: int = 5
+    volume_span_tall: int = 1
 
     _cached: list[DesignPatch] | None = field(default=None, repr=False)
     _receiver_sig: tuple[object, ...] | None = field(default=None, init=False, repr=False)
@@ -230,26 +328,40 @@ class AudioConfig:
         self._cached = None
         self._receiver_sig = None
 
-    def _build(self) -> list[DesignPatch]:
-        blits: list[DesignPatch] = []
+    def _volume_patch(self) -> DesignPatch | None:
+        line3 = _receiver_volume_display_line(self.receiver_state.get("volume"))
+        if not line3:
+            return None
+        vx, vy, vw, vh = rect_for_span_at_cell(
+            self.volume_span_wide,
+            self.volume_span_tall,
+            row_1based=self.volume_anchor_row,
+            col_1based=self.volume_anchor_col,
+        )
+        fit_h = max(4, int(round(vh * VOLUME_TEXT_FIT_H)))
+        return DesignPatch(
+            x=vx,
+            y=vy,
+            w=vw,
+            h=vh,
+            bgra=_text_patch_bgra(
+                line3,
+                vw,
+                vh,
+                align="left",
+                fill_rgba=_VOLUME_TEXT_RGBA,
+                fit_max_h=fit_h,
+                edge_pad_px=0,
+            ),
+            layer=PATCH_LAYER_RECEIVER_AUDIO,
+        )
 
-        if not self.overlay_flags.get("hide_wordmark_for_artwork"):
-            wx, wy, ww, wh = rect_for_span_at_cell(
-                _PIGEON_WORDMARK_SPAN_W,
-                _PIGEON_WORDMARK_SPAN_H,
-                row_1based=_PIGEON_WORDMARK_ROW,
-                col_1based=_PIGEON_WORDMARK_COL,
-            )
-            blits.append(
-                DesignPatch(
-                    x=wx,
-                    y=wy,
-                    w=ww,
-                    h=wh,
-                    bgra=_pigeon_wordmark_patch_bgra(ww, wh),
-                    layer=PATCH_LAYER_WORDMARK,
-                )
-            )
+    def _build(self) -> list[DesignPatch]:
+        if self.overlay_flags.get("clock_saver_volume_only"):
+            vp = self._volume_patch()
+            return [vp] if vp is not None else []
+
+        blits: list[DesignPatch] = []
 
         if self.overlay_flags.get("show_paused_row"):
             px, py, pw, ph = rect_for_span_at_cell(
@@ -258,6 +370,7 @@ class AudioConfig:
                 row_1based=_PAUSED_ROW_GRID_ROW,
                 col_1based=_PAUSED_ROW_GRID_COL,
             )
+            py = max(0, py + _PAUSED_ROW_OFFSET_Y_PX)
             blits.append(
                 DesignPatch(
                     x=px,
@@ -351,55 +464,26 @@ class AudioConfig:
         rs = self.receiver_state
         line1 = _receiver_audio_display_line(rs.get("incoming"))
         line2 = _receiver_audio_display_line(rs.get("config"))
-        line3 = _receiver_volume_display_line(rs.get("volume"))
-        texts: list[str] = []
+        non_vol: list[str] = []
         if line1:
-            texts.append(line1)
+            non_vol.append(line1)
         if line2:
-            texts.append(line2)
-        if line3:
-            texts.append(line3)
-        if texts:
-            n = len(texts)
-            has_volume = bool(line3) and texts[-1] == line3
-            heights: list[int]
-            if has_volume and n > 1:
-                # Give the volume line a majority of row 8; split the remainder for incoming/config.
-                vol_h = max(1, int(round(ah_i * 0.58)))
-                rest = max(1, ah_i - vol_h)
-                if n == 2:
-                    heights = [rest, vol_h]
-                else:
-                    h_a = max(1, rest // 2)
-                    h_b = max(1, rest - h_a)
-                    heights = [h_a, h_b, vol_h]
-                drift = ah_i - sum(heights)
-                if drift and heights:
-                    heights[-1] = max(1, heights[-1] + drift)
-            else:
-                base = ah_i // n
-                rem = ah_i % n
-                heights = []
-                for i in range(n):
-                    hi = base + (1 if i < rem else 0)
-                    heights.append(max(1, hi))
-                delta = ah_i - sum(heights)
-                if delta and heights:
-                    heights[-1] = max(1, heights[-1] + delta)
-            # Incoming/config: avoid comically huge type when a line gets a tall slice.
+            non_vol.append(line2)
+
+        if non_vol:
+            n = len(non_vol)
+            base = ah_i // n
+            rem = ah_i % n
+            heights: list[int] = []
+            for i in range(n):
+                hi = base + (1 if i < rem else 0)
+                heights.append(max(1, hi))
+            delta = ah_i - sum(heights)
+            if delta and heights:
+                heights[-1] = max(1, heights[-1] + delta)
             incoming_config_fit_cap = max(4, ah_i // 3)
             y_off = ay_i
-            for text, h in zip(texts, heights):
-                is_volume = bool(line3) and text == line3
-                # Volume: idle slightly smaller than before; scales up with ``volume_text_boost_strength``.
-                if is_volume:
-                    b = max(0.0, min(1.0, float(self.volume_text_boost_strength)))
-                    fit_ratio = VOLUME_TEXT_FIT_H_BASE + (
-                        VOLUME_TEXT_FIT_H_PEAK - VOLUME_TEXT_FIT_H_BASE
-                    ) * b
-                    fit_h = max(4, int(round(h * fit_ratio)))
-                else:
-                    fit_h = incoming_config_fit_cap
+            for text, h in zip(non_vol, heights):
                 blits.append(
                     DesignPatch(
                         x=ax_i,
@@ -411,20 +495,22 @@ class AudioConfig:
                             aw_i,
                             h,
                             align="right",
-                            fit_max_h=fit_h,
+                            fit_max_h=incoming_config_fit_cap,
                         ),
                         layer=PATCH_LAYER_RECEIVER_AUDIO,
                     )
                 )
                 y_off += h
 
+        vp = self._volume_patch()
+        if vp is not None:
+            blits.append(vp)
+
         return blits
 
     def design_blits(self) -> list[DesignPatch]:
         sb = self.service_badge
-        hide_wm = bool(self.overlay_flags.get("hide_wordmark_for_artwork"))
         show_paused = bool(self.overlay_flags.get("show_paused_row"))
-        vb = max(0.0, min(1.0, float(self.volume_text_boost_strength)))
         sig = (
             str(self.receiver_state.get("incoming", "")),
             str(self.receiver_state.get("config", "")),
@@ -432,9 +518,8 @@ class AudioConfig:
             bool(sb.get("show")),
             str(sb.get("filename") or ""),
             str(sb.get("label") or ""),
-            hide_wm,
             show_paused,
-            int(round(vb * VOLUME_TEXT_BOOST_SIG_STEPS)),
+            bool(self.overlay_flags.get("clock_saver_volume_only")),
         )
         if self._cached is not None and self._receiver_sig == sig:
             return self._cached

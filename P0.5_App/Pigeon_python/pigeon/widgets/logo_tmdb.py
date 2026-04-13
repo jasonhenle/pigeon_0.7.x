@@ -5,6 +5,8 @@ Renders the cached ``{Title}_Logo.*`` asset into a fixed grid rectangle with asp
 
 from __future__ import annotations
 
+from typing import Literal
+
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -22,18 +24,20 @@ class TmdbLogoWidget:
     def __init__(
         self,
         *,
-        anchor_row: int = 3,
+        anchor_row: int | float = 3,
         anchor_col: int = 6,
         span_wide: int = 9,
         span_tall: int = 3,
         fit_scale: float = 1.0,
         top_right_col_1based: float | None = None,
+        vertical_align: Literal["center", "top"] = "center",
     ) -> None:
         self._anchor_row = anchor_row
         self._anchor_col = anchor_col
         self._top_right_col = top_right_col_1based
         self._span = (max(1, int(span_wide)), max(1, int(span_tall)))
         self._fit_scale = max(0.2, min(1.0, float(fit_scale)))
+        self._vertical_align: Literal["center", "top"] = vertical_align
         self._cached_title_key: str | None = None
         self._cached_display_title: str | None = None
         self._cached_patch_bgra: np.ndarray | None = None
@@ -43,7 +47,7 @@ class TmdbLogoWidget:
         return self._span
 
     @property
-    def grid_anchor(self) -> tuple[int, int]:
+    def grid_anchor(self) -> tuple[int | float, int]:
         return (self._anchor_row, self._anchor_col)
 
     def design_rect(self) -> tuple[int, int, int, int]:
@@ -102,7 +106,10 @@ class TmdbLogoWidget:
         l, t, r, b = draw.textbbox((0, 0), text, font=font)
         tw, th = r - l, b - t
         x = (w // 2) - (tw // 2) - l
-        y = (h // 2) - (th // 2) - t
+        if self._vertical_align == "top":
+            y = -t
+        else:
+            y = (h // 2) - (th // 2) - t
         draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
         rgba = np.asarray(img)
         return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
@@ -127,7 +134,10 @@ class TmdbLogoWidget:
 
         out = np.zeros((h, w, 4), dtype=np.uint8)
         x0 = max(0, (w - tw) // 2)
-        y0 = max(0, (h - th) // 2)
+        if self._vertical_align == "top":
+            y0 = 0
+        else:
+            y0 = max(0, (h - th) // 2)
         out[y0 : y0 + th, x0 : x0 + tw] = resized
         return out
 

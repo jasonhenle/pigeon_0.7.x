@@ -1,4 +1,9 @@
-"""Full-width idle “screen saver” clock: date in the same 5×2 grid cell as ``ClockCalendarWidget``; time in rows 3–6.5."""
+"""Full-width idle “screen saver” clock: date in the same 5×2 grid cell as ``ClockCalendarWidget``; large time in row 3+.
+
+Each patch is an RGBA texture: areas outside the glyphs are **fully transparent** (alpha 0) — there is no solid
+black plate behind the whole widget rectangle. Text is drawn in white with an opaque black stroke and a
+semi-transparent tinted shadow; global idle opacity (``CLOCK_SAVER_DIM_OPACITY``) scales all alphas together.
+"""
 
 from __future__ import annotations
 
@@ -7,11 +12,15 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.design import GRID_COLS, get_grid_geometry, rect_for_span_at_cell
-from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_medium
+from pigeon.font_paths import (
+    resolve_digital7_font,
+    resolve_ui_font_bold,
+    resolve_ui_font_medium,
+)
 from pigeon.widgets.clock_calendar import _resolve_display_time, _time_12h_no_leading_zero
 
-# Time band: starts at row 3; height 3.5 cells (bottom at row 6.5).
-_CLOCK_SAVER_TIME_HEIGHT_CELLS = 3.5
+# Time band: starts at row 3; tall enough for digital-7 segments + shadow without bottom clipping.
+_CLOCK_SAVER_TIME_HEIGHT_CELLS = 4.5
 # Date uses the same grid footprint as ``ClockCalendarWidget`` (see pigeon_0_5.CLOCK_ANCHOR_*).
 _CLOCK_WIDGET_SPAN = (5, 2)
 
@@ -59,8 +68,54 @@ def _fit_font_in_box(
     return best if best is not None else _load_font(font_path, min_sz)
 
 
+def _fit_font_centered_mm_in_margins(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font_path: str,
+    *,
+    w: int,
+    h: int,
+    cx: int,
+    cy: int,
+    pad_l: int,
+    pad_r: int,
+    pad_t: int,
+    pad_b: int,
+    shadow_off: int,
+    min_sz: int = 10,
+) -> ImageFont.ImageFont:
+    """
+    Binary-search font size using the same anchor as draw (``mm``), so bbox includes full glyph + shadow extent.
+    ``(0,0)``-anchored metrics used in ``_fit_font_in_box`` are often too tight for LCD-style fonts.
+    """
+    lo, hi = min_sz, max(h * 4, w, 600)
+
+    def fits(sz: int) -> bool:
+        fnt = _load_font(font_path, sz)
+        for ax, ay in ((cx, cy), (cx + shadow_off, cy + shadow_off)):
+            bb = draw.textbbox((ax, ay), text, font=fnt, anchor="mm")
+            if (
+                bb[0] < pad_l - 1
+                or bb[2] > w - pad_r + 1
+                or bb[1] < pad_t - 1
+                or bb[3] > h - pad_b + 1
+            ):
+                return False
+        return True
+
+    best: ImageFont.ImageFont | None = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if fits(mid):
+            best = _load_font(font_path, mid)
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best if best is not None else _load_font(font_path, min_sz)
+
+
 def clock_saver_time_design_rect() -> tuple[int, int, int, int]:
-    """Pixel rect for the large time band (full grid width, rows 3–6.5)."""
+    """Pixel rect for the large time band (full grid width, rows 3 through 3 + ``_CLOCK_SAVER_TIME_HEIGHT_CELLS``)."""
     g = get_grid_geometry()
     cell = g.cell
     x = g.x0
@@ -157,18 +212,36 @@ def _time_bgra_full_width_band(
     now = _resolve_display_time()
     time_text = f"{_time_12h_no_leading_zero(now)} {now.strftime('%p').lower()}"
 
-    bold_path = resolve_ui_font_bold()
-    if not bold_path:
-        bold_path = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+    time_font_path = resolve_digital7_font()
+    if not time_font_path:
+        time_font_path = resolve_ui_font_bold()
+    if not time_font_path:
+        time_font_path = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
 
     img = Image.new("RGBA", (w, h_time), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    pad_t = max(4, int(min(w, h_time) * 0.04))
-    inner_tw = max(1, w - 2 * pad_t)
-    inner_th = max(1, h_time - 2 * pad_t)
-    f_time = _fit_font_in_box(time_text, bold_path, inner_tw, inner_th, draw)
+    pad_lr = max(6, int(min(w, h_time) * 0.022))
+    pad_t = max(6, int(min(w, h_time) * 0.028))
+    pad_b = max(20, int(min(w, h_time) * 0.13))
     cx_t = w // 2
-    cy_t = h_time // 2
+    # Slight upward bias: digital segments + shadow need more slack at the bottom of the band.
+    cy_t = h_time // 2 - max(2, h_time // 48)
+    off = max(1, int(round(min(w, h_time) * 0.012)))
+
+    f_time = _fit_font_centered_mm_in_margins(
+        draw,
+        time_text,
+        time_font_path,
+        w=w,
+        h=h_time,
+        cx=cx_t,
+        cy=cy_t,
+        pad_l=pad_lr,
+        pad_r=pad_lr,
+        pad_t=pad_t,
+        pad_b=pad_b,
+        shadow_off=off,
+    )
 
     b_bgr, g_bgr, r_bgr = (
         shadow_bgr
@@ -177,7 +250,6 @@ def _time_bgra_full_width_band(
     )
     shadow_rgb = (int(r_bgr), int(g_bgr), int(b_bgr))
     shadow_fill = shadow_rgb + (_SHADOW_ALPHA,)
-    off = max(1, int(round(min(w, h_time) * 0.012)))
 
     draw.text(
         (cx_t + off, cy_t + off),
@@ -210,7 +282,7 @@ def clock_saver_composite_bgra(
     """
     Two patches (design coordinates):
 
-    1. **Time** — full grid width, rows 3–6.5 (same styling as the previous saver time; ~10% brighter).
+    1. **Time** — full grid width, starting row 3 (height ``_CLOCK_SAVER_TIME_HEIGHT_CELLS`` cells).
     2. **Date** — month + day in the same 5×2 rect as ``ClockCalendarWidget`` at ``(clock_anchor_row, clock_anchor_col)``.
     """
     time_pack = _time_bgra_full_width_band(

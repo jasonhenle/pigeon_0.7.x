@@ -8,21 +8,23 @@ from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 
-import cv2
-import numpy as np
-from PIL import Image, ImageTk
+# Tk must initialize before OpenCV on macOS: cv2 pulls X11/SDL dylibs that otherwise break Tcl (Tcl_InitNotifier → abort).
 import tkinter as tk
 import tkinter.font as tkfont
 import tkinter.messagebox as messagebox
 import tkinter.scrolledtext as scrolledtext
 import tkinter.simpledialog as simpledialog
 
+import numpy as np
+from PIL import Image, ImageTk
+import cv2
+
 # 5×2 clock: row 1, cols 11–15; right edge meets col 15 (cell left of the 2-wide app badge at cols 16–17).
 CLOCK_ANCHOR_ROW = 1
 CLOCK_ANCHOR_COL = 11
-# Status bar: one black pill cols 3–17 (row 7), bar-shaped mask hole + translucent bar; rows 6–8 gradient.
+# Status bar: one black pill cols 3–17 (row 6.5), bar-shaped mask hole + translucent bar; rows 6–8 gradient.
 # Remaining label spans cols 16–17 (was 17–18) so the right edge has one extra column of margin.
-TRT_DISPLAY_ROW = 7
+TRT_DISPLAY_ROW = 6.5  # half-cell up vs row 7 (status pill + timecodes)
 TRT_PLAYED_COL = 3  # TRTPlayed (elapsed)
 TRT_PLAYED_TEXT = "00:00:00"
 TRT_REMAINING_COL = 16  # TRTRemaining (countdown); 2-wide → ends at col 17 (col 19 = breathing room)
@@ -31,23 +33,49 @@ TRT_LABEL_SPAN_W = 2
 TRT_LABEL_SPAN_H = 1
 # Apple TV auto-poll; TRT labels on a steady ~1 Hz metronome (see _playback_ui_tick).
 APPLE_TV_POLL_MS = 3000
-RECEIVER_POLL_MS = 2500
-# Receiver volume line: ramp to large type, hold, then ease back (see _tick_volume_text_boost_anim).
-VOLUME_TEXT_BOOST_ANIM_UP_S = 0.085
-VOLUME_TEXT_BOOST_ANIM_DOWN_S = 0.095
-VOLUME_TEXT_BOOST_HOLD_S = 2.0
-# Smooth volume sizing: tick + ``VOLUME_TEXT_BOOST_SIG_STEPS`` (playback_overlay) for cache/skip keys.
-VOLUME_TEXT_BOOST_TICK_MS = 22
+RECEIVER_POLL_MS = 750
 PLAYBACK_UI_TICK_MS = 1000  # fallback first delay only; actual spacing uses monotonic deadlines
-# Title logo: centered on row 8 (5-wide in 19 cols → start col 8). Service badge: row 1, right edge col 17.
-TMDB_LOGO_ANCHOR_ROW = 8
-TMDB_LOGO_ANCHOR_COL = 8
+# Title logo: centered on row 7.5 (5-wide in 19 cols → start col 8). Service badge: row 0.5, right edge col 17.
+# Content (TMDb) logo: TL (1.5, 3), TR (1.5, 7) → 5-wide cols 3–7; top-aligned graphic in span.
+TMDB_LOGO_ANCHOR_ROW = 1.5
+TMDB_LOGO_ANCHOR_COL = 3
 TMDB_LOGO_SPAN_W = 5
-TMDB_LOGO_SPAN_H = 1
+TMDB_LOGO_SPAN_H = 2
 TMDB_LOGO_FIT_SCALE = 0.88
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
+
+# One-time migration: stale installs still import ``mic_wave_visualizer`` (broken on Py 3.14+).
+_boot_script = Path(__file__).resolve()
+_boot_dir = _boot_script.parent
+_legacy_viz = _boot_dir / "pigeon" / "mic_wave_visualizer.py"
+if _legacy_viz.is_file():
+    try:
+        _legacy_viz.unlink()
+    except OSError:
+        pass
+try:
+    _boot_src = _boot_script.read_text(encoding="utf-8")
+except OSError:
+    _boot_src = ""
+# Build old import without embedding it verbatim — otherwise ``_import_old in _boot_src`` matches this file.
+_old_mod = "mic_wave_visualizer"
+_import_old = f"from pigeon.{_old_mod} import blend_mic_visualizer"
+_import_new = "from pigeon.audio_waves import blend_mic_visualizer"
+if _import_old in _boot_src:
+    _waves = _boot_dir / "pigeon" / "audio_waves.py"
+    if not _waves.is_file():
+        sys.stderr.write(
+            "pigeon: missing pigeon/audio_waves.py — copy it from the repo (mic_wave_visualizer was removed).\n"
+        )
+        sys.stderr.flush()
+        sys.exit(1)
+    try:
+        _boot_script.write_text(_boot_src.replace(_import_old, _import_new), encoding="utf-8")
+        os.execv(sys.executable, [sys.executable, str(_boot_script), *sys.argv[1:]])
+    except OSError:
+        pass
 
 from pigeon.app_state import (
     LOCATION_PRESET_ROOM_NAMES,
@@ -109,6 +137,7 @@ try:
         lerp_bgr_red_monochrome,
         scale_bgra_rgb,
         scale_height_and_center_crop,
+        scale_uniform_letterbox,
     )
     from pigeon.design import DESIGN_H, DESIGN_W, playback_lower_gradient_bgra, rect_for_span_at_cell
     from pigeon.overlay import blend_overlay_bgr, build_stage_overlay_source_bgra
@@ -123,10 +152,21 @@ try:
     from pigeon.widgets.clock_saver import clock_saver_composite_bgra
     from pigeon.widgets.playback_overlay import (
         PlaybackOverlayWidget,
-        VOLUME_TEXT_BOOST_SIG_STEPS,
         pigeon_wordmark_design_patch,
     )
     from pigeon.widgets.poster_art import prepare_default_poster_at_startup
+    from pigeon.splash_sequence import (
+        SPLASH_FPS,
+        SPLASH_MAX_DURATION_S,
+        composite_splash_over_bg,
+        list_splash_png_paths,
+        load_splash_bgra,
+    )
+
+    try:
+        from pigeon.audio_waves import blend_mic_visualizer as _blend_mic_visualizer
+    except ImportError:
+        _blend_mic_visualizer = None  # type: ignore[misc, assignment]
 
     _PIGEON_EXT = True
 except ImportError:
@@ -134,6 +174,7 @@ except ImportError:
     lerp_bgr_red_monochrome = None  # type: ignore[misc, assignment]
     scale_bgra_rgb = None  # type: ignore[misc, assignment]
     scale_height_and_center_crop = None  # type: ignore[misc, assignment]
+    scale_uniform_letterbox = None  # type: ignore[misc, assignment]
     rect_for_span_at_cell = None  # type: ignore[misc, assignment]
     playback_lower_gradient_bgra = None  # type: ignore[misc, assignment]
     DESIGN_W = DESIGN_H = 0
@@ -144,12 +185,12 @@ except ImportError:
     TmdbLogoWidget = None  # type: ignore[misc, assignment]
     StatusBarWidget = None  # type: ignore[misc, assignment]
     PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
-    VOLUME_TEXT_BOOST_SIG_STEPS = 400  # type: ignore[misc, assignment]
     clock_saver_composite_bgra = None  # type: ignore[misc, assignment]
     pigeon_wordmark_design_patch = None  # type: ignore[misc, assignment]
     LOCATION_TOAST_FULL_S = 15.0
     LOCATION_TOAST_FADE_S = 2.0
     location_toast_patch_bgra = None  # type: ignore[misc, assignment]
+    _blend_mic_visualizer = None  # type: ignore[misc, assignment]
     _PIGEON_EXT = False
 
 
@@ -176,21 +217,38 @@ BACKDROP_BRIGHTNESS = 0.8
 # Static landing logo (no video): full brightness; old 0.3 “paused video” level hid the art.
 LANDING_DISPLAY_BRIGHTNESS = 1.0
 LANDING_DIM_BRIGHTNESS = 0.78  # Space-bar pulse “off” — still readable vs old 0.3
-# Faint ``pigeon`` wordmark on the landing plate: hide after this from UI bootstrap (then backdrop if saved, else black).
+# After UI bootstrap, optional auto-restore of saved TMDb backdrop (env-gated) runs after this delay.
 STARTUP_PIGEON_WORDMARK_MAX_S = 5.0
+# If True and a saved TMDb backdrop exists, switch to it when this timer elapses (enables ``use_backdrop_scene``,
+# which turns off the mic EQ). Default False so landing + clock saver + EQ stay on until you use F10 / Space (saved backdrop).
+STARTUP_AUTO_RESTORE_SAVED_BACKDROP = os.environ.get("PIGEON_STARTUP_RESTORE_BACKDROP", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Theater UI: red luma-mono only when neither Apple TV nor Pigeon UI shows activity this long.
 # ATV side: poll metadata deltas (see _update_atv_interaction_from_poll_metadata).
 # Pigeon side: mouse / keyboard / settings scroll (see _bump_pigeon_user_activity).
 # For ATV, 0 = never bumped → treated as idle until the first remote-driven signal (still needs Pigeon idle).
 THEATER_IDLE_DIM_AFTER_S = 45.0
+# Red idle-dim is **off** by default until an ambient-light (or other) trigger is integrated.
+# Re-enable anytime: ``PIGEON_THEATER_IDLE_DIM=1`` (or ``true`` / ``yes`` / ``on``). Explicit ``0`` / ``off`` keeps it off.
+_THEATER_IDLE_DIM_ENV = os.environ.get("PIGEON_THEATER_IDLE_DIM", "").strip().lower()
+THEATER_IDLE_DIM_ENABLED = (
+    _THEATER_IDLE_DIM_ENV in ("1", "true", "yes", "on")
+    if _THEATER_IDLE_DIM_ENV
+    else False
+)
 # Ease in/out between full color and red luma-mono when idle-dim target changes.
 ATV_IDLE_MONO_ANIM_S = 2.0
-# Idle “clock saver”: hide status bar / small clock / pills; keep faint pigeon wordmark. Dismiss on Pigeon or ATV activity.
+# Idle “clock saver”: hide status bar / small clock / pills. Dismiss on Pigeon or ATV activity.
 # Also turns on **immediately** when a Player is selected but content is not detected (see ``_clock_saver_active``).
 CLOCK_SAVER_AFTER_S = 240.0
 # Saver text opacity when idle; tap while saver is up briefly uses 1.0 (see clock_saver_peek_until_mono).
-CLOCK_SAVER_DIM_OPACITY = 0.3
+# 0.36 ≈ 20% brighter than 0.3 (stronger alpha on glyphs + shadow).
+CLOCK_SAVER_DIM_OPACITY = 0.36
 CLOCK_SAVER_PEEK_S = 2.5
 # With a TMDb backdrop visible: fade backdrop to black under the clock after this idle span on the saver.
 CLOCK_SAVER_BACKDROP_BLACK_AFTER_S = 60.0
@@ -379,6 +437,36 @@ def _bgr_to_tk_image(frame_bgr: np.ndarray) -> ImageTk.PhotoImage:
     return ImageTk.PhotoImage(image=img)
 
 
+def _update_label_photo_from_bgr(
+    label: tk.Label,
+    frame_bgr: np.ndarray,
+    holder: list[ImageTk.PhotoImage | None],
+) -> None:
+    """
+    Reuse one ``PhotoImage`` and ``paste`` each frame. Creating hundreds of new
+    ``PhotoImage`` objects per second leaks native Tk storage and locks up after a short run.
+    """
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    h, w = int(rgb.shape[0]), int(rgb.shape[1])
+    if h < 1 or w < 1:
+        return
+    pil_img = Image.fromarray(rgb)
+    ph = holder[0]
+    try:
+        if ph is None or ph.width() != w or ph.height() != h:
+            holder[0] = ImageTk.PhotoImage(image=pil_img)
+            ph = holder[0]
+        else:
+            ph.paste(pil_img)
+    except tk.TclError:
+        holder[0] = ImageTk.PhotoImage(image=pil_img)
+        ph = holder[0]
+    # Re-configuring the same PhotoImage every tick still stresses Tk; paste updates pixels in place.
+    if getattr(label, "image", None) is not ph:
+        label.configure(image=ph)
+    label.image = ph
+
+
 def _load_persisted_scene_enabled(default: bool = True) -> bool:
     v = read_app_state().get("scene_enabled")
     if isinstance(v, bool):
@@ -443,21 +531,136 @@ def main() -> int:
 
     shell = tk.Frame(root, bg="#111")
     shell.pack(fill=tk.BOTH, expand=True)
+    # Main UI is built here; optional full-window splash overlay sits above until bootstrap + animation finish.
+    content_host = tk.Frame(shell, bg="#111")
+    content_host.pack(fill=tk.BOTH, expand=True)
 
-    loading = tk.Label(
-        shell,
-        text="Starting Pigeon…\n\n"
-        "Tab cycles developer mode: off → grid overlay → settings → off. "
-        "Return opens the command bar while in developer mode. "
-        "Esc closes the bar or quits. F10 / double-click toggles the display. "
-        "Space = play/pause on the selected Player (Apple TV / Roku) when set; else TMDb backdrop "
-        "+ logo when loaded; else landing brightness pulse.",
-        justify="center",
-        fg="#ddd",
-        bg="#111",
-        wraplength=WINDOW_W - 40,
-    )
-    loading.pack(expand=True, fill="both")
+    # Text placeholder or PNG sequence splash (``pigeonAssets/P_0.5_WIDGET_splash``).
+    startup_ph: list[tk.Widget | None] = [None]
+    splash_paths: list[Path] = []
+    if _PIGEON_EXT:
+        try:
+            splash_paths = list_splash_png_paths(Path(_SCRIPT_DIR) / "pigeonAssets")
+        except Exception:
+            splash_paths = []
+
+    bootstrap_done: list[bool] = [False]
+    splash_anim_done: list[bool] = [False]
+
+    def _try_remove_splash_overlay() -> None:
+        if not splash_paths:
+            return
+        if not (bootstrap_done[0] and splash_anim_done[0]):
+            return
+        w = startup_ph[0]
+        if w is None:
+            return
+        try:
+            w.destroy()
+        except tk.TclError:
+            pass
+        startup_ph[0] = None
+
+    _tk_pack_orig = tk.Widget.pack
+    _tk_grid_orig = tk.Widget.grid
+    _tk_place_orig = tk.Widget.place
+    _splash_pump_next: list[float] = [0.0]
+
+    def _splash_pump_maybe() -> None:
+        if not splash_paths or bootstrap_done[0]:
+            return
+        now = time.monotonic()
+        if now < _splash_pump_next[0]:
+            return
+        _splash_pump_next[0] = now + (1.0 / 30.0)
+        try:
+            root.update()
+        except tk.TclError:
+            pass
+
+    def _pack_patched(self: tk.Misc, *args: object, **kwargs: object) -> object | None:
+        r = _tk_pack_orig(self, *args, **kwargs)
+        _splash_pump_maybe()
+        return r
+
+    def _grid_patched(self: tk.Misc, *args: object, **kwargs: object) -> object | None:
+        r = _tk_grid_orig(self, *args, **kwargs)
+        _splash_pump_maybe()
+        return r
+
+    def _place_patched(self: tk.Misc, *args: object, **kwargs: object) -> object | None:
+        r = _tk_place_orig(self, *args, **kwargs)
+        _splash_pump_maybe()
+        return r
+
+    if splash_paths:
+        splash_overlay = tk.Frame(shell, bg="#111", highlightthickness=0, bd=0)
+        splash_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        try:
+            splash_overlay.lift()
+        except tk.TclError:
+            pass
+        startup_ph[0] = splash_overlay
+        splash_label = tk.Label(splash_overlay, bg="#111", bd=0)
+        splash_label.pack(expand=True, fill="both")
+        splash_photo: list[ImageTk.PhotoImage | None] = [None]
+        splash_idx = [0]
+        splash_t0 = [time.monotonic()]
+        frame_ms = max(1, int(round(1000.0 / float(SPLASH_FPS))))
+        _splash_bg_bgr = (0x11, 0x11, 0x11)
+
+        def splash_tick() -> None:
+            try:
+                if not splash_label.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if time.monotonic() - splash_t0[0] > float(SPLASH_MAX_DURATION_S):
+                splash_idx[0] = len(splash_paths)
+            i = splash_idx[0]
+            if i >= len(splash_paths):
+                splash_anim_done[0] = True
+                _try_remove_splash_overlay()
+                return
+            bgra = load_splash_bgra(splash_paths[i])
+            splash_idx[0] = i + 1
+            if bgra is None:
+                root.after(0, splash_tick)
+                return
+            try:
+                bgr = composite_splash_over_bg(bgra, _splash_bg_bgr)
+            except Exception:
+                root.after(frame_ms, splash_tick)
+                return
+            if bgr.shape[1] != WINDOW_W or bgr.shape[0] != WINDOW_H:
+                bgr = cv2.resize(bgr, (WINDOW_W, WINDOW_H), interpolation=cv2.INTER_AREA)
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(rgb)
+            ph = splash_photo[0]
+            if ph is None or ph.width() != pil_img.width or ph.height() != pil_img.height:
+                splash_photo[0] = ImageTk.PhotoImage(pil_img)
+            else:
+                ph.paste(pil_img)
+            splash_label.configure(image=splash_photo[0])
+            root.after(frame_ms, splash_tick)
+
+    else:
+        loading = tk.Label(
+            content_host,
+            text="Starting Pigeon…\n\n"
+            "Tab cycles developer mode: off → grid overlay → settings → off. "
+            "Return opens the command bar while in developer mode. "
+            "Esc closes the bar or quits. F10 / double-click toggles the display. "
+            "Space = play/pause on the selected Player (Apple TV / Roku) when set; else TMDb backdrop "
+            "+ logo when loaded; else landing brightness pulse.",
+            justify="center",
+            fg="#ddd",
+            bg="#111",
+            wraplength=WINDOW_W - 40,
+        )
+        loading.pack(expand=True, fill="both")
+        startup_ph[0] = loading
+
     root.update_idletasks()
     root.update()
 
@@ -468,7 +671,18 @@ def main() -> int:
 
         cap = None
 
-        loading.destroy()
+        if not splash_paths:
+            _w0 = startup_ph[0]
+            if _w0 is not None:
+                try:
+                    _w0.destroy()
+                except tk.TclError:
+                    pass
+                startup_ph[0] = None
+        else:
+            tk.Widget.pack = _pack_patched  # type: ignore[method-assign]
+            tk.Widget.grid = _grid_patched  # type: ignore[method-assign]
+            tk.Widget.place = _place_patched  # type: ignore[method-assign]
 
         try:
             mig = consolidate_legacy_pigeondata_media_folders()
@@ -481,7 +695,7 @@ def main() -> int:
             sys.stderr.flush()
 
         # Full-size video area (always WINDOW_H) so scene scale matches non-overlay mode.
-        video_area = tk.Frame(shell, bg="#000")
+        video_area = tk.Frame(content_host, bg="#000")
         video_area.pack(fill=tk.BOTH, expand=True)
 
         label = tk.Label(video_area, bd=0, highlightthickness=0, takefocus=True, bg="#000")
@@ -982,7 +1196,7 @@ def main() -> int:
             _land_w, _land_h = int(_DESIGN_W_L), int(_DESIGN_H_L)
         else:
             _land_w, _land_h = WINDOW_W, WINDOW_H
-        # No PNG on the landing plate — the ``pigeon`` wordmark is drawn in the playback overlay only.
+        # No PNG on the landing plate; playback overlay is badge + receiver lines only.
         landing_scene_design_bgr = _build_landing_design_bgr(_land_w, _land_h, None)
 
         def _disp_fit() -> SceneFit:
@@ -995,6 +1209,10 @@ def main() -> int:
             return out
 
         frame_interval_ms = max(1, int(round(1000.0 / fps_sched)))
+        # Mic visualizer: 24fps target — 60fps + stacked ``after`` timers overwhelmed Tk on some Macs.
+        # Mic EQ: higher than video when idle so bars feel tight to the input (Tk load permitting).
+        _MIC_VIZ_COMPOSITE_FPS = 48
+        _mic_viz_composite_ms = max(1, int(round(1000.0 / _MIC_VIZ_COMPOSITE_FPS)))
 
         playing = False
         last_frame: np.ndarray | None = landing_scene_design_bgr
@@ -1094,6 +1312,13 @@ def main() -> int:
         def _update_idle_dim_strength(now: float) -> float:
             """0 = full color, 1 = red luma-mono; eases in/out over ATV_IDLE_MONO_ANIM_S when combined idle state changes."""
             nonlocal idle_dim_anim_strength, _idle_dim_anim_goal, _idle_dim_anim_from, _idle_dim_anim_t0
+            if not THEATER_IDLE_DIM_ENABLED:
+                if idle_dim_anim_strength != 0.0 or _idle_dim_anim_goal != 0.0:
+                    idle_dim_anim_strength = 0.0
+                    _idle_dim_anim_goal = 0.0
+                    _idle_dim_anim_from = 0.0
+                    _idle_dim_anim_t0 = now
+                return 0.0
             want = 1.0 if _atv_idle_monochrome_active() else 0.0
             if want != _idle_dim_anim_goal:
                 _idle_dim_anim_goal = want
@@ -1112,7 +1337,7 @@ def main() -> int:
             scaled_display = _disp_fit().scale_and_crop(last_frame)
             scaled_version = 1
 
-        skip_cache: tuple[int, float, int, int, int, int, int, int, int, int, int] | None = None
+        skip_cache: tuple[object, ...] | None = None
         scene_enabled = _load_persisted_scene_enabled(True)
         dev_phase = DevPhase.OFF
         # Advanced matrix: temporarily show GRID behind the dialog when opened from Settings; restore on close.
@@ -1123,6 +1348,8 @@ def main() -> int:
         clock_saver_peek_until_mono: list[float] = [0.0]
         clock_saver_bd_enter_mono: list[float | None] = [None]
         black_photo: ImageTk.PhotoImage | None = None
+        label_live_photo: list[ImageTk.PhotoImage | None] = [None]
+        _render_after_id: list[str | None] = [None]
         use_backdrop_scene = False
         backdrop_master_bgr: np.ndarray | None = None
         # Last TMDb backdrop (copy); survives display off so developer-grid F10 can return to backdrop.
@@ -1152,6 +1379,7 @@ def main() -> int:
                 span_wide=TMDB_LOGO_SPAN_W,
                 span_tall=TMDB_LOGO_SPAN_H,
                 fit_scale=TMDB_LOGO_FIT_SCALE,
+                vertical_align="top",
             )
             if _PIGEON_EXT and TmdbLogoWidget is not None
             else None
@@ -1182,8 +1410,8 @@ def main() -> int:
             "label": "",
         }
         playback_overlay_flags: dict[str, bool] = {
-            "hide_wordmark_for_artwork": False,
             "show_paused_row": False,
+            "clock_saver_volume_only": False,
         }
         playback_overlay_widget = None
         if _PIGEON_EXT and PlaybackOverlayWidget is not None:
@@ -1194,51 +1422,6 @@ def main() -> int:
                 overlay_flags=playback_overlay_flags,
             )
 
-        _volume_boost_strength: list[float] = [0.0]
-        _volume_hold_until_mono: list[float] = [0.0]
-        _volume_anim_last_mono: list[float] = [time.monotonic()]
-        _volume_boost_cache_k: list[int] = [-1]
-
-        def _volume_effective_display(raw: str) -> str:
-            from pigeon.widgets.playback_overlay import _receiver_volume_display_line
-
-            return str(_receiver_volume_display_line(raw) or "").strip()
-
-        def _on_receiver_volume_display_changed(old_raw: str, new_raw: str) -> None:
-            od = _volume_effective_display(old_raw)
-            nd = _volume_effective_display(new_raw)
-            if od == nd:
-                return
-            if not nd:
-                _volume_hold_until_mono[0] = 0.0
-                return
-            _volume_hold_until_mono[0] = time.monotonic() + VOLUME_TEXT_BOOST_HOLD_S
-            _volume_boost_cache_k[0] = -1
-
-        def _volume_boost_smoothed() -> float:
-            return max(0.0, min(1.0, float(_volume_boost_strength[0])))
-
-        def _volume_boost_cache_key() -> int:
-            n = max(1, int(VOLUME_TEXT_BOOST_SIG_STEPS))
-            return max(0, min(n, int(round(_volume_boost_smoothed() * n))))
-
-        def _apply_volume_boost_to_widget() -> None:
-            if playback_overlay_widget is None:
-                return
-            playback_overlay_widget.volume_text_boost_strength = _volume_boost_smoothed()
-
-        def _maybe_rewarm_volume_overlay_for_smooth_boost() -> bool:
-            """Rebuild playback overlay when boost moved to a new cache step; widget always holds smooth [0,1]."""
-            if playback_overlay_widget is None:
-                return False
-            _apply_volume_boost_to_widget()
-            k = _volume_boost_cache_key()
-            if k == _volume_boost_cache_k[0]:
-                return False
-            _volume_boost_cache_k[0] = k
-            _warm_playback_overlay_blits()
-            return True
-
         _pigeon_ui_started_mono = time.monotonic()
         _startup_splash_complete: list[bool] = [False]
 
@@ -1248,6 +1431,54 @@ def main() -> int:
         playback_overlay_blits: list = []
         # [unix_sec, status_bar accent BGR or None] — clock patch invalidation.
         _clock_patch_sig: list = [-1, None]
+        # Optional full-canvas BGRA from ``pigeonAssets/TopGradient.png`` (above backdrop, under widgets).
+        top_gradient_design_bgra: list[np.ndarray | None] = [None]
+        _top_gradient_load_attempted: list[bool] = [False]
+
+        def _ensure_top_gradient_loaded() -> np.ndarray | None:
+            if top_gradient_design_bgra[0] is not None:
+                return top_gradient_design_bgra[0]
+            if _top_gradient_load_attempted[0]:
+                return None
+            _top_gradient_load_attempted[0] = True
+            p = Path(_SCRIPT_DIR) / "pigeonAssets" / "TopGradient.png"
+            if not p.is_file():
+                return None
+            try:
+                from pigeon.image_ui_protocol import load_image_bgra
+
+                raw = load_image_bgra(str(p))
+                if raw is None or raw.size == 0:
+                    return None
+                h0, w0 = raw.shape[:2]
+                if w0 != DESIGN_W or h0 != DESIGN_H:
+                    raw = cv2.resize(raw, (DESIGN_W, DESIGN_H), interpolation=cv2.INTER_LINEAR)
+                top_gradient_design_bgra[0] = raw
+                return raw
+            except Exception:
+                return None
+
+        def _blend_top_gradient_design(canvas: np.ndarray) -> None:
+            if alpha_blend_bgra_over_bgr is None:
+                return
+            tg = _ensure_top_gradient_loaded()
+            if tg is None:
+                return
+            ch, cw = int(canvas.shape[0]), int(canvas.shape[1])
+            if cw != DESIGN_W or ch != DESIGN_H:
+                return
+            canvas[:] = alpha_blend_bgra_over_bgr(canvas, tg)
+
+        def _blend_top_gradient_fast(base: np.ndarray, cap_w: int, cap_h: int) -> None:
+            if alpha_blend_bgra_over_bgr is None:
+                return
+            tg = _ensure_top_gradient_loaded()
+            if tg is None:
+                return
+            x, y, rw, rh = _design_rect_to_target(0, 0, DESIGN_W, DESIGN_H, cap_w, cap_h)
+            patch = cv2.resize(tg, (rw, rh), interpolation=cv2.INTER_LINEAR)
+            sub = base[y : y + rh, x : x + rw]
+            sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
 
         def _apply_stage_chrome_colors() -> None:
             b, g, r = get_stage_bgr()
@@ -1312,16 +1543,22 @@ def main() -> int:
                 return
             status_bar_blits = list(status_bar_widget.design_blits())
 
+        def _set_playback_overlay_clock_saver_volume_flag() -> None:
+            """True while clock saver is active and the receiver shows a real volume string."""
+            from pigeon.widgets.playback_overlay import _receiver_volume_display_line
+
+            vol = _receiver_volume_display_line(receiver_overlay_state.get("volume", ""))
+            playback_overlay_flags["clock_saver_volume_only"] = bool(
+                _clock_saver_active(time.monotonic()) and vol
+            )
+
         def _warm_playback_overlay_blits() -> None:
             nonlocal playback_overlay_blits
             if playback_overlay_widget is None:
                 playback_overlay_blits = []
                 return
-            now_wm = time.monotonic()
-            playback_overlay_flags["hide_wordmark_for_artwork"] = bool(
-                use_backdrop_scene
-            ) or (now_wm - _pigeon_ui_started_mono) >= STARTUP_PIGEON_WORDMARK_MAX_S
             playback_overlay_flags["show_paused_row"] = _show_paused_row_overlay()
+            _set_playback_overlay_clock_saver_volume_flag()
             playback_overlay_blits = list(playback_overlay_widget.design_blits())
 
         def _warm_tmdb_logo_patch() -> None:
@@ -1354,7 +1591,17 @@ def main() -> int:
             _clock_patch_sig[0] = t
             _clock_patch_sig[1] = acc
 
-        _playback_overlay_fast_sig: list[tuple[bool, bool] | None] = [None]
+        _playback_overlay_fast_sig: list[tuple[bool, bool, bool] | None] = [None]
+
+        def _maybe_blend_mic_visualizer(bgr_plane: np.ndarray) -> None:
+            if not _PIGEON_EXT or _blend_mic_visualizer is None:
+                return
+            _blend_mic_visualizer(
+                bgr_plane,
+                time.monotonic(),
+                active=not use_backdrop_scene,
+                landing_elapsed_s=time.monotonic() - _pigeon_ui_started_mono,
+            )
 
         def compose_display_fast_no_grid(
             frame_bgr: np.ndarray | None,
@@ -1364,19 +1611,12 @@ def main() -> int:
         ) -> np.ndarray:
             """Video at display size + poster/clock blits (no full design canvas). Used when developer grid is off."""
             assert _PIGEON_EXT
-            now_wm = time.monotonic()
-            hide_wm = bool(use_backdrop_scene) or (
-                now_wm - _pigeon_ui_started_mono
-            ) >= STARTUP_PIGEON_WORDMARK_MAX_S
-            vol_k = 0
-            if playback_overlay_widget is not None:
-                n = max(1, int(VOLUME_TEXT_BOOST_SIG_STEPS))
-                vb = max(
-                    0.0,
-                    min(1.0, float(playback_overlay_widget.volume_text_boost_strength)),
-                )
-                vol_k = max(0, min(n, int(round(vb * n))))
-            fast_sig = (hide_wm, _show_paused_row_overlay(), vol_k)
+            _set_playback_overlay_clock_saver_volume_flag()
+            fast_sig = (
+                bool(use_backdrop_scene),
+                _show_paused_row_overlay(),
+                bool(playback_overlay_flags["clock_saver_volume_only"]),
+            )
             if playback_overlay_widget is not None and _playback_overlay_fast_sig[0] != fast_sig:
                 _playback_overlay_fast_sig[0] = fast_sig
                 _warm_playback_overlay_blits()
@@ -1406,6 +1646,10 @@ def main() -> int:
             mx_bd = _clock_saver_backdrop_blackout_mix(now_cs)
             if mx_bd > 1e-5:
                 base = (base.astype(np.float32) * (1.0 - mx_bd)).astype(np.uint8)
+            # Composite order: mic/EQ is a video layer; clock saver and other UI blend on top.
+            # Do not punch EQ out under saver layout rects — that reads as a dark slab (video without EQ).
+            _maybe_blend_mic_visualizer(base)
+            _blend_top_gradient_fast(base, cap_w, cap_h)
             if cs:
                 if alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
@@ -1427,6 +1671,17 @@ def main() -> int:
                         patch = cv2.resize(cs_bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
                         sub = base[y : y + rh, x : x + rw]
                         sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
+                    if (
+                        playback_overlay_flags.get("clock_saver_volume_only")
+                        and playback_overlay_blits
+                        and alpha_blend_bgra_over_bgr is not None
+                    ):
+                        for pb in playback_overlay_blits:
+                            x0, y0, ww, wh = int(pb.x), int(pb.y), int(pb.w), int(pb.h)
+                            x, y, rw, rh = _design_rect_to_target(x0, y0, ww, wh, cap_w, cap_h)
+                            patch = cv2.resize(pb.bgra, (rw, rh), interpolation=cv2.INTER_LINEAR)
+                            sub = base[y : y + rh, x : x + rw]
+                            sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
             else:
                 if (
                     playback_lower_gradient_bgra is not None
@@ -1512,7 +1767,8 @@ def main() -> int:
             """
             Build WINDOW_W×WINDOW_H output: scale **source** video to design, draw widgets, optionally grid,
             then scale down. Using the raw frame avoids letterboxing an already 800×400 image (which shifted
-            the grid/poster and cropped them on the left).
+            the grid/poster and cropped them on the left). Developer grid mode uses uniform letterboxing so
+            the full design width (including grid column 1) is visible on narrow windows.
             """
             assert _PIGEON_EXT
             assert scale_height_and_center_crop is not None
@@ -1529,6 +1785,14 @@ def main() -> int:
                 else:
                     fit_d = SceneFit(target_w=DESIGN_W, target_h=DESIGN_H)
                     canvas = fit_d.scale_and_crop(lit)
+            # All widget/grid math is in design pixels (5126×2160). If the base layer is off-size
+            # (e.g. a bad master path), resize so overlays are not clipped on the left before scaling to the window.
+            ch_can, cw_can = int(canvas.shape[0]), int(canvas.shape[1])
+            if cw_can != DESIGN_W or ch_can != DESIGN_H:
+                canvas = cv2.resize(canvas, (DESIGN_W, DESIGN_H), interpolation=cv2.INTER_LINEAR)
+            if not canvas.flags["C_CONTIGUOUS"]:
+                canvas = np.ascontiguousarray(canvas)
+            _set_playback_overlay_clock_saver_volume_flag()
             now_cs = time.monotonic()
             cs = _clock_saver_active(now_cs) and not show_grid
             if cs and use_backdrop_scene:
@@ -1539,6 +1803,9 @@ def main() -> int:
             mx_bd = _clock_saver_backdrop_blackout_mix(now_cs)
             if mx_bd > 1e-5:
                 canvas = (canvas.astype(np.float32) * (1.0 - mx_bd)).astype(np.uint8)
+            # Mic EQ under widgets; clock saver / clock patch alpha-blended afterward.
+            _maybe_blend_mic_visualizer(canvas)
+            _blend_top_gradient_design(canvas)
             if cs:
                 if alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
@@ -1558,6 +1825,8 @@ def main() -> int:
                     ):
                         roi2 = canvas[sy : sy + sh, sx : sx + sw]
                         roi2[:] = alpha_blend_bgra_over_bgr(roi2, cs_bgra)
+                    if playback_overlay_flags.get("clock_saver_volume_only") and playback_overlay_widget is not None:
+                        playback_overlay_widget.render(canvas)
             else:
                 if playback_lower_gradient_bgra is not None and alpha_blend_bgra_over_bgr is not None:
                     gx, gy, gw, gh, grad_bgra = playback_lower_gradient_bgra()
@@ -1590,10 +1859,6 @@ def main() -> int:
                 if status_bar_widget is not None:
                     status_bar_widget.render(canvas)
                 if playback_overlay_widget is not None:
-                    now_wm = time.monotonic()
-                    playback_overlay_flags["hide_wordmark_for_artwork"] = bool(
-                        use_backdrop_scene
-                    ) or (now_wm - _pigeon_ui_started_mono) >= STARTUP_PIGEON_WORDMARK_MAX_S
                     playback_overlay_flags["show_paused_row"] = _show_paused_row_overlay()
                     playback_overlay_widget.render(canvas)
                 if tmdb_logo_widget is not None:
@@ -1606,11 +1871,19 @@ def main() -> int:
                 ov = build_stage_overlay_source_bgra()
                 canvas = blend_overlay_bgr(canvas, ov)
             tw, th = display_dims[0], display_dims[1]
+            # Grid: uniform letterbox so narrow windows still show the full design width. Theater/backdrop:
+            # scale to height and center-crop width (fills the window, no pillarbox bars).
+            _use_design_letterbox = bool(scale_uniform_letterbox is not None and show_grid)
             if tw > MAX_FAST_COMPOSITE_W:
                 cw = MAX_FAST_COMPOSITE_W
                 ch = max(1, int(round(th * (cw / float(tw)))))
-                out = scale_height_and_center_crop(canvas, cw, ch)
+                if _use_design_letterbox:
+                    out = scale_uniform_letterbox(canvas, cw, ch)
+                else:
+                    out = scale_height_and_center_crop(canvas, cw, ch)
                 return cv2.resize(out, (tw, th), interpolation=cv2.INTER_LINEAR)
+            if _use_design_letterbox:
+                return scale_uniform_letterbox(canvas, tw, th)
             return scale_height_and_center_crop(canvas, tw, th)
 
         def _compose_shown_frame(frame_bgr: np.ndarray | None, brightness: float) -> np.ndarray:
@@ -1783,6 +2056,7 @@ def main() -> int:
                     text=(
                         "Developer mode (grid) — Tab: next | Return: command bar | S: scene toggle | "
                         "F10: landing → black → backdrop → landing (backdrop after TMDb) | "
+                        "+: series title training (fingerprint → TMDb) | Ctrl+Shift+M: TMDb match literal ↔ forgiving | "
                         "? (Shift+/): TMDb retry (cycle movie / tv / alt query / auto) | dbl-click"
                         + (
                             ""
@@ -1882,9 +2156,7 @@ def main() -> int:
             if not scene_enabled:
                 if _PIGEON_EXT:
                     out_bgr = _compose_shown_frame(None, 1.0)
-                    tk_img = _bgr_to_tk_image(out_bgr)
-                    label.configure(image=tk_img)
-                    label.image = tk_img
+                    _update_label_photo_from_bgr(label, out_bgr, label_live_photo)
                 else:
                     if black_photo is None:
                         black_photo = _bgr_to_tk_image(_black_screen_bgr())
@@ -1895,14 +2167,13 @@ def main() -> int:
                     shown = _compose_shown_frame(last_frame, brightness_current)
                 else:
                     shown = _apply_brightness(scaled_display, brightness_current)
-                tk_img = _bgr_to_tk_image(shown)
-                label.configure(image=tk_img)
-                label.image = tk_img
+                _update_label_photo_from_bgr(label, shown, label_live_photo)
 
         _last_overlay_mono = [0.0]
         _last_s_mono = [0.0]
         _last_f10_mono = [0.0]
         _last_tmdb_hotkey_mono = [0.0]
+        _last_tmdb_match_toggle_mono = [0.0]
         _last_space_mono = [0.0]
         _last_adv_shift_tab_mono = [0.0]
 
@@ -2127,6 +2398,46 @@ def main() -> int:
                 sys.stderr.write(f"pigeon: tmdb → {msg_m}\n")
                 sys.stderr.flush()
                 if not ok_m:
+                    bd_fb = _backdrop_from_current_app_logo()
+                    if bd_fb is not None:
+                        sys.stderr.write(
+                            "pigeon: TMDb search failed — showing streaming app logo backdrop instead.\n"
+                        )
+                        sys.stderr.flush()
+                        active_tmdb_title_key = None
+                        active_tmdb_display_title = None
+                        if tmdb_logo_widget is not None:
+                            tmdb_logo_widget.clear_cache()
+                        _warm_tmdb_logo_patch()
+                        if cap is not None:
+                            try:
+                                cap.release()
+                            except Exception:
+                                pass
+                            cap = None
+                        backdrop_master_bgr = bd_fb
+                        saved_backdrop_master_bgr = np.asarray(bd_fb, dtype=np.uint8).copy()
+                        saved_backdrop_app_logo_letterbox_fit = True
+                        backdrop_app_logo_letterbox_fit = True
+                        use_backdrop_scene = True
+                        scene_enabled = True
+                        playing = False
+                        last_frame = None
+                        scaled_display = None
+                        scaled_version += 1
+                        _save_persisted_scene_enabled(True)
+                        brightness_current = brightness_from = brightness_target = BACKDROP_BRIGHTNESS
+                        brightness_t0 = time.monotonic()
+                        skip_cache = None
+                        if status_bar_widget is not None:
+                            bd_arr = np.asarray(bd_fb, dtype=np.uint8)
+                            if status_bar_widget.set_accent_from_backdrop_bgr(bd_arr):
+                                _warm_status_bar_blits()
+                                skip_cache = None
+                        render_once()
+                        if dev_phase == DevPhase.SETTINGS:
+                            sync_developer_chrome()
+                        return
                     messagebox.showerror("TMDb poster", msg_m)
                     return
                 # msg_m includes a prefix when successful: "<title_key>::<display_title>::<summary>"
@@ -4849,6 +5160,7 @@ def main() -> int:
                     ok_w, msg_w, metadata_w = False, str(e), None
 
                 def finish() -> None:
+                    nonlocal skip_cache
                     apple_tv_auto_state["running"] = False
                     pyatv_ok = bool(ok_w and isinstance(metadata_w, dict))
                     md_for_status: dict[str, object] | None = metadata_w if pyatv_ok else None
@@ -4937,8 +5249,26 @@ def main() -> int:
                             "content_key": _content_key_from_metadata(metadata_w),
                             "app_name": str(metadata_w.get("app_name") or "").strip(),
                             "app_id": str(metadata_w.get("app_id") or "").strip(),
+                            "volume_percent": metadata_w.get("volume_percent"),
                         }
                         _update_status_bar_from_metadata(metadata_w)
+                        if playback_overlay_widget is not None:
+                            row_av = streaming_slot_holder[0]
+                            if row_av and row_is_playback_apple_tv(row_av):
+                                from pigeon.widgets.playback_overlay import (
+                                    volume_percent_to_widget_line,
+                                )
+
+                                v_line = volume_percent_to_widget_line(
+                                    metadata_w.get("volume_percent")
+                                )
+                                if v_line:
+                                    old_v = str(receiver_overlay_state.get("volume", ""))
+                                    if old_v != v_line:
+                                        receiver_overlay_state["volume"] = v_line
+                                        _warm_playback_overlay_blits()
+                                        skip_cache = None
+                                        render_once()
                     md_poll = metadata_w if isinstance(metadata_w, dict) else None
                     md_act = md_poll is not None and not _atv_metadata_is_content_idle(md_poll)
                     pyatv_has_app = False
@@ -5467,6 +5797,120 @@ def main() -> int:
             root.bind_all(_adv_hot, on_shift_tab_advanced)
         for _tmdb_key in ("<KeyPress-question>", "<Shift-KeyPress-slash>"):
             root.bind_all(_tmdb_key, on_tmdb_retry_hotkey)
+
+        def on_tmdb_match_mode_toggle(event: tk.Event) -> str | None:
+            _bump_pigeon_user_activity(event)
+            if not _PIGEON_EXT:
+                return None
+            if _widget_accepts_typing(event.widget):
+                return None
+            now_tm = time.monotonic()
+            if now_tm - _last_tmdb_match_toggle_mono[0] < 0.2:
+                return "break"
+            _last_tmdb_match_toggle_mono[0] = now_tm
+            try:
+                from pigeon.tmdb_poster import toggle_tmdb_match_mode
+            except ImportError:
+                return None
+            mode = toggle_tmdb_match_mode()
+            sys.stderr.write(f"pigeon: TMDb title match: {mode} (Ctrl+Shift+M to toggle)\n")
+            sys.stderr.flush()
+            return "break"
+
+        def on_dev_series_title_training_hotkey(event: tk.Event) -> str | None:
+            """Dev-only: map current playback metadata fingerprint → series title (training JSON)."""
+            _bump_pigeon_user_activity(event)
+            if not _PIGEON_EXT:
+                return None
+            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS):
+                return None
+            if _widget_accepts_typing(event.widget):
+                return None
+            lm = apple_tv_auto_state.get("last_metadata")
+            if not isinstance(lm, dict) or not any(
+                str(lm.get(k) or "").strip()
+                for k in ("title", "series_name", "artist", "album", "query")
+            ):
+                messagebox.showinfo(
+                    "Series title training",
+                    "No playback metadata snapshot yet. Start playback and wait for a poll, then try again.",
+                    parent=root,
+                )
+                return "break"
+            try:
+                from pigeon.raw_title import raw_title_from_metadata_dict
+                from pigeon.series_title_training import add_training_mapping
+            except ImportError:
+                messagebox.showinfo(
+                    "Series title training",
+                    "Training modules are not available in this build.",
+                    parent=root,
+                )
+                return "break"
+
+            rt = raw_title_from_metadata_dict(lm)
+            sig = rt.training_signature_normalized()
+            if not sig:
+                messagebox.showinfo(
+                    "Series title training",
+                    "Could not build a stable fingerprint from the current metadata.",
+                    parent=root,
+                )
+                return "break"
+
+            tw = tk.Toplevel(root)
+            tw.title("Series title training")
+            tw.transient(root)
+            tk.Label(
+                tw,
+                text="Map this playback fingerprint to a TMDb series title.\n"
+                "Saved under ~/.pigeon_0_5/series_title_training_hints.json",
+                justify="center",
+            ).pack(padx=12, pady=(10, 4))
+            preview = sig[:180] + ("…" if len(sig) > 180 else "")
+            tk.Label(
+                tw,
+                text=f"Key: {preview}",
+                fg="#888",
+                wraplength=420,
+                justify="left",
+            ).pack(padx=12, pady=4)
+            ent = tk.Entry(tw, width=48)
+            ent.pack(padx=12, pady=6)
+            hint = (rt.layer_series_title or rt.raw_series_name or rt.raw_title or "").strip()
+            if hint:
+                ent.insert(0, hint)
+
+            def _save_training() -> None:
+                q_sp = ent.get().strip()
+                ok_h, msg_h = add_training_mapping(sig, q_sp)
+                if ok_h:
+                    sys.stderr.write(f"pigeon: series title training: {msg_h}\n")
+                    sys.stderr.flush()
+                    tw.destroy()
+                    if q_sp:
+                        spawn_tmdb_poster_fetch(q_sp, prefer=str(apple_tv_auto_state.get("prefer") or "auto"))
+                else:
+                    messagebox.showerror("Series title training", msg_h, parent=tw)
+
+            bf = tk.Frame(tw)
+            bf.pack(pady=(4, 12))
+            tk.Button(bf, text="Save & refetch TMDb", command=_save_training).pack(side=tk.LEFT, padx=6)
+            tk.Button(bf, text="Cancel", command=tw.destroy).pack(side=tk.LEFT, padx=6)
+            root.after_idle(lambda: ent.focus_set())
+            return "break"
+
+        for _plus_key in (
+            "<KeyPress-plus>",
+            "<Shift-KeyPress-equal>",
+            "<Shift-KeyPress-plus>",
+            "<KeyPress-KP_Add>",
+        ):
+            root.bind_all(_plus_key, on_dev_series_title_training_hotkey)
+
+        root.bind_all("<Control-Shift-KeyPress-m>", on_tmdb_match_mode_toggle)
+        root.bind_all("<Control-Shift-KeyPress-M>", on_tmdb_match_mode_toggle)
+
         root.bind_all("<Control-Shift-KeyPress-s>", lambda e: toggle_scene(require_overlay=False))
         root.bind_all("<Control-Shift-KeyPress-S>", lambda e: toggle_scene(require_overlay=False))
 
@@ -5518,6 +5962,31 @@ def main() -> int:
             nonlocal last_frame, brightness_current, scaled_display, scaled_version, skip_cache, black_photo
             nonlocal scene_enabled, playing, use_backdrop_scene, backdrop_master_bgr
 
+            if _render_after_id[0] is not None:
+                try:
+                    root.after_cancel(_render_after_id[0])
+                except tk.TclError:
+                    pass
+                _render_after_id[0] = None
+
+            _render_tick_t0 = time.perf_counter()
+
+            def _schedule_next_render() -> None:
+                elapsed_ms = int((time.perf_counter() - _render_tick_t0) * 1000.0)
+                interval = _next_render_ms()
+                delay = max(interval, elapsed_ms + 1)
+                _schedule_render_oneshot(delay)
+
+            def _next_render_ms() -> int:
+                base = frame_interval_ms if playing else paused_interval_ms
+                if (
+                    _PIGEON_EXT
+                    and _blend_mic_visualizer is not None
+                    and not use_backdrop_scene
+                ):
+                    return min(base, _mic_viz_composite_ms)
+                return base
+
             now = time.monotonic()
             if (
                 _PIGEON_EXT
@@ -5527,17 +5996,20 @@ def main() -> int:
             ):
                 _startup_splash_complete[0] = True
                 if (
-                    saved_backdrop_master_bgr is not None
+                    STARTUP_AUTO_RESTORE_SAVED_BACKDROP
+                    and saved_backdrop_master_bgr is not None
                     and scene_enabled
                     and not use_backdrop_scene
                 ):
                     apply_saved_tmdb_backdrop_to_display()
+                    # Inner ``render_once`` schedules the loop, but guarantee a timer if that path returns early.
+                    _schedule_next_render()
                     return
                 skip_cache = None
                 _warm_playback_overlay_blits()
 
             if dev_phase == DevPhase.SETTINGS:
-                root.after(paused_interval_ms, render_once)
+                _schedule_render_oneshot(paused_interval_ms)
                 return
 
             if _PIGEON_EXT:
@@ -5559,15 +6031,13 @@ def main() -> int:
                         sm = max(0.0, min(1.0, _compose_idle_strength_holder[0]))
                         if sm > 1e-6:
                             out_bgr = lerp_bgr_red_monochrome(out_bgr, sm)
-                    tk_img = _bgr_to_tk_image(out_bgr)
-                    label.configure(image=tk_img)
-                    label.image = tk_img
+                    _update_label_photo_from_bgr(label, out_bgr, label_live_photo)
                 else:
                     if black_photo is None:
                         black_photo = _bgr_to_tk_image(_black_screen_bgr())
                     label.configure(image=black_photo)
                     label.image = black_photo
-                root.after(paused_interval_ms, render_once)
+                _schedule_next_render()
                 return
 
             if use_backdrop_scene:
@@ -5575,10 +6045,10 @@ def main() -> int:
                     use_backdrop_scene = False
             if not use_backdrop_scene:
                 if last_frame is None:
-                    root.after(frame_interval_ms if playing else paused_interval_ms, render_once)
+                    _schedule_next_render()
                     return
                 if not _PIGEON_EXT and scaled_display is None:
-                    root.after(frame_interval_ms if playing else paused_interval_ms, render_once)
+                    _schedule_next_render()
                     return
 
             brightness_animating = abs(brightness_current - brightness_target) > 1e-4
@@ -5590,7 +6060,11 @@ def main() -> int:
             idle_s_here = (
                 max(0.0, min(1.0, _compose_idle_strength_holder[0])) if _PIGEON_EXT else 0.0
             )
-            idle_want_here = 1.0 if _atv_idle_monochrome_active() else 0.0
+            idle_want_here = (
+                (1.0 if _atv_idle_monochrome_active() else 0.0)
+                if THEATER_IDLE_DIM_ENABLED
+                else 0.0
+            )
             # While easing toward dim or back to full bright, always composite (skip-cache can quantize away steps).
             idle_dim_animating = _PIGEON_EXT and abs(idle_s_here - idle_want_here) > 1e-4
             idle_cache_key = int(round(idle_s_here * 500)) if _PIGEON_EXT else 0
@@ -5601,15 +6075,23 @@ def main() -> int:
             clock_saver_peek_cache_key = (
                 1 if (_PIGEON_EXT and now < clock_saver_peek_until_mono[0]) else 0
             )
-            startup_wm_cache_key = (
-                1
+            # Mic EQ intro is driven by per-frame ``mic_viz_cache_key``; no separate wordmark phase.
+            startup_wm_cache_key = 0
+            paused_row_cache_key = 1 if (_PIGEON_EXT and _show_paused_row_overlay()) else 0
+            mic_viz_cache_key = (
+                int(now * _MIC_VIZ_COMPOSITE_FPS)
                 if (
                     _PIGEON_EXT
-                    and (now - _pigeon_ui_started_mono) < STARTUP_PIGEON_WORDMARK_MAX_S
+                    and _blend_mic_visualizer is not None
+                    and not use_backdrop_scene
                 )
                 else 0
             )
-            paused_row_cache_key = 1 if (_PIGEON_EXT and _show_paused_row_overlay()) else 0
+            mic_eq_needs_composite = (
+                _PIGEON_EXT
+                and _blend_mic_visualizer is not None
+                and not use_backdrop_scene
+            )
             if _PIGEON_EXT and status_bar_widget is not None:
                 if status_bar_widget.set_theater_dim_suppressed(idle_s_here >= 0.5):
                     _warm_status_bar_blits()
@@ -5622,10 +6104,16 @@ def main() -> int:
                 )
                 else 0
             )
-            volume_boost_cache_key = _volume_boost_cache_key() if _PIGEON_EXT else 0
+            # Receiver overlay text must bust skip-cache when paused/backdrop.
+            receiver_overlay_skip_sig = ""
+            if _PIGEON_EXT:
+                receiver_overlay_skip_sig = "\x1e".join(
+                    str(receiver_overlay_state.get(k, "")) for k in ("incoming", "config", "volume")
+                )
 
             if (
                 not playing
+                and not mic_eq_needs_composite
                 and not brightness_animating
                 and not idle_dim_animating
                 and not location_toast_animating
@@ -5644,11 +6132,12 @@ def main() -> int:
                     clock_saver_peek_cache_key,
                     startup_wm_cache_key,
                     paused_row_cache_key,
-                    volume_boost_cache_key,
+                    receiver_overlay_skip_sig,
                     theater_dim_key,
+                    mic_viz_cache_key,
                 )
             ):
-                root.after(paused_interval_ms, render_once)
+                _schedule_next_render()
                 return
 
             if _PIGEON_EXT:
@@ -5661,9 +6150,7 @@ def main() -> int:
                         shown = lerp_bgr_red_monochrome(shown, sm)
             else:
                 shown = _apply_brightness(scaled_display, b_scene)
-            tk_img = _bgr_to_tk_image(shown)
-            label.configure(image=tk_img)
-            label.image = tk_img
+            _update_label_photo_from_bgr(label, shown, label_live_photo)
 
             if (
                 not playing
@@ -5685,42 +6172,26 @@ def main() -> int:
                     clock_saver_peek_cache_key,
                     startup_wm_cache_key,
                     paused_row_cache_key,
-                    volume_boost_cache_key,
+                    receiver_overlay_skip_sig,
                     theater_dim_key,
+                    mic_viz_cache_key,
                 )
             else:
                 skip_cache = None
 
-            root.after(frame_interval_ms if playing else paused_interval_ms, render_once)
+            _schedule_next_render()
 
-        def _tick_volume_text_boost_anim() -> None:
-            nonlocal skip_cache
-            root.after(VOLUME_TEXT_BOOST_TICK_MS, _tick_volume_text_boost_anim)
-            if not _PIGEON_EXT or playback_overlay_widget is None:
-                return
-            now = time.monotonic()
-            dt = now - _volume_anim_last_mono[0]
-            _volume_anim_last_mono[0] = now
-            dt = max(0.0, min(0.08, dt))
-            hf = _volume_hold_until_mono[0]
-            target = 1.0 if now < hf else 0.0
-            up_r = 1.0 / VOLUME_TEXT_BOOST_ANIM_UP_S
-            dn_r = 1.0 / VOLUME_TEXT_BOOST_ANIM_DOWN_S
-            s0 = _volume_boost_strength[0]
-            s = s0
-            if s < target - 1e-5:
-                s = min(target, s + up_r * dt)
-            elif s > target + 1e-5:
-                s = max(target, s - dn_r * dt)
-            else:
-                s = target
-            _volume_boost_strength[0] = s
-            if _maybe_rewarm_volume_overlay_for_smooth_boost():
-                skip_cache = None
+        def _invoke_render_after() -> None:
+            _render_after_id[0] = None
+            render_once()
+
+        def _schedule_render_oneshot(delay_ms: int) -> None:
+            if _render_after_id[0] is not None:
                 try:
-                    render_once()
-                except Exception:
+                    root.after_cancel(_render_after_id[0])
+                except tk.TclError:
                     pass
+            _render_after_id[0] = root.after(max(1, int(delay_ms)), _invoke_render_after)
 
         def _receiver_poll_tick() -> None:
             root.after(RECEIVER_POLL_MS, _receiver_poll_tick)
@@ -5742,14 +6213,11 @@ def main() -> int:
                 overlay_unchanged = (
                     old_in == new_in and old_cf == new_cf and old_vol_raw == new_vol
                 )
-                _on_receiver_volume_display_changed(old_vol_raw, new_vol)
                 receiver_overlay_state["incoming"] = incoming
                 receiver_overlay_state["config"] = config
                 receiver_overlay_state["volume"] = volume
-                _apply_volume_boost_to_widget()
                 if overlay_unchanged:
                     return
-                _volume_boost_cache_k[0] = _volume_boost_cache_key()
                 _warm_playback_overlay_blits()
                 nonlocal skip_cache
                 skip_cache = None
@@ -5758,7 +6226,10 @@ def main() -> int:
             receiver_poll_busy["active"] = True
 
             def work() -> None:
-                from pigeon.widgets.playback_overlay import _receiver_volume_display_line
+                from pigeon.widgets.playback_overlay import (
+                    _receiver_volume_display_line,
+                    compose_playback_volume_widget_line,
+                )
 
                 r = None
                 if host:
@@ -5770,6 +6241,7 @@ def main() -> int:
                         r = None
 
                 roku_line = ""
+                roku_vol_pct = ""
                 try:
                     from pigeon.roku_ecp import (
                         fetch_roku_playback_line,
@@ -5784,9 +6256,12 @@ def main() -> int:
                     if not rbase_line:
                         rbase_line = str(resolve_roku_ecp_base_url() or "").strip()
                     if rbase_line:
-                        roku_line = fetch_roku_playback_line(rbase_line, timeout=3.0) or ""
+                        rl, rv = fetch_roku_playback_line(rbase_line, timeout=3.0)
+                        roku_line = rl or ""
+                        roku_vol_pct = str(rv or "").strip()
                 except Exception:
                     roku_line = ""
+                    roku_vol_pct = ""
 
                 denon_vol_raw = ""
                 if r is not None and r.ok:
@@ -5794,7 +6269,12 @@ def main() -> int:
                 denon_vol_effective = (
                     denon_vol_raw if _receiver_volume_display_line(denon_vol_raw) else ""
                 )
-                merged_volume = denon_vol_effective or str(roku_line or "").strip()
+                merged_volume = compose_playback_volume_widget_line(
+                    stream_row=streaming_slot_holder[0],
+                    apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata"),
+                    denon_vol_effective=denon_vol_effective,
+                    roku_tv_volume_percent=roku_vol_pct,
+                )
 
                 def apply() -> None:
                     rpl = receiver_panel_led_holder[0]
@@ -5865,10 +6345,24 @@ def main() -> int:
         shell.bind("<Configure>", _on_shell_configure)
 
         render_once()
-        root.after(VOLUME_TEXT_BOOST_TICK_MS, _tick_volume_text_boost_anim)
         root.after(600, _receiver_poll_tick)
 
-    root.after(1, bootstrap)
+        if splash_paths:
+            tk.Widget.pack = _tk_pack_orig  # type: ignore[method-assign]
+            tk.Widget.grid = _tk_grid_orig  # type: ignore[method-assign]
+            tk.Widget.place = _tk_place_orig  # type: ignore[method-assign]
+            try:
+                root.update()
+            except tk.TclError:
+                pass
+        bootstrap_done[0] = True
+        _try_remove_splash_overlay()
+
+    if splash_paths:
+        root.after(0, splash_tick)
+        root.after(0, bootstrap)
+    else:
+        root.after(1, bootstrap)
     try:
         root.mainloop()
     finally:

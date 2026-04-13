@@ -122,3 +122,51 @@ def resolve_ui_font_bold() -> str | None:
         if p.is_file():
             return str(p)
     return None
+
+
+def resolve_digital7_font() -> str | None:
+    """
+    LCD-style font for the clock saver time (e.g. Digital-7).
+
+    Set ``PIGEON_FONT_CLOCK_SAVER`` to a ``.ttf`` path to override. Otherwise searches
+    ``pigeonAssets/`` next to the package, then common font directories for names like
+    ``Digital-7.ttf`` / ``digital-7.ttf`` / ``*Digital*7*.ttf``.
+    """
+    env = os.environ.get("PIGEON_FONT_CLOCK_SAVER")
+    if env and Path(env).is_file():
+        return env
+
+    pkg_root = Path(__file__).resolve().parent.parent
+    assets = pkg_root / "pigeonAssets"
+    if assets.is_dir():
+        for name in (
+            "Digital-7.ttf",
+            "digital-7.ttf",
+            "Digital-7 (mono).ttf",
+            "digital-7 (mono).ttf",
+        ):
+            p = assets / name
+            if p.is_file():
+                return str(p)
+        for p in sorted(assets.glob("*Digital*7*.ttf")) + sorted(assets.glob("*digital*7*.ttf")):
+            if p.is_file():
+                return str(p)
+
+    roots = [
+        Path.home() / "Library" / "Fonts",
+        Path("/Library/Fonts"),
+        Path("/System/Library/Fonts/Supplemental"),
+    ]
+    globs = (
+        "*Digital*7*.ttf",
+        "*digital*7*.ttf",
+        "*Digital*7*.otf",
+    )
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for pattern in globs:
+            for p in sorted(root.glob(pattern)):
+                if p.is_file():
+                    return str(p)
+    return None

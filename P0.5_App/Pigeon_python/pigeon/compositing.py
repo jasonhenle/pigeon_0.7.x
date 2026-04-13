@@ -84,3 +84,44 @@ def scale_height_and_center_crop(image: np.ndarray, target_w: int, target_h: int
     x0 = (scaled_w - target_w) // 2
     x1 = x0 + target_w
     return resized[:, x0:x1]
+
+
+def scale_uniform_letterbox(image: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    """
+    Uniform scale so the **entire** image fits inside ``target_w``×``target_h``, centered on black bars.
+
+    Unlike ``scale_height_and_center_crop`` (scale-to-height then crop width), this never discards
+    horizontal content. Used for developer grid mode so narrow windows (e.g. 800×400) still show
+    design columns 1–2 instead of cropping them off.
+    """
+    src_h, src_w = image.shape[:2]
+    if src_w < 1 or src_h < 1 or target_w < 1 or target_h < 1:
+        ch = 3 if image.ndim < 3 else int(image.shape[2])
+        return np.zeros((max(1, target_h), max(1, target_w), ch), dtype=image.dtype)
+
+    scale = min(target_w / float(src_w), target_h / float(src_h))
+    nw = max(1, min(target_w, int(round(src_w * scale))))
+    nh = max(1, min(target_h, int(round(src_h * scale))))
+    resized = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_AREA)
+
+    pad_w = target_w - nw
+    pad_h = target_h - nh
+    left = max(0, pad_w // 2)
+    right = max(0, pad_w - left)
+    top = max(0, pad_h // 2)
+    bottom = max(0, pad_h - top)
+
+    if image.ndim == 3 and image.shape[2] == 4:
+        pad_value = (0, 0, 0, 255)
+    else:
+        pad_value = (0, 0, 0)
+
+    return cv2.copyMakeBorder(
+        resized,
+        top=top,
+        bottom=bottom,
+        left=left,
+        right=right,
+        borderType=cv2.BORDER_CONSTANT,
+        value=pad_value,
+    )

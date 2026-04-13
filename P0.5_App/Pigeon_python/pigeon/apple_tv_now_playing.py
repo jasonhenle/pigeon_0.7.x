@@ -45,31 +45,84 @@ def _tmdb_query_from_playing_impl(playing) -> str | None:
         text = str(value).strip()
         return text or None
 
+    def _tmdb_show_from_series_or_compound_title() -> str | None:
+        """
+        Prefer ``series_name`` for episodic rows, but Disney+ can send a **stale** ``series_name``
+        while ``title`` is still ``Show - Episode``. If the show side parsed from ``title`` disagrees
+        and ``series_name`` does not appear in ``title``, trust the compound ``title``.
+        """
+        if not series_name or is_degenerate_tmdb_query(series_name):
+            return None
+        if not title:
+            return series_name
+        inf = colon_prefix_show_query(title)
+        if not inf:
+            return series_name
+        il = inf.strip().lower()
+        sl = series_name.strip().lower()
+        tl = title.lower()
+        if il != sl and sl not in tl:
+            return inf.strip()
+        return series_name
+
     title = _text("title")
     series_name = _text("series_name")
     album = _text("album")
     artist = _text("artist")
+    episode_title_txt = _text("episode_title")
     season_number = getattr(playing, "season_number", None)
     episode_number = getattr(playing, "episode_number", None)
-    # Heuristic: only swap title→artist for “episode-like” contexts.
-    # (For movies, artist can be app/platform name and would break TMDb matching.)
-    episode_like = season_number is not None or episode_number is not None
 
     # Some apps (e.g. certain streaming players) may report Idle/Stopped even while video is
     # visually playing, but still include a valid title/series name. Prefer any usable metadata
     # over the reported device state.
     mt = getattr(playing, "media_type", None)
     is_tv = mt == MediaType.TV
+    # Heuristic: only swap title→artist for “episode-like” contexts.
+    # (For movies, artist can be app/platform name and would break TMDb matching.)
+    episode_like = season_number is not None or episode_number is not None
+    title_embeds_se = False
+    try:
+        from pigeon.raw_title import _strip_season_episode_from_text
+
+        if title:
+            _te, _s_lab, _e_lab = _strip_season_episode_from_text(title)
+            title_embeds_se = bool(_s_lab or _e_lab)
+    except ImportError:
+        pass
+    # Prime Video often reports episodes as ``Video`` with S01 E01 inside ``title`` only (no pyatv S/E).
+    episodic_hint = bool(is_tv or episode_like or episode_title_txt or title_embeds_se)
+
+    try:
+        from pigeon.tmdb_poster import compound_title_streaming_series_fix
+    except ImportError:
+        compound_title_streaming_series_fix = None  # type: ignore[misc, assignment]
+    if compound_title_streaming_series_fix is not None:
+        d_fix = compound_title_streaming_series_fix(title, series_name)
+        if d_fix:
+            return d_fix
+
+    # Apple TV app / TV+: ``series_name`` is often empty while ``title`` is ``Series — Episode`` or ``: Episode``.
+    if not series_name and title and episodic_hint:
+        cp_solo = colon_prefix_show_query(title)
+        if cp_solo:
+            return cp_solo.strip()
 
     # HBO Max and similar often report episodes as Video, not TV — still prefer series for TMDb.
-    if series_name and (is_tv or episode_like):
-        return series_name
+    if series_name and (is_tv or episode_like) and not is_degenerate_tmdb_query(series_name):
+        return _tmdb_show_from_series_or_compound_title() or series_name
 
     if is_tv:
         if artist and not is_degenerate_tmdb_query(artist):
             return artist
         if title:
-            return title
+            cp_tv = colon_prefix_show_query(title)
+            if cp_tv:
+                return cp_tv.strip()
+            if not is_degenerate_tmdb_query(title):
+                return title
+            if album and not is_degenerate_tmdb_query(album):
+                return album
         return None
 
     # Some Apple TV apps expose episode title as "title" and show title as "artist"
@@ -80,25 +133,63 @@ def _tmdb_query_from_playing_impl(playing) -> str | None:
                 return artist
             if album and not is_degenerate_tmdb_query(album) and album.lower() != title.lower():
                 return album
-            if series_name:
-                return series_name
+            if series_name and not is_degenerate_tmdb_query(series_name):
+                return _tmdb_show_from_series_or_compound_title() or series_name
+            if not is_degenerate_tmdb_query(title):
+                return title
+            if album and not is_degenerate_tmdb_query(album):
+                return album
             return title
         # HBO Max et al. often omit season/episode numbers but still send show=artist, episode=title.
         # Do not use len() here — episode titles are often longer than the series name.
         if mt in (MediaType.Video, MediaType.Unknown):
+            # Prefer series over artist when both title and series differ: artist may be a guest,
+            # channel, or wrong field while title holds a sketch/segment name (e.g. Apple TV+).
+            if (
+                series_name
+                and not is_degenerate_tmdb_query(series_name)
+                and series_name.strip().lower() != (title or "").strip().lower()
+            ):
+                return _tmdb_show_from_series_or_compound_title() or series_name
             if not is_degenerate_tmdb_query(artist):
                 return artist
             # Artist is the app (Peacock, etc.): series_name is usually the real show (e.g. SNL), not the sketch in title.
             if series_name and not is_degenerate_tmdb_query(series_name):
-                return series_name
+                return _tmdb_show_from_series_or_compound_title() or series_name
             cp = colon_prefix_show_query(title or "")
             if cp:
                 return cp
-            return artist if len(artist) >= len(title) else title
+            # Artist is often the app name "Max" (degenerate) while album still holds the series.
+            if (
+                album
+                and not is_degenerate_tmdb_query(album)
+                and title
+                and album.strip().lower() != title.strip().lower()
+            ):
+                return album
+            # Episode titles are usually longer than "Max"; never pick the app via len(artist).
+            if not is_degenerate_tmdb_query(title):
+                return title
+            if album and not is_degenerate_tmdb_query(album):
+                return album
+            return title
         # Live/continuous content often swaps fields; prefer the longest “title-like” string.
         if series_name:
             return max((title, artist, series_name), key=len)
-        return artist if len(artist) >= len(title) else title
+        if (
+            album
+            and not is_degenerate_tmdb_query(album)
+            and title
+            and album.strip().lower() != title.strip().lower()
+        ):
+            return album
+        if title and not is_degenerate_tmdb_query(title):
+            return title
+        if album and not is_degenerate_tmdb_query(album):
+            return album
+        if artist and not is_degenerate_tmdb_query(artist):
+            return artist
+        return title if title else artist
     # Video with sketch/segment in title but no usable artist (Peacock often omits it): still prefer series_name.
     if (
         title
@@ -108,16 +199,28 @@ def _tmdb_query_from_playing_impl(playing) -> str | None:
         and series_name.strip().lower() != title.strip().lower()
         and (not artist or is_degenerate_tmdb_query(artist))
     ):
-        return series_name
+        return _tmdb_show_from_series_or_compound_title() or series_name
     if title and mt in (MediaType.Video, MediaType.Unknown):
         cp = colon_prefix_show_query(title)
         if cp:
             return cp
+    # Prime Video sometimes uses app branding as ``title`` when ``artist`` matches or is absent.
+    if title and is_degenerate_tmdb_query(title):
+        if album and not is_degenerate_tmdb_query(album):
+            return album
+        if series_name and not is_degenerate_tmdb_query(series_name):
+            return series_name
+    if title and not is_degenerate_tmdb_query(title):
+        return title
+    if series_name and not is_degenerate_tmdb_query(series_name):
+        return series_name
+    # Some apps put the most useful "title" into album.
+    if album and not is_degenerate_tmdb_query(album):
+        return album
     if title:
         return title
     if series_name:
         return series_name
-    # Some apps put the most useful "title" into album.
     if album:
         return album
 
@@ -130,6 +233,14 @@ def _tmdb_query_from_playing_impl(playing) -> str | None:
 def _tmdb_query_from_playing(playing) -> str | None:
     """Pick TMDb query from ``Playing``; align with UI canonical series names (e.g. SNL → full title)."""
     q = _tmdb_query_from_playing_impl(playing)
+    try:
+        from pigeon.raw_title import raw_title_from_pyatv_playing, tmdb_query_from_raw_title
+    except ImportError:
+        raw_title_from_pyatv_playing = None  # type: ignore[misc, assignment]
+        tmdb_query_from_raw_title = None  # type: ignore[misc, assignment]
+    if raw_title_from_pyatv_playing is not None and tmdb_query_from_raw_title is not None:
+        rt = raw_title_from_pyatv_playing(playing)
+        return tmdb_query_from_raw_title(rt, base_query=q)
     try:
         from pigeon.tmdb_poster import resolve_tmdb_query_from_now_playing_fields
     except ImportError:
@@ -171,11 +282,31 @@ def _query_preference_from_playing(playing) -> str:
     episode_like = sn is not None or en is not None
     t_t = _tx("title")
     t_a = _tx("artist")
+    title_embeds_se = False
+    try:
+        from pigeon.raw_title import _strip_season_episode_from_text
+
+        if t_t:
+            _, _sl, _el = _strip_season_episode_from_text(t_t)
+            title_embeds_se = bool(_sl or _el)
+    except ImportError:
+        pass
 
     if media_type == MediaType.TV:
         return "tv"
     # Streamers often tag TV episodes as Video; still search TMDb as TV when episodic.
-    if episode_like:
+    # Prime Video often embeds ``S01 E01`` only inside ``title`` (no pyatv season/episode fields).
+    if episode_like or title_embeds_se:
+        return "tv"
+    t_sn = _tx("series_name")
+    # Apple TV+ often uses Video + sketch/segment ``title`` + real show in ``series_name`` (no S/E).
+    if (
+        media_type in (MediaType.Video, MediaType.Unknown)
+        and t_sn
+        and t_t
+        and t_sn.lower() != t_t.lower()
+        and not is_degenerate_tmdb_query(t_sn)
+    ):
         return "tv"
     # HBO-style: Video + distinct title/artist (episode vs series) with no S/E numbers.
     if (
@@ -186,6 +317,29 @@ def _query_preference_from_playing(playing) -> str:
         and not is_degenerate_tmdb_query(t_a)
     ):
         return "tv"
+    # Episode-only metadata + hints / series resolution rewrites the search string to the real show
+    # name, but raw ``media_type`` may still be Video — TMDb then needs ``tv``, not ``movie``.
+    try:
+        from pigeon.tmdb_poster import resolve_tmdb_query_from_now_playing_fields
+    except ImportError:
+        pass
+    else:
+        q_impl = _tmdb_query_from_playing_impl(playing)
+        q_res = resolve_tmdb_query_from_now_playing_fields(
+            base_query=q_impl,
+            title=getattr(playing, "title", None),
+            series_name=getattr(playing, "series_name", None),
+            artist=getattr(playing, "artist", None),
+            album=getattr(playing, "album", None),
+            episode_title=getattr(playing, "episode_title", None),
+        )
+        if (
+            q_impl
+            and q_res
+            and q_impl.strip().lower() != q_res.strip().lower()
+            and not is_degenerate_tmdb_query(q_res)
+        ):
+            return "tv"
     # Feature films / streaming playback are often reported as Video, not Unknown.
     if media_type == MediaType.Video:
         return "movie"
@@ -223,6 +377,16 @@ def _metadata_with_app(atv, metadata: dict[str, object]) -> dict[str, object]:
     else:
         out["app_name"] = ""
         out["app_id"] = ""
+    # System output level when the protocol exposes it (often 0.0–100.0; not all devices).
+    try:
+        audio = atv.audio
+        vol = getattr(audio, "volume", None)
+        if vol is not None:
+            vf = float(vol)  # type: ignore[arg-type]
+            if vf == vf:
+                out["volume_percent"] = max(0.0, min(100.0, vf))
+    except Exception:
+        pass
     return out
 
 
@@ -321,6 +485,7 @@ def _title_from_now_playing_archive(archive: bytes) -> str | None:
         from pigeon.tmdb_poster import (
             refine_tmdb_search_query,
             resolve_tmdb_query_from_now_playing_fields,
+            tmdb_match_forgiving,
         )
     except ImportError:
 
@@ -330,12 +495,20 @@ def _title_from_now_playing_archive(archive: bytes) -> str | None:
         def resolve_tmdb_query_from_now_playing_fields(*, base_query, **kwargs):  # type: ignore[misc]
             return refine_tmdb_search_query(base_query) if base_query else None
 
+        def tmdb_match_forgiving(*, override=None):  # type: ignore[misc]
+            return bool(override) if override is not None else False
+
     def _pick_refined(*candidates: object) -> str | None:
+        fg = tmdb_match_forgiving()
         for c in candidates:
             if isinstance(c, str) and c.strip():
-                r = refine_tmdb_search_query(c.strip())
-                if r:
-                    return r
+                s = c.strip()
+                if fg:
+                    r = refine_tmdb_search_query(s)
+                    if r:
+                        return r
+                else:
+                    return s
         return None
 
     metadata = root.get("metadata")

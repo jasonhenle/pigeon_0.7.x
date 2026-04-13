@@ -95,7 +95,7 @@ class TimecodeLabelWidget:
     def __init__(
         self,
         *,
-        anchor_row: int = 1,
+        anchor_row: int | float = 1,
         anchor_col: int = 7,
         text: str = "00:00:00",
         span_wide: int = 3,
@@ -113,7 +113,7 @@ class TimecodeLabelWidget:
         return self._span
 
     @property
-    def grid_anchor(self) -> tuple[int, int]:
+    def grid_anchor(self) -> tuple[int | float, int]:
         return (self._anchor_row, self._anchor_col)
 
     @property
@@ -274,6 +274,7 @@ class TimecodeLabelWidget:
         content_width: int,
         align: str,
         cy_center: int | None = None,
+        glyph_pad_left: int = 0,
     ) -> Image.Image:
         """Like :meth:`_rgba_image_extend_horizontal` but no pill — only glyphs (transparent bg)."""
         cvs_w = max(1, int(canvas_w))
@@ -292,11 +293,14 @@ class TimecodeLabelWidget:
         )
         char_w, row_h = _cell_metrics(draw, font, self._tabular_char_set)
         block_w = n * char_w
+        extra_l = max(0, int(glyph_pad_left))
         if align == "right":
             x_off = cvs_w - core_w
             block_x = x_off + pad + max(0, (mw - block_w) // 2)
+        elif align == "center":
+            block_x = max(0, (cvs_w - block_w) // 2)
         else:
-            block_x = pad + max(0, (mw - block_w) // 2)
+            block_x = pad + max(0, (mw - block_w) // 2) + extra_l
         cy = pad + mh // 2 if cy_center is None else int(cy_center)
         cy = max(row_h // 2 + 1, min(cvs_h - row_h // 2 - 1, cy))
 
@@ -338,6 +342,7 @@ class TimecodeLabelWidget:
         content_width: int,
         align: str,
         cy_center: int | None = None,
+        glyph_pad_left: int = 0,
     ) -> np.ndarray:
         """Transparent patch with timecode glyphs only (for compositing on a shared pill)."""
         rgba = np.asarray(
@@ -347,6 +352,7 @@ class TimecodeLabelWidget:
                 content_width=content_width,
                 align=align,
                 cy_center=cy_center,
+                glyph_pad_left=glyph_pad_left,
             )
         )
         return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)

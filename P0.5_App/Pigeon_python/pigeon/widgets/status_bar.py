@@ -128,7 +128,7 @@ class StatusBarWidget:
         self,
         *,
         assets_dir: Path,
-        trt_row: int = 8,
+        trt_row: int | float = 8,
         trt_played_col: int = 3,
         trt_remaining_col: int = 16,  # 2-wide ending col 17 leaves margin before grid edge
         trt_played_text: str = "00:00:00",
@@ -281,6 +281,16 @@ class StatusBarWidget:
             sw_r, sh_r, row_1based=ar_r, col_1based=ac_r
         )
 
+        # Black pill geometry first — TRT gutters are [ux, bar_x) and [bar_right, ux+uw).
+        pill_col_1based = ac_p
+        pill_span_w = (ac_r + sw_r - 1) - pill_col_1based + 1
+        ux, uy, uw, uh = rect_for_span_at_cell(
+            pill_span_w,
+            1,
+            row_1based=ar_p,
+            col_1based=pill_col_1based,
+        )
+
         gap_left = px + pw
         gap_right = rx
         gap_mid = 0.5 * (gap_left + gap_right)
@@ -293,32 +303,21 @@ class StatusBarWidget:
         bar_x = int(round(gap_mid - bar_bw / 2.0))
         bar_right = bar_x + bar_bw
 
-        played_w = max(pw, bar_x - px)
-        rem_w = max(rw, (rx + rw) - bar_right)
-        row_h = max(1, ph, rh)
-
-        bar_y = py
+        bar_y = uy
         bar_bh = cell
 
+        played_slot_w = max(1, bar_x - ux)
+        rem_slot_w = max(1, (ux + uw) - bar_right)
+
         py0_p, pbh_p = self._tc_played._pill_metrics_extend_horizontal(
-            played_w, row_h, content_width=pw, align="left"
+            played_slot_w, uh, content_width=pw, align="left"
         )
         py0_r, pbh_r = self._tc_remaining._pill_metrics_extend_horizontal(
-            rem_w, row_h, content_width=rw, align="right"
+            rem_slot_w, uh, content_width=rw, align="right"
         )
         pbh = max(pbh_p, pbh_r)
-        pill_y0 = max(0, (row_h - pbh) // 2)
-        vcy = pill_y0 + pbh // 2
-
-        # One black capsule from the played label column through the remaining label column (e.g. row 7, cols 3–17).
-        pill_col_1based = ac_p
-        pill_span_w = (ac_r + sw_r - 1) - pill_col_1based + 1
-        ux, uy, uw, uh = rect_for_span_at_cell(
-            pill_span_w,
-            1,
-            row_1based=ar_p,
-            col_1based=pill_col_1based,
-        )
+        pill_y0 = max(0, (uh - pbh) // 2)
+        vcy = uy + pill_y0 + pbh // 2
         strip_bgra = pill_bgra_black(uw, uh)
         if cell >= 1 and bar_bw >= 4 and bar_bh >= 4:
             _punch_bar_shaped_hole_in_strip_bgra(
@@ -331,22 +330,22 @@ class StatusBarWidget:
         blits.append(DesignPatch(x=ux, y=uy, w=uw, h=uh, bgra=strip_bgra))
 
         played_txt = self._tc_played.bgra_text_only_extend_under_bar(
-            canvas_w=played_w,
-            canvas_h=row_h,
+            canvas_w=played_slot_w,
+            canvas_h=uh,
             content_width=pw,
-            align="left",
-            cy_center=vcy,
+            align="center",
+            cy_center=vcy - uy,
         )
-        blits.append(DesignPatch(x=px, y=py, w=played_w, h=row_h, bgra=played_txt))
+        blits.append(DesignPatch(x=ux, y=uy, w=played_slot_w, h=uh, bgra=played_txt))
 
         rem_txt = self._tc_remaining.bgra_text_only_extend_under_bar(
-            canvas_w=rem_w,
-            canvas_h=row_h,
+            canvas_w=rem_slot_w,
+            canvas_h=uh,
             content_width=rw,
-            align="right",
-            cy_center=vcy,
+            align="center",
+            cy_center=vcy - uy,
         )
-        blits.append(DesignPatch(x=bar_right, y=ry, w=rem_w, h=row_h, bgra=rem_txt))
+        blits.append(DesignPatch(x=bar_right, y=uy, w=rem_slot_w, h=uh, bgra=rem_txt))
 
         if cell >= 1 and bar_bw >= 4 and bar_bh >= 4:
             bar_r = self._build_bar_patch_bgra(bar_bw=bar_bw, bar_bh=bar_bh)

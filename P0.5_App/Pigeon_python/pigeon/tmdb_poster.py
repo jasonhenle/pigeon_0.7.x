@@ -10,6 +10,15 @@ Query hints (optional):
   - Prefix ``tv `` to search TV only (e.g. ``tv Breaking Bad``).
   - Prefix ``movie `` to search movies only.
 
+Title matching (env):
+  - ``PIGEON_TMDB_MATCH_MODE=literal`` (default) — use now-playing strings as-is where possible; only
+    accept TMDb hits with strong title alignment (exact norm for single-word queries, consecutive
+    tokens for multi-word). Skips query variants, forced movie/TV shortcuts, and fuzzy tiers.
+  - ``PIGEON_TMDB_MATCH_MODE=forgiving`` — previous heuristic behavior (variants, substring tiers, etc.).
+
+Runtime: in the app, **+** (Shift+= on US keyboards; numpad +) toggles literal ↔ forgiving until quit;
+that overrides the env default for the current session.
+
 This product uses the TMDb API but is not endorsed or certified by TMDb.
 """
 
@@ -53,6 +62,55 @@ MediaKind = Literal["movie", "tv"]
 Prefer = Literal["auto", "movie", "tv"]
 
 _STATE_DIR = Path.home() / ".pigeon_0_5"
+
+# Session override set by :func:`toggle_tmdb_match_mode` (``None`` = follow env only).
+_tmdb_match_runtime_forgiving: bool | None = None
+
+_FORGIVING_ENV_TOKENS = frozenset(("forgiving", "loose", "legacy", "1", "true", "yes", "on"))
+
+
+def _env_wants_forgiving() -> bool:
+    v = (os.environ.get("PIGEON_TMDB_MATCH_MODE") or "literal").strip().lower()
+    return v in _FORGIVING_ENV_TOKENS
+
+
+def tmdb_match_forgiving(*, override: bool | None = None) -> bool:
+    """
+    False = literal/strict matching (default from env). True = legacy forgiving heuristics.
+
+    ``override`` forces the mode regardless of env and runtime toggle.
+
+    After :func:`toggle_tmdb_match_mode`, the runtime choice wins over ``PIGEON_TMDB_MATCH_MODE``
+    until the process exits.
+    """
+    if override is not None:
+        return override
+    if _tmdb_match_runtime_forgiving is not None:
+        return _tmdb_match_runtime_forgiving
+    return _env_wants_forgiving()
+
+
+def toggle_tmdb_match_mode() -> str:
+    """
+    Flip literal ↔ forgiving for this session.
+
+    Returns ``literal`` or ``forgiving`` (the mode after the toggle).
+    """
+    global _tmdb_match_runtime_forgiving
+    if _tmdb_match_runtime_forgiving is None:
+        current = _env_wants_forgiving()
+    else:
+        current = _tmdb_match_runtime_forgiving
+    _tmdb_match_runtime_forgiving = not current
+    return "forgiving" if _tmdb_match_runtime_forgiving else "literal"
+
+
+def _literal_min_acceptable_tier(query: str) -> int:
+    """Single-token query → require exact normalized title (tier 5). Multi-word → consecutive tokens (tier 4)."""
+    q_tokens = [t for t in _norm_query(query).split() if t]
+    if not q_tokens:
+        return 5
+    return 5 if len(q_tokens) <= 1 else 4
 _UA = "Pigeon0.5/1.0 (local; +https://www.themoviedb.org/documentation/api)"
 
 
@@ -115,6 +173,8 @@ _DEGENERATE_TMDB_QUERIES = frozenset(
         "paramount plus",
         "prime video",
         "amazon video",
+        "amazon prime video",
+        "amazon prime",
         "roku",
         "home",
         "settings",
@@ -150,18 +210,24 @@ _SHORT_SHOW_CANONICAL_QUERIES: dict[str, str] = {
     "saturday night live": "Saturday Night Live",
 }
 
-# When TMDb search + ``prefer`` heuristics would still pick the wrong kind (e.g. SNL holiday
-# compilations are **movies**, while the main show is TV 1667), resolve by id.
-_SHORT_SHOW_TMDB_TV_ID_BY_NORM: dict[str, int] = {
-    "saturday night live": 1667,
-}
-
 # When TMDb lists compilation specials as **movies** (e.g. ``Saturday Night Live: Christmas``), inferred
 # ``prefer=movie`` from pyatv ``Video`` must still resolve the **series** for artwork. Keys = ``_norm_query``
 # form of the canonical display title (same namespace as ``_exact_tv_title_norm_for_known_series_query``).
 _SHORT_SHOW_TMDB_TV_ID_BY_NORM: dict[str, int] = {
     "saturday night live": 1667,
 }
+
+# Peacock often sends guest/segment lines with no ``series_name``. Longer needles first.
+_NBC_LATE_NIGHT_SUBSTRING_TO_SERIES: tuple[tuple[str, str], ...] = (
+    ("the tonight show starring jimmy fallon", "The Tonight Show Starring Jimmy Fallon"),
+    ("last week tonight with john oliver", "Last Week Tonight with John Oliver"),
+    ("the late show with stephen colbert", "The Late Show with Stephen Colbert"),
+    ("late night with seth meyers", "Late Night with Seth Meyers"),
+    ("jimmy fallon", "The Tonight Show Starring Jimmy Fallon"),
+    ("seth meyers", "Late Night with Seth Meyers"),
+    ("john oliver", "Last Week Tonight with John Oliver"),
+    ("stephen colbert", "The Late Show with Stephen Colbert"),
+)
 
 
 def _compact_norm_for_acronym(s: str) -> str:
@@ -182,6 +248,32 @@ def _canonical_series_from_dash_pair(left: str, right: str) -> str | None:
         return _SHORT_SHOW_CANONICAL_QUERIES[rk]
     if lk in _SHORT_SHOW_CANONICAL_QUERIES:
         return _SHORT_SHOW_CANONICAL_QUERIES[lk]
+    return None
+
+
+def _norm_blob_suggests_snl(norm_blob: str) -> bool:
+    """True when combined metadata is clearly Saturday Night Live (not The Tonight Show)."""
+    if not norm_blob:
+        return False
+    if "saturday night live" in norm_blob:
+        return True
+    return "snl" in frozenset(norm_blob.split())
+
+
+def _canonical_series_from_nbc_late_night_blob(norm_blob: str) -> str | None:
+    """
+    Peacock / NBCUniversal apps often expose a guest or segment line without ``series_name``.
+    Map obvious substrings to the TMDb series title. ``jimmy fallon`` is ignored when the blob looks
+    like SNL (Fallon as host/guest).
+    """
+    if not norm_blob:
+        return None
+    for needle, canon in _NBC_LATE_NIGHT_SUBSTRING_TO_SERIES:
+        if needle not in norm_blob:
+            continue
+        if needle == "jimmy fallon" and _norm_blob_suggests_snl(norm_blob):
+            continue
+        return canon
     return None
 
 
@@ -273,12 +365,8 @@ def _normalize_title_for_show_split(s: str) -> str:
     return t
 
 
-def colon_prefix_show_query(raw: str) -> str | None:
-    """
-    If metadata looks like ``Show: segment`` or ``Show - sketch`` (guest, sketch, episode label),
-    return the show side for TMDb when the full string would match the wrong thing or miss the series.
-    """
-    q0 = _normalize_title_for_show_split(raw or "")
+def _colon_prefix_show_query_normalized(q0: str) -> str | None:
+    """Core split for :func:`colon_prefix_show_query`; ``q0`` must already be :func:`_normalize_title_for_show_split`."""
     if not q0:
         return None
 
@@ -323,6 +411,106 @@ def colon_prefix_show_query(raw: str) -> str | None:
         got = _split_show(sep)
         if got:
             return got
+    return None
+
+
+def colon_prefix_show_query(raw: str) -> str | None:
+    """
+    If metadata looks like ``Show: segment`` or ``Show - sketch`` (guest, sketch, episode label),
+    return the show side for TMDb when the full string would match the wrong thing or miss the series.
+
+    **Prime / Hulu / Peacock:** titles like ``Series S01 E01 - Episode`` are split on the wrong dash if
+    S/E is not removed first; we strip embedded season/episode clauses (see
+    :func:`pigeon.raw_title._strip_season_episode_from_text`) and try that string before the original.
+    """
+    q0 = _normalize_title_for_show_split(raw or "")
+    if not q0:
+        return None
+    candidates: list[str] = []
+    try:
+        from pigeon.raw_title import _strip_season_episode_from_text
+
+        c_raw, _, _ = _strip_season_episode_from_text(q0)
+        c_n = _normalize_title_for_show_split((c_raw or "").strip())
+        if c_n:
+            candidates.append(c_n)
+    except ImportError:
+        pass
+    if not any(c.lower() == q0.lower() for c in candidates):
+        candidates.append(q0)
+    seen: set[str] = set()
+    for cand in candidates:
+        ck = cand.lower()
+        if ck in seen:
+            continue
+        seen.add(ck)
+        got = _colon_prefix_show_query_normalized(cand)
+        if got:
+            return got
+    return None
+
+
+def _colon_show_episode_pair(q: str) -> tuple[str, str] | None:
+    """First ``Show: Episode`` split (ASCII or full-width colon); ``None`` if not a usable pair."""
+    for sep in (":", "\uff1a"):
+        if sep not in q:
+            continue
+        left, right = q.split(sep, 1)
+        left, right = left.strip(), right.strip()
+        if len(left) < 2 or len(right) < 2:
+            continue
+        if is_degenerate_tmdb_query(left):
+            continue
+        if left.lower() == q.lower():
+            continue
+        return left, right
+    return None
+
+
+def compound_title_streaming_series_fix(
+    title: str | None, series_name: str | None
+) -> str | None:
+    """
+    Streaming apps (Disney+, Peacock, Netflix, …) sometimes send a misleading ``series_name``:
+    the full compound line duplicated in both fields, or the **episode** segment while ``title`` is
+    still ``Show - Episode`` or ``Show: Episode``.
+    """
+    if not title or not series_name:
+        return None
+    t = title.strip()
+    sn = series_name.strip()
+    if not t or not sn:
+        return None
+    tl, snl = t.lower(), sn.lower()
+    if tl == snl:
+        cp = colon_prefix_show_query(t)
+        if cp:
+            return cp.strip()
+        q0 = _normalize_title_for_show_split(t)
+        if " - " in q0:
+            left, _ = q0.split(" - ", 1)
+            left = left.strip()
+            if len(left) >= 2 and not is_degenerate_tmdb_query(left):
+                return left
+        pair_c = _colon_show_episode_pair(q0)
+        if pair_c:
+            le, _ri = pair_c
+            return le
+        return None
+    q0 = _normalize_title_for_show_split(t)
+
+    if " - " in q0:
+        left, right = q0.split(" - ", 1)
+        left, right = left.strip(), right.strip()
+        if len(left) >= 2 and len(right) >= 2 and snl == right.lower():
+            return left
+
+    pair = _colon_show_episode_pair(q0)
+    if pair:
+        left, right = pair
+        if snl == right.lower():
+            return left
+
     return None
 
 
@@ -388,12 +576,18 @@ def resolve_tmdb_query_from_now_playing_fields(
     artist: object | None = None,
     album: object | None = None,
     episode_title: object | None = None,
+    forgiving: bool | None = None,
 ) -> str | None:
     """
     Build the TMDb search string from pyatv-style fields plus the heuristic ``base_query``.
 
-    Prefer the same canonical series title used in the UI (e.g. ``Saturday Night Live``) when any
-    field is a sketch–show compound (``… - SNL``) or a mapped short name (``SNL`` alone).
+    **Literal mode** (default, ``PIGEON_TMDB_MATCH_MODE=literal``): first substantive non-degenerate
+    field — ``base_query`` (Apple TV now-playing heuristics), then ``series_name``, ``album``,
+    ``artist``, ``title``, ``episode_title`` (``base_query`` first so Disney+/etc. fixes win over a
+    misleading raw ``series_name``).
+
+    **Forgiving mode** (``forgiving=True`` or env ``forgiving``): prefer canonical series titles,
+    sketch–show compounds, Peacock NBC blob rules, episode hints, etc.
     """
 
     def _field(x: object | None) -> str | None:
@@ -402,8 +596,17 @@ def resolve_tmdb_query_from_now_playing_fields(
         t = str(x).strip()
         return t or None
 
+    fg = tmdb_match_forgiving(override=forgiving)
+    if not fg:
+        # ``base_query`` first: carries Apple TV impl fixes (Disney+ series_name quirks, Max album, etc.).
+        for x in (base_query, series_name, album, artist, title, episode_title):
+            s = _field(x)
+            if s and not is_degenerate_tmdb_query(s):
+                return s
+        return None
+
     ordered: list[str] = []
-    for x in (series_name, title, episode_title, base_query, artist, album):
+    for x in (base_query, series_name, title, episode_title, artist, album):
         s = _field(x)
         if s and s not in ordered:
             ordered.append(s)
@@ -417,6 +620,49 @@ def resolve_tmdb_query_from_now_playing_fields(
         canon = canonical_tv_display_name_for_search_query(r)
         if canon:
             return canon
+
+    # Peacock: guest/segment-only strings (no series_name) — e.g. Tonight Show, Late Night, LWT, Colbert.
+    blob_parts: list[str] = []
+    for x in (base_query, series_name, title, episode_title, artist, album):
+        s = _field(x)
+        if s and not is_degenerate_tmdb_query(s):
+            blob_parts.append(s)
+    norm_blob = _norm_query(" ".join(blob_parts)) if blob_parts else ""
+    nbc_series = _canonical_series_from_nbc_late_night_blob(norm_blob)
+    if nbc_series:
+        return refine_tmdb_search_query(nbc_series) or nbc_series
+
+    # Apple TV+ / streamers often put a sketch or episode label in ``title`` and the real series in
+    # ``series_name``. Disney+ can send a **stale** ``series_name`` (previous show) while ``title``
+    # is still ``Show - Episode`` — prefer the show parsed from ``title`` when it disagrees and the
+    # reported series string does not appear inside ``title``.
+    sn = _field(series_name)
+    ti = _field(title)
+    if (
+        sn
+        and ti
+        and sn.lower() != ti.lower()
+        and not is_degenerate_tmdb_query(sn)
+    ):
+        cp = colon_prefix_show_query(ti)
+        if cp:
+            cpl = cp.strip().lower()
+            snl = sn.lower()
+            til = ti.lower()
+            if cpl != snl and snl not in til:
+                return refine_tmdb_search_query(cp) or cp.strip()
+        return refine_tmdb_search_query(sn) or sn
+
+    # Episode-only metadata (common on iOS Now Playing): optional ~/.pigeon_0_5/episode_series_hints.json
+    if not sn:
+        from pigeon.episode_series_hints import series_name_for_episode_title_hint
+
+        for cand in (_field(episode_title), _field(title)):
+            if not cand:
+                continue
+            g = series_name_for_episode_title_hint(cand)
+            if g and not is_degenerate_tmdb_query(g):
+                return refine_tmdb_search_query(g) or g
 
     if base_query is None:
         return None
@@ -672,6 +918,7 @@ def _best_with_poster_from_results(
     results: list,
     *,
     tv_title_must_equal_norm: str | None = None,
+    forgiving: bool = True,
 ) -> dict | None:
     if not isinstance(results, list) or not results:
         return None
@@ -692,8 +939,16 @@ def _best_with_poster_from_results(
     # Prefer exact / whole-word title matches from the real search query; tie-break by
     # shorter title, then TMDb popularity. Fall back to full pool only if every rank is 0.
     scored = [(r, _match_rank(query, r)) for r in with_poster]
-    best_key = max(rank for _, rank in scored)
-    pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else with_poster
+    if forgiving:
+        best_key = max(rank for _, rank in scored)
+        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else with_poster
+    else:
+        min_tier = _literal_min_acceptable_tier(query)
+        strict = [(r, rk) for r, rk in scored if rk[0] >= min_tier]
+        if not strict:
+            return None
+        best_key = max(rk for _, rk in strict)
+        pool = [r for r, rk in strict if rk == best_key]
     return max(pool, key=lambda r: float(r.get("popularity") or 0.0))
 
 
@@ -702,6 +957,7 @@ def _best_from_results(
     results: list,
     *,
     tv_title_must_equal_norm: str | None = None,
+    forgiving: bool = True,
 ) -> dict | None:
     """Highest popularity among dict results (no poster requirement)."""
     if not isinstance(results, list) or not results:
@@ -721,54 +977,68 @@ def _best_from_results(
         if not items:
             return None
     scored = [(r, _match_rank(query, r)) for r in items]
-    best_key = max(rank for _, rank in scored)
-    pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else items
+    if forgiving:
+        best_key = max(rank for _, rank in scored)
+        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else items
+    else:
+        min_tier = _literal_min_acceptable_tier(query)
+        strict = [(r, rk) for r, rk in scored if rk[0] >= min_tier]
+        if not strict:
+            return None
+        best_key = max(rk for _, rk in strict)
+        pool = [r for r, rk in strict if rk == best_key]
     return max(pool, key=lambda r: float(r.get("popularity") or 0.0))
 
 
-def search_movie_best_with_poster(query: str) -> dict | None:
+def search_movie_best_with_poster(query: str, *, forgiving: bool | None = None) -> dict | None:
     """Return one TMDb movie dict (has poster_path) or None."""
     q = query.strip()
     if not q:
         return None
+    fg = tmdb_match_forgiving(override=forgiving)
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/movie?{params}"
     data = _request_json(url)
-    return _best_with_poster_from_results(q, data.get("results") or [])
+    return _best_with_poster_from_results(q, data.get("results") or [], forgiving=fg)
 
 
-def search_movie_best(query: str) -> dict | None:
+def search_movie_best(query: str, *, forgiving: bool | None = None) -> dict | None:
     q = query.strip()
     if not q:
         return None
+    fg = tmdb_match_forgiving(override=forgiving)
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/movie?{params}"
     data = _request_json(url)
-    return _best_from_results(q, data.get("results") or [])
+    return _best_from_results(q, data.get("results") or [], forgiving=fg)
 
 
-def search_tv_best(query: str) -> dict | None:
+def search_tv_best(query: str, *, forgiving: bool | None = None) -> dict | None:
     q = query.strip()
     if not q:
         return None
+    fg = tmdb_match_forgiving(override=forgiving)
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/tv?{params}"
     data = _request_json(url)
-    en = _exact_tv_title_norm_for_known_series_query(q)
-    return _best_from_results(q, data.get("results") or [], tv_title_must_equal_norm=en)
+    en = _exact_tv_title_norm_for_known_series_query(q) if fg else None
+    return _best_from_results(
+        q, data.get("results") or [], tv_title_must_equal_norm=en, forgiving=fg
+    )
 
 
-def search_tv_best_with_poster(query: str) -> dict | None:
+def search_tv_best_with_poster(query: str, *, forgiving: bool | None = None) -> dict | None:
     """Return one TMDb TV result (has poster_path) or None."""
     q = query.strip()
     if not q:
         return None
+    fg = tmdb_match_forgiving(override=forgiving)
     params = urllib.parse.urlencode({"query": q})
     url = f"{TMDB_API_BASE}/search/tv?{params}"
     data = _request_json(url)
-    en = _exact_tv_title_norm_for_known_series_query(q)
+    en = _exact_tv_title_norm_for_known_series_query(q) if fg else None
     return _best_with_poster_from_results(
-        q, data.get("results") or [], tv_title_must_equal_norm=en
+        q, data.get("results") or [], tv_title_must_equal_norm=en, forgiving=fg
     )
 
 
@@ -780,6 +1050,46 @@ def _tmdb_tv_detail(tv_id: int) -> dict | None:
     if not isinstance(data, dict) or data.get("id") is None:
         return None
     return data
+
+
+def _tmdb_movie_detail(movie_id: int) -> dict | None:
+    try:
+        data = _request_json(f"{TMDB_API_BASE}/movie/{int(movie_id)}")
+    except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("id") is None:
+        return None
+    return data
+
+
+def _forced_tmdb_movie_id_for_disambiguated_query(q: str) -> int | None:
+    """
+    TMDb search often picks the wrong row when many titles share ``Taylor Swift`` tokens
+    (e.g. *Journey to Fearless* over *The Eras Tour*). Map full queries to the known movie ids.
+    """
+    n = _norm_query(q)
+    if not n:
+        return None
+    if "taylor" not in n or "swift" not in n:
+        return None
+    if "eras" not in n or "tour" not in n:
+        return None
+    # The Final Show (2025, Vancouver) vs theatrical Eras Tour (2023)
+    if "final" in n:
+        return 1562010
+    return 1160164
+
+
+def _forced_tmdb_movie_item_for_disambiguated_query(q: str, *, require_poster: bool) -> dict | None:
+    mid = _forced_tmdb_movie_id_for_disambiguated_query(q)
+    if mid is None:
+        return None
+    detail = _tmdb_movie_detail(mid)
+    if detail is None:
+        return None
+    if require_poster and not detail.get("poster_path"):
+        return None
+    return detail
 
 
 def _forced_tmdb_tv_item_for_canonical_query(q: str, *, require_poster: bool) -> dict | None:
@@ -804,26 +1114,29 @@ def _forced_tmdb_tv_item_for_canonical_query(q: str, *, require_poster: bool) ->
     return detail
 
 
-def _search_best_media_with_poster_one(q: str, *, prefer: Prefer) -> tuple[dict | None, MediaKind | None]:
+def _search_best_media_with_poster_one(
+    q: str, *, prefer: Prefer, forgiving: bool
+) -> tuple[dict | None, MediaKind | None]:
     if not q:
         return None, None
-    en = _exact_tv_title_norm_for_known_series_query(q)
-    if en is not None:
-        hit = _forced_tmdb_tv_item_for_canonical_query(q, require_poster=True)
-        if hit is None:
-            hit = search_tv_best_with_poster(q)
-        if hit is not None:
-            return hit, "tv"
-        return None, None
+    if forgiving:
+        en = _exact_tv_title_norm_for_known_series_query(q)
+        if en is not None:
+            hit = _forced_tmdb_tv_item_for_canonical_query(q, require_poster=True)
+            if hit is None:
+                hit = search_tv_best_with_poster(q, forgiving=True)
+            if hit is not None:
+                return hit, "tv"
+            return None, None
     if prefer == "movie":
-        m = search_movie_best_with_poster(q)
+        m = search_movie_best_with_poster(q, forgiving=forgiving)
         return (m, "movie") if m else (None, None)
     if prefer == "tv":
-        t = search_tv_best_with_poster(q)
+        t = search_tv_best_with_poster(q, forgiving=forgiving)
         return (t, "tv") if t else (None, None)
 
-    m = search_movie_best_with_poster(q)
-    t = search_tv_best_with_poster(q)
+    m = search_movie_best_with_poster(q, forgiving=forgiving)
+    t = search_tv_best_with_poster(q, forgiving=forgiving)
     if m and not t:
         return m, "movie"
     if t and not m:
@@ -837,38 +1150,48 @@ def _search_best_media_with_poster_one(q: str, *, prefer: Prefer) -> tuple[dict 
     return m, "movie"
 
 
-def search_best_media_with_poster(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
+def search_best_media_with_poster(
+    query: str, *, prefer: Prefer = "auto", forgiving: bool | None = None
+) -> tuple[dict | None, MediaKind | None]:
     """
     Pick one movie or TV hit with a poster.
     ``auto`` chooses whichever has higher TMDb ``popularity`` (ties → movie).
     """
-    for q in _tmdb_query_variants(query):
-        hit = _search_best_media_with_poster_one(q, prefer=prefer)
+    fg = tmdb_match_forgiving(override=forgiving)
+    raw = (query or "").strip()
+    if raw and fg:
+        mf = _forced_tmdb_movie_item_for_disambiguated_query(raw, require_poster=True)
+        if mf is not None:
+            return mf, "movie"
+    variants = _tmdb_query_variants(query) if fg else ([raw] if raw else [])
+    for q in variants:
+        hit = _search_best_media_with_poster_one(q, prefer=prefer, forgiving=fg)
         if hit[0] is not None:
             return hit
     return None, None
 
 
-def _search_best_media_one(q: str, *, prefer: Prefer) -> tuple[dict | None, MediaKind | None]:
+def _search_best_media_one(q: str, *, prefer: Prefer, forgiving: bool) -> tuple[dict | None, MediaKind | None]:
     if not q:
         return None, None
-    en = _exact_tv_title_norm_for_known_series_query(q)
-    if en is not None:
-        hit = _forced_tmdb_tv_item_for_canonical_query(q, require_poster=False)
-        if hit is None:
-            hit = search_tv_best(q)
-        if hit is not None:
-            return hit, "tv"
-        return None, None
+    if forgiving:
+        en = _exact_tv_title_norm_for_known_series_query(q)
+        if en is not None:
+            hit = _forced_tmdb_tv_item_for_canonical_query(q, require_poster=False)
+            if hit is None:
+                hit = search_tv_best(q, forgiving=True)
+            if hit is not None:
+                return hit, "tv"
+            return None, None
     if prefer == "movie":
-        m = search_movie_best(q)
+        m = search_movie_best(q, forgiving=forgiving)
         return (m, "movie") if m else (None, None)
     if prefer == "tv":
-        t = search_tv_best(q)
+        t = search_tv_best(q, forgiving=forgiving)
         return (t, "tv") if t else (None, None)
 
-    m = search_movie_best(q)
-    t = search_tv_best(q)
+    m = search_movie_best(q, forgiving=forgiving)
+    t = search_tv_best(q, forgiving=forgiving)
     if m and not t:
         return m, "movie"
     if t and not m:
@@ -882,10 +1205,19 @@ def _search_best_media_one(q: str, *, prefer: Prefer) -> tuple[dict | None, Medi
     return m, "movie"
 
 
-def search_best_media(query: str, *, prefer: Prefer = "auto") -> tuple[dict | None, MediaKind | None]:
+def search_best_media(
+    query: str, *, prefer: Prefer = "auto", forgiving: bool | None = None
+) -> tuple[dict | None, MediaKind | None]:
     """Pick one movie or TV hit by popularity (poster not required)."""
-    for q in _tmdb_query_variants(query):
-        hit = _search_best_media_one(q, prefer=prefer)
+    fg = tmdb_match_forgiving(override=forgiving)
+    raw = (query or "").strip()
+    if raw and fg:
+        mf = _forced_tmdb_movie_item_for_disambiguated_query(raw, require_poster=False)
+        if mf is not None:
+            return mf, "movie"
+    variants = _tmdb_query_variants(query) if fg else ([raw] if raw else [])
+    for q in variants:
+        hit = _search_best_media_one(q, prefer=prefer, forgiving=fg)
         if hit[0] is not None:
             return hit
     return None, None
@@ -1020,10 +1352,13 @@ def download_backdrop_to_pulled(item: dict, kind: MediaKind, file_path: str) -> 
     return True, dest.name, dest
 
 
-def fetch_tmdb_poster_to_pulled(query: str, *, prefer: Prefer = "auto") -> tuple[bool, str, Path | None]:
+def fetch_tmdb_poster_to_pulled(
+    query: str, *, prefer: Prefer = "auto", forgiving: bool | None = None
+) -> tuple[bool, str, Path | None]:
     """Search TMDb (movie and/or TV) and download best-match poster to pigeonPulledMedia."""
+    fg = tmdb_match_forgiving(override=forgiving)
     try:
-        item, kind = search_best_media_with_poster(query, prefer=prefer)
+        item, kind = search_best_media_with_poster(query, prefer=prefer, forgiving=forgiving)
     except RuntimeError as e:
         return False, str(e), None
     except urllib.error.HTTPError as e:
@@ -1034,7 +1369,7 @@ def fetch_tmdb_poster_to_pulled(query: str, *, prefer: Prefer = "auto") -> tuple
         return False, str(e), None
     if item is None or kind is None:
         q0 = query.strip()
-        variants = _tmdb_query_variants(q0)
+        variants = _tmdb_query_variants(q0) if fg else ([q0] if q0 else [])
         tried_line = (
             "Variants tried: " + ", ".join(repr(x) for x in variants) + "\n"
             if len(variants) > 1
@@ -1052,7 +1387,9 @@ def fetch_tmdb_poster_to_pulled(query: str, *, prefer: Prefer = "auto") -> tuple
     return download_poster_to_pulled(item, kind)
 
 
-def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool, str, np.ndarray | None]:
+def apply_tmdb_movie_query(
+    query: str, *, prefer: Prefer = "auto", forgiving: bool | None = None
+) -> tuple[bool, str, np.ndarray | None]:
     """
     Search TMDb, prefer cached logo when present; pull missing assets and cache as
     ``{Title}_{Logo|Backdrop}`` in pigeonReFormattedMedia.
@@ -1065,10 +1402,12 @@ def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool
     q = query.strip()
     if not q:
         return False, "Empty search.", None
-    q = refine_tmdb_search_query(q) or q
+    fg = tmdb_match_forgiving(override=forgiving)
+    if fg:
+        q = refine_tmdb_search_query(q) or q
 
     try:
-        item, kind = search_best_media(q, prefer=prefer)
+        item, kind = search_best_media(q, prefer=prefer, forgiving=forgiving)
     except RuntimeError as e:
         return False, str(e), None
     except urllib.error.HTTPError as e:
@@ -1079,7 +1418,7 @@ def apply_tmdb_movie_query(query: str, *, prefer: Prefer = "auto") -> tuple[bool
         return False, str(e), None
 
     if item is None or kind is None:
-        variants = _tmdb_query_variants(q)
+        variants = _tmdb_query_variants(q) if fg else [q]
         tried_line = (
             "Variants tried: " + ", ".join(repr(x) for x in variants) + "\n"
             if len(variants) > 1
