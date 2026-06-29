@@ -34,6 +34,22 @@ rsync -a \
   --exclude 'installer/install_mac.sh' \
   "${PIGEON_ROOT}/" "${STAGING}/Pigeon_0.7.0/"
 
+# Guard against empty or partial staging (e.g. wrong cwd, missing assets after a bad copy).
+STAGING_APP="${STAGING}/Pigeon_0.7.0"
+STAGING_BYTES="$(du -sk "${STAGING_APP}" | awk '{print $1}')"
+if [[ ! -f "${STAGING_APP}/pigeonSystem/pigeon_0_7.py" ]]; then
+  echo "ERROR: staging is missing pigeonSystem/pigeon_0_7.py — run from a full Pigeon_0.7.0 tree." >&2
+  exit 1
+fi
+if [[ ! -d "${STAGING_APP}/pigeonAssets/App logos" ]]; then
+  echo "ERROR: staging is missing pigeonAssets — app tree looks incomplete." >&2
+  exit 1
+fi
+if [[ "${STAGING_BYTES}" -lt 20480 ]]; then
+  echo "ERROR: staging is only ${STAGING_BYTES} KB (expected tens of MB). Aborting." >&2
+  exit 1
+fi
+
 mkdir -p \
   "${STAGING}/Pigeon_0.7.0/pigeonCashe" \
   "${STAGING}/Pigeon_0.7.0/pigeonTMDB/pigeonTMDB_BD" \
@@ -55,6 +71,10 @@ echo "==> Writing ${DIST_DIR}/${ARCHIVE_NAME}"
 tar -C "${STAGING}" -czf "${DIST_DIR}/${ARCHIVE_NAME}" Pigeon_0.7.0
 
 BYTES="$(wc -c < "${DIST_DIR}/${ARCHIVE_NAME}" | tr -d ' ')"
+if [[ "${BYTES}" -lt 1048576 ]]; then
+  echo "ERROR: ${ARCHIVE_NAME} is only ${BYTES} bytes — tarball looks empty or corrupt." >&2
+  exit 1
+fi
 MB="$(awk "BEGIN {printf \"%.1f\", ${BYTES}/1048576}")"
 echo ""
 echo "Done: ${DIST_DIR}/${ARCHIVE_NAME} (${MB} MB)"

@@ -132,7 +132,6 @@ from pigeon.media_folders import (
 from pigeon.compositing import cv_resize_interp
 from pigeon.stage_background import bgr_to_tk_hex, get_stage_bgr, set_stage_bgr
 from pigeon.tmdb_tt_contrast import GRADIENT_BGR_DARK, pick_gradient_bgr
-from pigeon.startup_transition_video import current_startup_bgra_frame
 from pigeon.runtime_paths import PIGEON_STATE_DIR_TILDE, pigeon_state_dir
 from pigeon.version import version_string
 
@@ -415,11 +414,7 @@ class ViewOneLayout(IntEnum):
       override in ``_compose_shown_frame`` substitutes a two-line text patch
       ("Track title" + "Artist - Album") inside the pigeonTMDB_TT rect and
       suppresses the bottom gradient.
-    * ``viewOne.startup`` / ``viewOne.noContent`` — V09 fallback; the Pigeon
-      appLogo renders at 30% opacity over a black scene.
-    * ``startUp.transition`` — the post-splash bars/bird choreography window;
-      V09's logo slot shows a looping frame of ``pigeonStartup.mp4`` until
-      ``MIC_VIZ_INTRO_TOTAL_S`` elapses, then falls back to the 30% logo.
+    * ``viewOne.startup`` / ``viewOne.noContent`` — V09 fallback; static Pigeon logo at 30% alpha.
     * ``viewOne.clockSaver_a`` / ``viewOne.clockSaver_b`` — the idle clock
       saver composites over whichever base (black or pigeonTMDB_BD) the
       active videoContent variant produced.
@@ -440,6 +435,8 @@ LANDING_DISPLAY_BRIGHTNESS = 1.0
 LANDING_DIM_BRIGHTNESS = 0.78  # Space-bar pulse “off” — still readable vs old 0.3
 # After UI bootstrap, optional auto-restore of saved TMDb backdrop (env-gated) runs after this delay.
 STARTUP_PIGEON_WORDMARK_MAX_S = 5.0
+# After splash: skip mic EQ intro and land on viewOne (no pigeonStartup.mp4 transition).
+SKIP_POST_SPLASH_STARTUP_TRANSITION = True
 # If True and a saved TMDb backdrop exists, switch to it when this timer elapses (enables ``use_backdrop_scene``,
 # which turns off the mic EQ). Default False so landing + clock saver + EQ stay on until you use F10 / Space (saved backdrop).
 STARTUP_AUTO_RESTORE_SAVED_BACKDROP = os.environ.get("PIGEON_STARTUP_RESTORE_BACKDROP", "").strip().lower() in (
@@ -813,6 +810,12 @@ def main() -> int:
     # After ``MIC_VIZ_INTRO_TOTAL_S``: ``None`` until latched; ``1`` = backdrop was on → descend EQ; ``0`` = leave EQ up.
     mic_viz_launch_descend_latched: list[int | None] = [None]
 
+    def _finish_post_splash_startup_transition() -> None:
+        """Skip startUp.transition — mic EQ intro, descent, and startup video."""
+        past = float(MIC_VIZ_INTRO_TOTAL_S) + float(MIC_VIZ_LAUNCH_DESCENT_S) + 0.1
+        mic_viz_intro_start_mono[0] = time.monotonic() - past
+        mic_viz_launch_descend_latched[0] = 0
+
     def _try_remove_splash_overlay() -> None:
         if not _PIGEON_EXT:
             return
@@ -828,6 +831,7 @@ def main() -> int:
         startup_ph[0] = None
         if mic_viz_intro_start_mono[0] is None:
             mic_viz_intro_start_mono[0] = time.monotonic()
+        _finish_post_splash_startup_transition()
 
     _tk_pack_orig = tk.Widget.pack
     _tk_grid_orig = tk.Widget.grid
@@ -1647,18 +1651,36 @@ def main() -> int:
         }
         _UPDATE_CHECK_INTERVAL_S = 30 * 60
 
+        def _match_neighbor_button_style(btn: tk.Button, *, ref: tk.Button) -> None:
+            """Copy default macOS/system button chrome from a sibling (Find device / Advanced)."""
+            for key in (
+                "bg",
+                "fg",
+                "activebackground",
+                "activeforeground",
+                "highlightbackground",
+                "highlightcolor",
+                "highlightthickness",
+                "relief",
+                "borderwidth",
+                "disabledforeground",
+            ):
+                try:
+                    btn.configure(**{key: ref.cget(key)})
+                except tk.TclError:
+                    pass
+
         def _sync_update_button_style() -> None:
+            _match_neighbor_button_style(update_btn, ref=find_device_btn)
             if update_check_state.get("update_available"):
                 update_btn.configure(
                     text="Updates ●",
-                    fg="#b71c1c",
-                    activeforeground="#b71c1c",
+                    state=tk.NORMAL,
                 )
             else:
                 update_btn.configure(
                     text="Updates",
-                    fg="SystemButtonText",
-                    activeforeground="SystemButtonText",
+                    state=tk.NORMAL,
                 )
 
         def _on_updates_button() -> None:
@@ -4767,67 +4789,21 @@ def main() -> int:
                         _rx = max(0, (int(DESIGN_W) - _rw) // 2)
                         _ry = max(0, (int(DESIGN_H) - _rh) // 2)
                         sub2_logo_rect = (_rx, _ry, _rw, _rh)
-                        # viewOne.startUp vs. viewOne.noContent
-                        # ------------------------------------
-                        # While Pigeon is still "starting up" — meaning either
-                        # (a) the post-splash bars choreography is still playing
-                        # (``mic_viz_intro_start_mono`` within ``MIC_VIZ_INTRO_TOTAL_S``),
-                        # or (b) no Apple TV / Roku metadata poll has finished yet
-                        # (``apple_tv_dashboard_track['last_poll_ok'] is None``) —
-                        # the V09 logo slot loops ``pigeonAssets/pigeonStartup.mp4``
-                        # inside the same ``sub2_logo_rect`` that the static
-                        # AppLogo_Pigeon.png would occupy. The video plays at
-                        # 100% opacity so the motion reads clearly.
-                        #
-                        # Once Pigeon is "fully up and running" (first poll has
-                        # returned, successfully or otherwise) we fall through
-                        # to the static AppLogo_Pigeon.png at 30% alpha — the
-                        # viewOne.noContent look.
-                        _startup_video_used = False
-                        _intro_start_mono = mic_viz_intro_start_mono[0]
-                        _first_poll_ok = apple_tv_dashboard_track.get("last_poll_ok")
-                        _in_startup_window = (
-                            _first_poll_ok is None
-                            or (
-                                _intro_start_mono is not None
-                                and (time.monotonic() - float(_intro_start_mono))
-                                < float(MIC_VIZ_INTRO_TOTAL_S)
-                            )
+                        _override_bgra = load_pigeon_temp_logo_bgra(
+                            Path(_PROJECT_DIR) / "pigeonAssets"
                         )
-                        if (
-                            current_startup_bgra_frame is not None
-                            and _intro_start_mono is not None
-                            and _in_startup_window
-                        ):
-                            _intro_elapsed = time.monotonic() - float(_intro_start_mono)
-                            if _intro_elapsed < 0.0:
-                                _intro_elapsed = 0.0
-                            _vid_bgra = current_startup_bgra_frame(
-                                Path(_PROJECT_DIR) / "pigeonAssets",
-                                _intro_elapsed,
-                                loop=True,
+                        if _override_bgra is None:
+                            print(
+                                "pigeon: pigeonAssets/App logos/AppLogo_Pigeon.png not found — "
+                                "viewOne.noContent will render black only.",
+                                file=sys.stderr,
                             )
-                            if _vid_bgra is not None:
-                                _override_bgra = _vid_bgra
-                                _startup_video_used = True
-                        if not _startup_video_used:
-                            _override_bgra = load_pigeon_temp_logo_bgra(
-                                Path(_PROJECT_DIR) / "pigeonAssets"
-                            )
-                            if _override_bgra is None:
-                                print(
-                                    "pigeon: pigeonAssets/App logos/AppLogo_Pigeon.png not found — "
-                                    "viewOne.noContent / viewOne.startUp will render black only.",
-                                    file=sys.stderr,
-                                )
-                            else:
-                                # viewOne.noContent: Pigeon logo at 30% opacity.
-                                # Multiply the alpha channel so the logo blends
-                                # softly rather than showing solid over black.
-                                _override_bgra = _override_bgra.copy()
-                                _override_bgra[..., 3] = (
-                                    _override_bgra[..., 3].astype(np.float32) * 0.30
-                                ).clip(0, 255).astype(np.uint8)
+                        else:
+                            # viewOne.noContent: Pigeon logo at 30% opacity.
+                            _override_bgra = _override_bgra.copy()
+                            _override_bgra[..., 3] = (
+                                _override_bgra[..., 3].astype(np.float32) * 0.30
+                            ).clip(0, 255).astype(np.uint8)
                     _v07_skip_tt_for_clock_saver = (
                         _vv_simple == ViewOneVariant.V07
                         and _clock_saver_for_compose(time.monotonic())
@@ -9841,7 +9817,11 @@ def main() -> int:
             if (
                 _PIGEON_EXT
                 and not _startup_splash_complete[0]
-                and _startup_elapsed >= STARTUP_PIGEON_WORDMARK_MAX_S
+                and _intro_mono is not None
+                and (
+                    SKIP_POST_SPLASH_STARTUP_TRANSITION
+                    or _startup_elapsed >= STARTUP_PIGEON_WORDMARK_MAX_S
+                )
                 and dev_phase != DevPhase.SETTINGS
             ):
                 _startup_splash_complete[0] = True
