@@ -1,0 +1,10 @@
+opencv-python
+pillow
+numpy
+pyatv>=0.14.5
+sounddevice
+numbers-parser>=4.2.0
+
+# Optional: App logos as .svg under pigeonAssets/App logos (pip install cairosvg; macOS often needs: brew install cairo pkg-config)
+# cairosvg>=2.7.0
+

@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Install Pigeon
-Comment=Install Pigeon on this Raspberry Pi
-TryExec=bash
-Exec=bash install-pigeon.sh
-Icon=system-software-install
-Terminal=false
-Categories=Utility;

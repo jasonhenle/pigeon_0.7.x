@@ -39,6 +39,20 @@ Pigeon_0.6.0_Development/**/setup/tmdb_api_key
 Pigeon_0.6.0_Development/**/setup/tmdb_read_token
 Pigeon_0.6.0_Development/**/setup/pyatv_credentials
 
+# Pigeon 0.7 runtime caches and packaging staging (regenerated locally)
+Pigeon_0.7.0_Development/**/pigeonCashe/
+Pigeon_0.7.0_Development/**/pigeonTMDB/pigeonTMDB_BD/
+Pigeon_0.7.0_Development/**/pigeonTMDB/pigeonTMDB_ORIGINAL/
+Pigeon_0.7.0_Development/**/pigeonTMDB/pigeonTMDB_Poster/
+Pigeon_0.7.0_Development/**/pigeonTMDB/pigeonTMDB_TT/
+Pigeon_0.7.0_Development/**/pigeonTMDB/*.jpg
+Pigeon_0.7.0_Development/**/pigeonTMDB/*.png
+Pigeon_0.7.0_Development/**/pigeonTMDB/*.ai
+Pigeon_0.7.0_Development/**/raspberryPi/dist/staging/
+Pigeon_0.7.0_Development/**/setup/tmdb_api_key
+Pigeon_0.7.0_Development/**/setup/tmdb_read_token
+Pigeon_0.7.0_Development/**/setup/pyatv_credentials
+
 # Local archives and full GFX tree (not required for app download path)
 Archive/
 Pigeon_GFX/

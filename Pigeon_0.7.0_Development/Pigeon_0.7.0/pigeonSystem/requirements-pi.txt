@@ -1,0 +1,7 @@
+opencv-python-headless
+pillow
+numpy
+pyatv>=0.14.5
+sounddevice
+
+# numbers-parser is optional (Numbers.app reports only). Omitted on Pi — large / slow to build.

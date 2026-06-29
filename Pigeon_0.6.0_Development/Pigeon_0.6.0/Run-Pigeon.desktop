@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Run Pigeon
-Comment=Launch Pigeon media display
-TryExec=bash
-Exec=bash run-pigeon.sh
-Icon=video-display
-Terminal=false
-Categories=AudioVideo;
