@@ -2918,7 +2918,12 @@ def main() -> int:
         # View-1 composition path through the correct fallback. See
         # ``pigeon/view_one_variants.py`` for the decision table.
         def _vv_has_content_title() -> bool:
-            return bool((active_tmdb_display_title or "").strip())
+            if (active_tmdb_display_title or "").strip():
+                return True
+            lm = apple_tv_auto_state.get("last_metadata")
+            if isinstance(lm, dict) and metadata_has_playback_title is not None:
+                return bool(metadata_has_playback_title(lm))
+            return False
 
         def _vv_has_current_app() -> bool:
             if str(streaming_badge_state.get("filename") or "").strip():
@@ -8133,11 +8138,37 @@ def main() -> int:
             except (TypeError, ValueError):
                 reported_total = None
             if reported_total is not None:
-                clk["last_reported_total"] = reported_total
+                try:
+                    if float(reported_total) > 0:
+                        clk["last_reported_total"] = reported_total
+                except (TypeError, ValueError):
+                    pass
+            elif content_key and content_key == clk.get("latched_content_key"):
+                # pyatv on some paths (often Linux) omits total_time while still reporting position.
+                for key in ("latched_total", "last_reported_total"):
+                    prev = clk.get(key)
+                    if prev is None:
+                        continue
+                    try:
+                        pf = float(prev)
+                    except (TypeError, ValueError):
+                        continue
+                    if pf > 0:
+                        reported_total = pf
+                        break
 
-            # Live/continuous content: Apple TV often doesn't provide total_time/position.
-            # Show LIVE instead of attempting to run the TRT extrapolator.
+            pos_raw = metadata.get("position")
+            pos_f: float | None = None
+            if pos_raw is not None:
+                try:
+                    pos_f = max(0.0, float(pos_raw))
+                except (TypeError, ValueError):
+                    pos_f = None
+
+            # Live/continuous content: playing with no duration and no scrub position.
             live_now = bool(playing_now) and (reported_total is None or reported_total <= 0)
+            if live_now and pos_f is not None:
+                live_now = False
             if live_now:
                 clk["live_mode"] = True
                 clk["has_sync"] = False
@@ -8156,14 +8187,6 @@ def main() -> int:
                 clk["latched_total"] = reported_total
                 clk["display_played_sec"] = None
                 clk["trt_next_fire_mono"] = None
-
-            pos_raw = metadata.get("position")
-            pos_f: float | None = None
-            if pos_raw is not None:
-                try:
-                    pos_f = max(0.0, float(pos_raw))
-                except (TypeError, ValueError):
-                    pos_f = None
 
             if pos_f is not None:
                 clk["sync_mono"] = now_m
@@ -8484,12 +8507,19 @@ def main() -> int:
             lt = clk.get("latched_total")
             if lt is None:
                 lt = clk.get("last_reported_total")
-            if lt is None:
-                return False
-            try:
-                return float(lt) > 0.0
-            except (TypeError, ValueError):
-                return False
+            if lt is not None:
+                try:
+                    if float(lt) > 0.0:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+            # Position-only streams: show elapsed TRT even when total_time never arrives.
+            if clk.get("playing"):
+                try:
+                    return float(clk.get("sync_position") or 0.0) >= 0.0
+                except (TypeError, ValueError):
+                    return False
+            return False
 
         def _trt_substantive_for_status_bar() -> bool:
             if _view_one_streaming_logo_duplicate_fallback():
