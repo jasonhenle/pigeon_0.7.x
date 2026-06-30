@@ -11,7 +11,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pigeon.runtime_paths import PIGEON_STATE_DIR_TILDE, pigeon_state_dir
-from pigeon.update_check import _branch_candidates, github_auth_headers, github_http_get, github_repo_url
+from pigeon.update_check import (
+    _branch_candidates,
+    _latin1_safe_env,
+    _scrub_github_token_file,
+    github_auth_headers,
+    github_http_get,
+    github_repo_url,
+)
 
 _UA = "Pigeon/0.7 (github-update)"
 _LAUNCHER_NAMES = ("run_pigeon_0_7.sh", "run_pigeon_0_6.sh", "Run-Pigeon", "run-pigeon.sh")
@@ -106,7 +113,15 @@ def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
             cmd.append(f"--exclude={ex}")
         cmd.extend([f"{source}/", f"{dest}/"])
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                env=_latin1_safe_env(),
+            )
         except OSError as e:
             return False, str(e)
         if proc.returncode != 0:
@@ -167,6 +182,7 @@ def _run_bootstrap(install_root: Path) -> tuple[bool, str]:
             errors="replace",
             check=False,
             timeout=600,
+            env=_latin1_safe_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)
@@ -193,6 +209,7 @@ def apply_github_update(
     Does **not** modify ``~/.pigeon_0_6`` (devices, TMDb keys, pairing, locations).
     Does **not** replace ``pigeonTMDB/`` cached artwork or ``pigeonSystem/.venv`` (re-bootstrap after).
     """
+    _scrub_github_token_file()
     br = (branch or _branch_candidates()[0]).strip()
     url = github_zipball_url(branch=br)
     install_root = install_root.resolve()

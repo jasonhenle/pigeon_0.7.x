@@ -37,6 +37,37 @@ def _latin1_header(value: str) -> str:
     return value.encode("latin-1", errors="ignore").decode("latin-1")
 
 
+def _latin1_safe_env() -> dict[str, str]:
+    """Environment dict safe for subprocess (no U+202F etc. in values)."""
+    out: dict[str, str] = {}
+    for key, val in os.environ.items():
+        ks = str(key)
+        vs = str(val)
+        try:
+            ks.encode("latin-1")
+            vs.encode("latin-1")
+        except UnicodeEncodeError:
+            ks = ks.encode("latin-1", errors="replace").decode("latin-1")
+            vs = vs.encode("latin-1", errors="replace").decode("latin-1")
+        out[ks] = vs
+    return out
+
+
+def _scrub_github_token_file() -> None:
+    """Rewrite token file as ASCII-only (fixes pasted narrow no-break spaces)."""
+    try:
+        token_path = Path.home() / ".pigeon_0_6" / "github_update_token"
+        if not token_path.is_file():
+            return
+        cleaned = _sanitize_github_token(token_path.read_bytes())
+        if cleaned:
+            token_path.write_text(cleaned + "\n", encoding="ascii")
+        else:
+            token_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _sanitize_github_token(raw: str) -> str:
     """Strip BOM, whitespace (incl. U+202F), and non-ASCII from pasted tokens."""
     if not raw:
@@ -109,21 +140,52 @@ def github_repo_url() -> str:
 def github_http_get(url: str, *, timeout_s: float, headers: dict[str, str] | None = None) -> bytes:
     """HTTPS GET with latin-1-safe headers; follows redirects (GitHub zipballs → codeload)."""
     import http.client
+    import shutil
+    import subprocess
     from urllib.parse import urljoin, urlparse
 
-    safe_headers = {str(k): _latin1_header(str(v)) for k, v in (headers or {}).items()}
-    current = _ascii_only(url)
+    safe_headers = {
+        _latin1_header(str(k)): _latin1_header(str(v)) for k, v in (headers or {}).items()
+    }
+    safe_url = _ascii_only(url)
+
+    curl = shutil.which("curl")
+    if curl:
+        cmd = [
+            curl,
+            "-fsSL",
+            "--max-time",
+            str(max(1, int(timeout_s))),
+        ]
+        for hk, hv in safe_headers.items():
+            if hk and hv is not None:
+                cmd.extend(["-H", f"{hk}: {hv}"])
+        cmd.append(safe_url)
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                env=_latin1_safe_env(),
+            )
+        except (OSError, UnicodeEncodeError):
+            proc = None
+        if proc is not None and proc.returncode == 0 and proc.stdout:
+            return proc.stdout
+
+    current = safe_url
     max_redirects = 8
 
     for _ in range(max_redirects + 1):
         parsed = urlparse(current)
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError(f"Invalid GitHub URL: {url!r}")
+        host = _ascii_only(parsed.hostname)
         path = parsed.path or "/"
         if parsed.query:
             path = f"{path}?{parsed.query}"
         path = _ascii_only(path)
-        conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=timeout_s)
+        conn = http.client.HTTPSConnection(host, parsed.port or 443, timeout=timeout_s)
         try:
             conn.request("GET", path, headers=safe_headers)
             resp = conn.getresponse()
@@ -283,6 +345,7 @@ def format_version_tuple(t: tuple[int, int, int]) -> str:
 
 
 def check_for_update(*, timeout_s: float = 12.0) -> UpdateCheckResult:
+    _scrub_github_token_file()
     local = version_string()
     local_t = version_tuple()
     remote_t, err, url, branch = fetch_remote_version_tuple(timeout_s=timeout_s)
