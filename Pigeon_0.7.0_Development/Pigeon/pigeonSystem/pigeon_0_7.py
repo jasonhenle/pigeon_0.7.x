@@ -2917,13 +2917,20 @@ def main() -> int:
         # These probe live state so ``_current_view_one_variant`` can route the
         # View-1 composition path through the correct fallback. See
         # ``pigeon/view_one_variants.py`` for the decision table.
-        def _vv_has_content_title() -> bool:
+        def _playback_display_title() -> str:
+            """Best on-screen title: TMDb display name, else Apple TV metadata."""
             if (active_tmdb_display_title or "").strip():
-                return True
+                return str(active_tmdb_display_title).strip()
             lm = apple_tv_auto_state.get("last_metadata")
-            if isinstance(lm, dict) and metadata_has_playback_title is not None:
-                return bool(metadata_has_playback_title(lm))
-            return False
+            if isinstance(lm, dict):
+                for key in ("title", "series_name", "query", "artist"):
+                    s = str(lm.get(key) or "").strip()
+                    if s:
+                        return s
+            return ""
+
+        def _vv_has_content_title() -> bool:
+            return bool(_playback_display_title())
 
         def _vv_has_current_app() -> bool:
             if str(streaming_badge_state.get("filename") or "").strip():
@@ -4807,7 +4814,7 @@ def main() -> int:
                     show_grid=_design_grid_overlay_active(),
                     frame_is_design_sized=True,
                 )
-            if _PIGEON_EXT and _view_one_variant_uses_simple_path():
+            if _PIGEON_EXT and _view_one_variant_uses_simple_path() and not _backdrop_active_for_view():
                 sb, sg, sr = _view_one_dark_accent_bg_bgr()
                 black = np.empty((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
                 black[:] = (sb, sg, sr)
@@ -4853,7 +4860,7 @@ def main() -> int:
                     _override_bgra = None
                     if _vv_simple == ViewOneVariant.V06 and render_ui_text_patch_bgra is not None:
                         _override_bgra = render_ui_text_patch_bgra(
-                            active_tmdb_display_title or "",
+                            _playback_display_title(),
                             int(sub2_logo_rect[2]),
                             int(sub2_logo_rect[3]),
                         )
@@ -8259,15 +8266,6 @@ def main() -> int:
             try:
                 if status_bar_widget is None:
                     return
-                if _view_one_streaming_logo_duplicate_fallback():
-                    if status_bar_widget.set_now_playing_display(
-                        played_text="",
-                        remaining_text="",
-                        progress=0.0,
-                    ):
-                        _warm_status_bar_blits()
-                        skip_cache = None
-                    return
                 clk = apple_tv_playback_clock
                 if clk.get("live_mode"):
                     # Live: digits are suppressed; show LIVE.
@@ -8340,15 +8338,6 @@ def main() -> int:
             if status_bar_widget is None:
                 return
             try:
-                if _view_one_streaming_logo_duplicate_fallback():
-                    if status_bar_widget.set_now_playing_display(
-                        played_text="",
-                        remaining_text="",
-                        progress=0.0,
-                    ):
-                        _warm_status_bar_blits()
-                        skip_cache = None
-                    return
                 clk = apple_tv_playback_clock
                 if clk.get("live_mode"):
                     if status_bar_widget.set_now_playing_display(
@@ -8522,8 +8511,6 @@ def main() -> int:
             return False
 
         def _trt_substantive_for_status_bar() -> bool:
-            if _view_one_streaming_logo_duplicate_fallback():
-                return False
             return _trt_substantive_from_clock()
 
         def _sync_status_bar_trt_substantive() -> None:

@@ -259,6 +259,8 @@ class StatusBarWidget:
         if self._tc_elapsed_asset is None:
             self._tc_elapsed_asset = self._load_asset("pigeonNowPlaying_TC_elapsed.png")
         if self._tc_elapsed_asset is None:
+            self._tc_elapsed_asset = self._load_asset("pigeonNowPlaying_TC_elaspsed.png")
+        if self._tc_elapsed_asset is None:
             self._tc_elapsed_asset = self._tc_container_asset
         self._tc_remaining_asset = self._load_asset("pigeonTimeCode_Remaining.png")
         if self._tc_remaining_asset is None:

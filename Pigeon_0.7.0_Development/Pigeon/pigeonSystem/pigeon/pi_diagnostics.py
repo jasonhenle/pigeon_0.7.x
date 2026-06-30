@@ -78,7 +78,6 @@ def run_linux_startup_checks() -> None:
             "Run: sudo apt install avahi-daemon libnss-mdns"
         )
     else:
-        # Best-effort: warn if the daemon unit exists but is not active.
         try:
             import subprocess
 
@@ -96,3 +95,16 @@ def run_linux_startup_checks() -> None:
                 )
         except Exception:
             pass
+
+    try:
+        from pigeon.layout_paths import pigeon_python_dir
+
+        assets = pigeon_python_dir() / "pigeonAssets"
+        bar = assets / "pigeonNowPlaying_Bar.png"
+        if not bar.is_file():
+            _emit(
+                f"pigeon [Pi]: status bar assets missing under {assets} — "
+                "reinstall from a full pigeon_*_raspberry_pi.tar.gz (not GitHub zip alone)."
+            )
+    except Exception:
+        pass
