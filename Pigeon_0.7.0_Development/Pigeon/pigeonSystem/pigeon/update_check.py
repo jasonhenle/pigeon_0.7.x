@@ -27,6 +27,11 @@ _UA = "Pigeon/0.7 (update-check)"
 _VERSION_FIELD_RE = re.compile(r"^(MAJOR|MINOR|PATCH)\s*=\s*(\d+)\s*$", re.MULTILINE)
 
 
+def _ascii_only(value: str) -> str:
+    """Keep printable ASCII only (HTTP URLs and slugs)."""
+    return "".join(ch for ch in value if 32 <= ord(ch) < 127)
+
+
 def _latin1_header(value: str) -> str:
     """HTTP/1.1 header values must be encodable as latin-1."""
     return value.encode("latin-1", errors="ignore").decode("latin-1")
@@ -36,6 +41,8 @@ def _sanitize_github_token(raw: str) -> str:
     """Strip BOM, whitespace (incl. U+202F), and non-ASCII from pasted tokens."""
     if not raw:
         return ""
+    if isinstance(raw, bytes):
+        return bytes(b for b in raw if 32 <= b < 127).decode("ascii")
     cleaned: list[str] = []
     for ch in raw.lstrip("\ufeff"):
         if ch.isspace():
@@ -45,19 +52,33 @@ def _sanitize_github_token(raw: str) -> str:
     return "".join(cleaned)
 
 
+def _github_repo_name() -> str:
+    return _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_REPO", _DEFAULT_GITHUB_REPO).strip())
+
+
+def _github_repo_is_public() -> bool:
+    return _github_repo_name() == "pigeon_0.7.x"
+
+
 def github_token() -> str:
-    """Token from env or ``~/.pigeon_0_6/github_update_token``."""
-    token = os.environ.get("PIGEON_UPDATE_GITHUB_TOKEN", "").strip()
-    if not token:
-        token = os.environ.get("GITHUB_TOKEN", "").strip()
-    if not token:
+    """Token from env or ``~/.pigeon_0_6/github_update_token`` (skipped for public repo)."""
+    if _github_repo_is_public() and os.environ.get("PIGEON_UPDATE_REQUIRE_TOKEN", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return ""
+    token = os.environ.get("PIGEON_UPDATE_GITHUB_TOKEN", "")
+    if not token.strip():
+        token = os.environ.get("GITHUB_TOKEN", "")
+    if not token.strip():
         try:
             token_path = Path.home() / ".pigeon_0_6" / "github_update_token"
             if token_path.is_file():
-                token = token_path.read_text(encoding="utf-8").strip()
+                token = token_path.read_bytes()
         except OSError:
-            token = ""
-    return _sanitize_github_token(token)
+            token = b""
+    return _sanitize_github_token(token if isinstance(token, bytes) else str(token))
 
 
 def github_auth_headers(*, user_agent: str | None = None) -> dict[str, str]:
@@ -80,14 +101,46 @@ class UpdateCheckResult:
 
 
 def github_repo_url() -> str:
-    user = os.environ.get("PIGEON_UPDATE_GITHUB_USER", _DEFAULT_GITHUB_USER).strip()
-    repo = os.environ.get("PIGEON_UPDATE_GITHUB_REPO", _DEFAULT_GITHUB_REPO).strip()
+    user = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_USER", _DEFAULT_GITHUB_USER).strip())
+    repo = _github_repo_name()
     return f"https://github.com/{user}/{repo}"
+
+
+def github_http_get(url: str, *, timeout_s: float, headers: dict[str, str] | None = None) -> bytes:
+    """HTTPS GET with latin-1-safe headers (avoids U+202F etc. in token/env)."""
+    import http.client
+    from urllib.parse import urlparse
+
+    safe_url = _ascii_only(url)
+    parsed = urlparse(safe_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError(f"Invalid GitHub URL: {url!r}")
+    safe_headers = {str(k): _latin1_header(str(v)) for k, v in (headers or {}).items()}
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    path = _ascii_only(path)
+    conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=timeout_s)
+    try:
+        conn.request("GET", path, headers=safe_headers)
+        resp = conn.getresponse()
+        body = resp.read()
+        if resp.status >= 400:
+            raise urllib.error.HTTPError(
+                safe_url,
+                resp.status,
+                resp.reason,
+                resp.headers,
+                None,
+            )
+        return body
+    finally:
+        conn.close()
 
 
 def _branch_candidates() -> list[str]:
     out: list[str] = []
-    env_branch = os.environ.get("PIGEON_UPDATE_GITHUB_BRANCH", "").strip()
+    env_branch = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_BRANCH", "").strip())
     if env_branch:
         out.append(env_branch)
     for b in (_DEFAULT_GITHUB_BRANCH, "main", "master"):
@@ -97,7 +150,7 @@ def _branch_candidates() -> list[str]:
 
 
 def _path_candidates() -> list[str]:
-    env_path = os.environ.get("PIGEON_UPDATE_VERSION_PATH", "").strip().lstrip("/")
+    env_path = _ascii_only(os.environ.get("PIGEON_UPDATE_VERSION_PATH", "").strip().lstrip("/"))
     if env_path:
         return [env_path]
     return list(_DEFAULT_VERSION_PATHS)
@@ -106,21 +159,21 @@ def _path_candidates() -> list[str]:
 def version_py_raw_url(*, branch: str | None = None, path: str | None = None) -> str:
     override = os.environ.get("PIGEON_UPDATE_GITHUB_RAW", "").strip()
     if override:
-        return override
-    user = os.environ.get("PIGEON_UPDATE_GITHUB_USER", _DEFAULT_GITHUB_USER).strip()
-    repo = os.environ.get("PIGEON_UPDATE_GITHUB_REPO", _DEFAULT_GITHUB_REPO).strip()
-    br = (branch or _branch_candidates()[0]).strip()
-    rel = (path or _path_candidates()[0]).strip().lstrip("/")
+        return _ascii_only(override)
+    user = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_USER", _DEFAULT_GITHUB_USER).strip())
+    repo = _github_repo_name()
+    br = _ascii_only((branch or _branch_candidates()[0]).strip())
+    rel = _ascii_only((path or _path_candidates()[0]).strip().lstrip("/"))
     return f"https://raw.githubusercontent.com/{user}/{repo}/{br}/{rel}"
 
 
 def version_py_api_url(*, branch: str | None = None, path: str | None = None) -> str:
     from urllib.parse import quote
 
-    user = os.environ.get("PIGEON_UPDATE_GITHUB_USER", _DEFAULT_GITHUB_USER).strip()
-    repo = os.environ.get("PIGEON_UPDATE_GITHUB_REPO", _DEFAULT_GITHUB_REPO).strip()
-    br = (branch or _branch_candidates()[0]).strip()
-    rel = (path or _path_candidates()[0]).strip().lstrip("/")
+    user = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_USER", _DEFAULT_GITHUB_USER).strip())
+    repo = _github_repo_name()
+    br = _ascii_only((branch or _branch_candidates()[0]).strip())
+    rel = _ascii_only((path or _path_candidates()[0]).strip().lstrip("/"))
     return f"https://api.github.com/repos/{user}/{repo}/contents/{quote(rel, safe='/')}?ref={br}"
 
 
@@ -142,10 +195,11 @@ def _fetch_version_text(url: str, *, timeout_s: float, api: bool = False) -> tup
     if api:
         headers["Accept"] = _latin1_header("application/vnd.github.raw")
         headers["X-GitHub-Api-Version"] = _latin1_header("2022-11-28")
-    req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            return resp.read().decode("utf-8", errors="replace"), None
+        body = github_http_get(url, timeout_s=timeout_s, headers=headers)
+        return body.decode("utf-8", errors="replace"), None
+    except UnicodeEncodeError as e:
+        return None, f"Encoding error talking to GitHub: {e}"
     except urllib.error.HTTPError as e:
         return None, f"HTTP {e.code}"
     except urllib.error.URLError as e:

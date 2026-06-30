@@ -9,10 +9,9 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 from pigeon.runtime_paths import PIGEON_STATE_DIR_TILDE, pigeon_state_dir
-from pigeon.update_check import _branch_candidates, github_auth_headers, github_repo_url
+from pigeon.update_check import _branch_candidates, github_auth_headers, github_http_get, github_repo_url
 
 _UA = "Pigeon/0.7 (github-update)"
 _LAUNCHER_NAMES = ("run_pigeon_0_7.sh", "run_pigeon_0_6.sh", "Run-Pigeon", "run-pigeon.sh")
@@ -62,9 +61,11 @@ def resolve_install_root(*, script_path: str | Path | None = None) -> Path | Non
 
 
 def github_zipball_url(*, branch: str) -> str:
-    user = os.environ.get("PIGEON_UPDATE_GITHUB_USER", "jasonhenle").strip()
-    repo = os.environ.get("PIGEON_UPDATE_GITHUB_REPO", "pigeon_0.7.x").strip()
-    br = branch.strip()
+    from pigeon.update_check import _ascii_only
+
+    user = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_USER", "jasonhenle").strip())
+    repo = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_REPO", "pigeon_0.7.x").strip())
+    br = _ascii_only(branch.strip())
     return f"https://github.com/{user}/{repo}/archive/refs/heads/{br}.zip"
 
 
@@ -105,7 +106,7 @@ def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
             cmd.append(f"--exclude={ex}")
         cmd.extend([f"{source}/", f"{dest}/"])
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         except OSError as e:
             return False, str(e)
         if proc.returncode != 0:
@@ -162,6 +163,8 @@ def _run_bootstrap(install_root: Path) -> tuple[bool, str]:
             cwd=str(install_root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=600,
         )
@@ -200,11 +203,8 @@ def apply_github_update(
         tmp_zip = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
         tmp_zip.close()
         zip_path = Path(tmp_zip.name)
-        req = urlopen(Request(url, headers=github_auth_headers(user_agent=_UA)), timeout=timeout_s)  # noqa: S310
-        try:
-            zip_path.write_bytes(req.read())
-        finally:
-            req.close()
+        body = github_http_get(url, timeout_s=timeout_s, headers=github_auth_headers(user_agent=_UA))
+        zip_path.write_bytes(body)
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="pigeon-update-"))
         with zipfile.ZipFile(zip_path, "r") as zf:
