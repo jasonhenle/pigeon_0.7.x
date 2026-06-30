@@ -27,9 +27,8 @@ _UA = "Pigeon/0.7 (update-check)"
 _VERSION_FIELD_RE = re.compile(r"^(MAJOR|MINOR|PATCH)\s*=\s*(\d+)\s*$", re.MULTILINE)
 
 
-def github_auth_headers(*, user_agent: str | None = None) -> dict[str, str]:
-    """Optional token via env or ``~/.pigeon_0_6/github_update_token`` (private repos)."""
-    headers = {"User-Agent": user_agent or _UA}
+def github_token() -> str:
+    """Token from env or ``~/.pigeon_0_6/github_update_token``."""
     token = os.environ.get("PIGEON_UPDATE_GITHUB_TOKEN", "").strip()
     if not token:
         token = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -40,6 +39,13 @@ def github_auth_headers(*, user_agent: str | None = None) -> dict[str, str]:
                 token = token_path.read_text(encoding="utf-8").strip()
         except OSError:
             token = ""
+    return token
+
+
+def github_auth_headers(*, user_agent: str | None = None) -> dict[str, str]:
+    """Optional token for private repos."""
+    headers = {"User-Agent": user_agent or _UA}
+    token = github_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -90,19 +96,40 @@ def version_py_raw_url(*, branch: str | None = None, path: str | None = None) ->
     return f"https://raw.githubusercontent.com/{user}/{repo}/{br}/{rel}"
 
 
-def _fetch_version_text(url: str, *, timeout_s: float) -> tuple[str | None, str | None]:
-    req = urllib.request.Request(url, headers=github_auth_headers())
+def version_py_api_url(*, branch: str | None = None, path: str | None = None) -> str:
+    from urllib.parse import quote
+
+    user = os.environ.get("PIGEON_UPDATE_GITHUB_USER", _DEFAULT_GITHUB_USER).strip()
+    repo = os.environ.get("PIGEON_UPDATE_GITHUB_REPO", _DEFAULT_GITHUB_REPO).strip()
+    br = (branch or _branch_candidates()[0]).strip()
+    rel = (path or _path_candidates()[0]).strip().lstrip("/")
+    return f"https://api.github.com/repos/{user}/{repo}/contents/{quote(rel, safe='/')}?ref={br}"
+
+
+def _private_repo_hint() -> str:
+    user = os.environ.get("PIGEON_UPDATE_GITHUB_USER", _DEFAULT_GITHUB_USER).strip()
+    repo = os.environ.get("PIGEON_UPDATE_GITHUB_REPO", _DEFAULT_GITHUB_REPO).strip()
+    return (
+        f"The GitHub repo ({user}/{repo}) is private.\n\n"
+        "Create a one-line file on this Pi:\n"
+        "  ~/.pigeon_0_6/github_update_token\n\n"
+        "Put a GitHub personal access token with read access to that repo, "
+        "then tap Updates again.\n\n"
+        "Or reinstall from a fresh pigeon_*_raspberry_pi.tar.gz built on your Mac."
+    )
+
+
+def _fetch_version_text(url: str, *, timeout_s: float, api: bool = False) -> tuple[str | None, str | None]:
+    headers = github_auth_headers()
+    if api:
+        headers["Accept"] = "application/vnd.github.raw"
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             return resp.read().decode("utf-8", errors="replace"), None
     except urllib.error.HTTPError as e:
-        hint = ""
-        if e.code == 404:
-            hint = (
-                " (GitHub returned 404 — if the repo is private, set "
-                "PIGEON_UPDATE_GITHUB_TOKEN on the Pi.)"
-            )
-        return None, f"GitHub HTTP {e.code}: {e.reason}{hint}"
+        return None, f"HTTP {e.code}"
     except urllib.error.URLError as e:
         return None, f"Network error: {e.reason}"
     except OSError as e:
@@ -111,22 +138,46 @@ def _fetch_version_text(url: str, *, timeout_s: float) -> tuple[str | None, str 
 
 def fetch_remote_version_tuple(*, timeout_s: float = 12.0) -> tuple[tuple[int, int, int] | None, str | None, str | None, str | None]:
     """Return ``(remote_tuple, error_message, winning_raw_url, github_branch)``."""
-    errors: list[str] = []
+    token = github_token()
+    saw_404 = False
+    saw_auth_fail = False
     for branch in _branch_candidates():
         for path in _path_candidates():
-            url = version_py_raw_url(branch=branch, path=path)
-            body, err = _fetch_version_text(url, timeout_s=timeout_s)
-            if body is None:
-                if err:
-                    errors.append(f"{url}: {err}")
-                continue
-            remote = parse_version_py(body)
-            if remote is None:
-                errors.append(f"{url}: could not parse version.py")
-                continue
-            return remote, None, url, branch
-    detail = errors[0] if errors else "version.py not found on GitHub"
-    return None, detail, version_py_raw_url(), None
+            attempts: list[tuple[str, bool]] = []
+            if token:
+                attempts.append((version_py_api_url(branch=branch, path=path), True))
+            attempts.append((version_py_raw_url(branch=branch, path=path), False))
+            for url, api in attempts:
+                body, err = _fetch_version_text(url, timeout_s=timeout_s, api=api)
+                if body is None:
+                    if err == "HTTP 404":
+                        saw_404 = True
+                    elif err in ("HTTP 401", "HTTP 403"):
+                        saw_auth_fail = True
+                    continue
+                remote = parse_version_py(body)
+                if remote is None:
+                    continue
+                return remote, None, url, branch
+    if not token and saw_404:
+        return None, _private_repo_hint(), version_py_raw_url(), None
+    if saw_auth_fail:
+        return (
+            None,
+            "GitHub rejected the update token (HTTP 401/403).\n\n"
+            "Check ~/.pigeon_0_6/github_update_token — it needs read access to the repo.",
+            version_py_raw_url(),
+            None,
+        )
+    if saw_404:
+        return (
+            None,
+            "version.py was not found on GitHub for branch "
+            f"{_branch_candidates()[0]!r}. Push the latest code to experiment.",
+            version_py_raw_url(),
+            None,
+        )
+    return None, "Could not reach GitHub to check for updates.", version_py_raw_url(), None
 
 
 def parse_version_py(text: str) -> tuple[int, int, int] | None:

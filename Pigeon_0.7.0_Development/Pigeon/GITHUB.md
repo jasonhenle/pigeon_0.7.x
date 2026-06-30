@@ -61,6 +61,27 @@ Quit and relaunch Pigeon when prompted.
 
 If the button stays gray, you are already on the latest version GitHub reports, or `version.py` is not yet pushed to the branch Pigeon checks.
 
+### Private repository (required on Raspberry Pi)
+
+`jasonhenle/pigeon_0.5` is **private**. Without a token, GitHub returns **404** and Updates cannot work.
+
+On the Pi (once):
+
+```bash
+mkdir -p ~/.pigeon_0_6
+nano ~/.pigeon_0_6/github_update_token
+```
+
+Paste a [GitHub personal access token](https://github.com/settings/tokens) with **read** access to `pigeon_0.5`, save, then:
+
+```bash
+chmod 600 ~/.pigeon_0_6/github_update_token
+```
+
+Restart Pigeon and tap **Updates** again.
+
+Alternative: set `PIGEON_UPDATE_GITHUB_TOKEN` in the environment before launching Pigeon.
+
 ---
 
 ## Version bumps (for maintainers)
@@ -80,5 +101,6 @@ On each release pushed to GitHub, bump **`pigeonSystem/pigeon/version.py`** (`MA
 | `PIGEON_UPDATE_GITHUB_USER` | Default `jasonhenle` |
 | `PIGEON_UPDATE_GITHUB_REPO` | Default `pigeon_0.5` |
 | `PIGEON_UPDATE_GITHUB_BRANCH` | Branch for version check and zip download |
+| `PIGEON_UPDATE_GITHUB_TOKEN` | GitHub PAT for private repo (or use `~/.pigeon_0_6/github_update_token`) |
 | `PIGEON_UPDATE_GITHUB_RAW` | Full URL to `version.py` (advanced) |
 | `PIGEON_STATE_DIR` | Settings directory (default `~/.pigeon_0_6`) |

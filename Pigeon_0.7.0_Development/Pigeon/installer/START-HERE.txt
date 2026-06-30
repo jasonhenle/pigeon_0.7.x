@@ -15,6 +15,12 @@ Steps:
 
 Then use Run-Pigeon on your Desktop to launch Pigeon.
 
+In-app updates (private GitHub repo)
+------------------------------------
+This project uses a private GitHub repo. For Settings → Updates to work on the Pi,
+create ~/.pigeon_0_6/github_update_token containing a GitHub personal access token
+(read access to jasonhenle/pigeon_0.5). See GITHUB.md for details.
+
 Metadata and TMDb artwork (IMPORTANT on Pi)
 -------------------------------------------
 The Pi does not get your Mac's TMDb key or Apple TV pairing automatically.
