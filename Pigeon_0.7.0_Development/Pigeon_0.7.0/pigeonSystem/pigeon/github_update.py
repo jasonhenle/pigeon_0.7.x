@@ -9,13 +9,14 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from pigeon.runtime_paths import PIGEON_STATE_DIR_TILDE, pigeon_state_dir
-from pigeon.update_check import _branch_candidates, github_repo_url
+from pigeon.update_check import _branch_candidates, github_auth_headers, github_repo_url
 
 _UA = "Pigeon/0.7 (github-update)"
 _LAUNCHER_NAMES = ("run_pigeon_0_7.sh", "run_pigeon_0_6.sh", "Run-Pigeon", "run-pigeon.sh")
+_INSTALLER_DIR = "installer"
 _MAIN_PY_NAMES = ("pigeon_0_7.py", "pigeon_0_6.py")
 
 
@@ -26,8 +27,19 @@ class ApplyUpdateResult:
     remote_version: str | None = None
 
 
+def _has_launcher(root: Path) -> bool:
+    """True if ``root`` has a known launcher in ``installer/`` (or legacy at root)."""
+    installer = root / _INSTALLER_DIR
+    for name in _LAUNCHER_NAMES:
+        if (installer / name).is_file():
+            return True
+        if (root / name).is_file():
+            return True
+    return False
+
+
 def resolve_install_root(*, script_path: str | Path | None = None) -> Path | None:
-    """Return the Pigeon app folder (contains ``run_pigeon_0_7.sh`` and ``pigeonSystem/``)."""
+    """Return the Pigeon app folder (contains ``installer/`` launchers and ``pigeonSystem/``)."""
     candidates: list[Path] = []
     if script_path:
         p = Path(script_path).resolve()
@@ -44,9 +56,7 @@ def resolve_install_root(*, script_path: str | Path | None = None) -> Path | Non
         if key in seen:
             continue
         seen.add(key)
-        if any((b / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and any(
-            (b / name).is_file() for name in _LAUNCHER_NAMES
-        ):
+        if any((b / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and _has_launcher(b):
             return b
     return None
 
@@ -65,14 +75,14 @@ def github_full_download_page_url() -> str:
 
 
 def _find_app_root_in_tree(root: Path) -> Path | None:
-    if any((root / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and any(
-        (root / name).is_file() for name in _LAUNCHER_NAMES
-    ):
+    if any((root / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and _has_launcher(root):
         return root
     try:
         for pattern in ("run_pigeon_0_7.sh", "run_pigeon_0_6.sh"):
             for launcher in root.rglob(pattern):
                 parent = launcher.parent
+                if parent.name == _INSTALLER_DIR:
+                    parent = parent.parent
                 if any((parent / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES):
                     return parent
     except OSError:
@@ -105,10 +115,14 @@ def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
 
     # Fallback when rsync is unavailable (minimal copy of pigeonSystem + launchers).
     try:
+        dst_installer = dest / _INSTALLER_DIR
+        dst_installer.mkdir(parents=True, exist_ok=True)
         for name in _LAUNCHER_NAMES:
-            src_f = source / name
+            src_f = source / _INSTALLER_DIR / name
+            if not src_f.is_file():
+                src_f = source / name
             if src_f.is_file():
-                shutil.copy2(src_f, dest / name)
+                shutil.copy2(src_f, dst_installer / name)
         src_sys = source / "pigeonSystem"
         dst_sys = dest / "pigeonSystem"
         if src_sys.is_dir():
@@ -119,7 +133,7 @@ def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
                 dst_sys,
                 ignore=shutil.ignore_patterns(".venv", "__pycache__", ".cursor"),
             )
-        for sub in ("installer", "raspberryPi", "setup"):
+        for sub in ("installer", "raspberryPi"):
             src_sub = source / sub
             if src_sub.is_dir():
                 dst_sub = dest / sub
@@ -132,7 +146,12 @@ def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
 
 
 def _run_bootstrap(install_root: Path) -> tuple[bool, str]:
-    launcher = install_root / "run_pigeon_0_7.sh"
+    installer = install_root / _INSTALLER_DIR
+    launcher = installer / "run_pigeon_0_7.sh"
+    if not launcher.is_file():
+        launcher = installer / "run_pigeon_0_6.sh"
+    if not launcher.is_file():
+        launcher = install_root / "run_pigeon_0_7.sh"
     if not launcher.is_file():
         launcher = install_root / "run_pigeon_0_6.sh"
     if not launcher.is_file():
@@ -176,7 +195,7 @@ def apply_github_update(
         tmp_zip = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
         tmp_zip.close()
         zip_path = Path(tmp_zip.name)
-        req = urlopen(url, timeout=timeout_s)  # noqa: S310
+        req = urlopen(Request(url, headers=github_auth_headers(user_agent=_UA)), timeout=timeout_s)  # noqa: S310
         try:
             zip_path.write_bytes(req.read())
         finally:
@@ -195,7 +214,7 @@ def apply_github_update(
         if app_src is None:
             return ApplyUpdateResult(
                 False,
-                "Could not find Pigeon app folder (run_pigeon_0_7.sh) inside GitHub zip.",
+                "Could not find Pigeon app folder (installer/run_pigeon_0_7.sh) inside GitHub zip.",
             )
 
         ok, msg = _rsync_merge(app_src, install_root)

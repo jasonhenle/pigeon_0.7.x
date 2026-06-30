@@ -2,11 +2,12 @@
 # Pigeon installer — detects macOS vs Linux / Raspberry Pi and runs the right steps.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+INSTALLER_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "${INSTALLER_DIR}/.." && pwd)"
 
 show_help() {
-  # shellcheck source=installer/common.sh
-  source "${ROOT}/installer/common.sh"
+  # shellcheck source=common.sh
+  source "${INSTALLER_DIR}/common.sh"
   pigeon_print_usage
 }
 
@@ -24,7 +25,7 @@ done
 
 case "$(uname -s)" in
   Darwin)
-    exec bash "${ROOT}/installer/install_mac.sh" "$@"
+    exec bash "${INSTALLER_DIR}/install_mac.sh" "$@"
     ;;
   Linux)
     if [[ -f "${ROOT}/raspberryPi/install_on_pi.sh" ]]; then

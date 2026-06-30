@@ -83,10 +83,10 @@ run_install_logged() {
     echo
     if [[ "${EUID}" -eq 0 ]]; then
       PIGEON_USER="${DESKTOP_USER}" PIGEON_INSTALL_DIR="${INSTALL_DIR}" \
-        bash "${ROOT}/install_pigeon.sh" --in-place
+        bash "${HERE}/install_pigeon.sh" --in-place
     else
       sudo -E PIGEON_USER="${DESKTOP_USER}" PIGEON_INSTALL_DIR="${INSTALL_DIR}" \
-        bash "${ROOT}/install_pigeon.sh" --in-place
+        bash "${HERE}/install_pigeon.sh" --in-place
     fi
   } > >(tee "${LOG_FILE}") 2>&1
   rc=${PIPESTATUS[0]}

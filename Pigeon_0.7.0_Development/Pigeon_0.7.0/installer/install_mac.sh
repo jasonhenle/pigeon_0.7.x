@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "install_mac.sh is for macOS only. Use ./install_pigeon.sh on Linux." >&2
+  echo "install_mac.sh is for macOS only. Use ./installer/install_pigeon.sh on Linux." >&2
   exit 1
 fi
 
@@ -95,17 +95,17 @@ else
 fi
 
 pigeon_prepare_runtime_dirs "${INSTALL_DIR}"
-chmod +x "${INSTALL_DIR}/run_pigeon_0_7.command" "${INSTALL_DIR}/run_pigeon_0_7.sh" 2>/dev/null || true
-chmod +x "${INSTALL_DIR}/install_pigeon.sh" "${INSTALL_DIR}/install_pigeon.command" 2>/dev/null || true
+chmod +x "${INSTALL_DIR}/installer/run_pigeon_0_7.command" "${INSTALL_DIR}/installer/run_pigeon_0_7.sh" 2>/dev/null || true
+chmod +x "${INSTALL_DIR}/installer/install_pigeon.sh" "${INSTALL_DIR}/installer/install_pigeon.command" 2>/dev/null || true
 
 echo "==> Creating Python environment and installing dependencies (first run may take a minute)…"
-bash "${INSTALL_DIR}/run_pigeon_0_7.command" --help >/dev/null
+bash "${INSTALL_DIR}/installer/run_pigeon_0_7.command" --help >/dev/null
 
 if [[ "${MAKE_SHORTCUT}" -eq 1 ]]; then
   SHORTCUT="${HOME}/Desktop/Pigeon.command"
   cat > "${SHORTCUT}" <<EOF
 #!/bin/bash
-exec "${INSTALL_DIR}/run_pigeon_0_7.command"
+exec "${INSTALL_DIR}/installer/run_pigeon_0_7.command"
 EOF
   chmod +x "${SHORTCUT}"
   echo "==> Desktop shortcut: ${SHORTCUT}"
@@ -115,7 +115,7 @@ echo ""
 echo "Pigeon ${VERSION} is installed."
 echo ""
 echo "  Install folder: ${INSTALL_DIR}"
-echo "  Launch:         ${INSTALL_DIR}/run_pigeon_0_7.command"
+echo "  Launch:         ${INSTALL_DIR}/installer/run_pigeon_0_7.command"
 if [[ "${MAKE_SHORTCUT}" -eq 1 ]]; then
   echo "  Or double-click: ~/Desktop/Pigeon.command"
 fi

@@ -4,10 +4,17 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
-INSTALL_DIR="${PIGEON_INSTALL_DIR:-${HOME}/Pigeon_0.7.0}"
+# shellcheck source=common.sh
+source "${HERE}/common.sh"
+INSTALL_DIR="${PIGEON_INSTALL_DIR:-${HOME}/$(pigeon_install_dir_basename "${ROOT}")}"
 
-if [[ -x "${INSTALL_DIR}/run_pigeon_0_7.sh" ]]; then
+if [[ -x "${INSTALL_DIR}/installer/run_pigeon_0_7.sh" ]]; then
   cd "${INSTALL_DIR}"
+  exec ./installer/run_pigeon_0_7.sh
+fi
+
+if [[ -x "${HERE}/run_pigeon_0_7.sh" ]]; then
+  cd "${HERE}"
   exec ./run_pigeon_0_7.sh
 fi
 

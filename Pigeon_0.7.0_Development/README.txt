@@ -6,8 +6,8 @@ Active development lives here:
   Pigeon_0.7.0/          Runnable app (Mac + Pi scripts)
   testingEnvironments/   Standalone UI / widget previews
 
-Mac: open Pigeon_0.7.0 and run install_pigeon.command or run_pigeon_0_7.command
-Pi:  see Pigeon_0.7.0/START-HERE.txt
+Mac: open Pigeon_0.7.0/installer and run install_pigeon.command or run_pigeon_0_7.command
+Pi:  see Pigeon_0.7.0/installer/START-HERE.txt
 
 Settings and credentials stay in ~/.pigeon_0_6 (shared with 0.6 installs).
 

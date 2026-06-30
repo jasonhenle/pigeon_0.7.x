@@ -11,8 +11,13 @@ pigeon_version_string() {
   if [[ -n "${version}" ]]; then
     echo "${version}"
   else
-    echo "0.7.0"
+    echo "0.7.5"
   fi
+}
+
+pigeon_install_dir_basename() {
+  local root="${1}"
+  echo "Pigeon_$(pigeon_version_string "${root}")"
 }
 
 pigeon_rsync_tree() {
@@ -45,7 +50,7 @@ pigeon_print_usage() {
 Pigeon installer
 
 Usage:
-  ./install_pigeon.sh [options]
+  ./installer/install_pigeon.sh [options]
 
 Options:
   --dir PATH       Install location (default: platform-specific)
@@ -58,7 +63,7 @@ macOS default install dir:  ~/Applications/Pigeon_0.7.0
 Linux / Pi default dir:   ~/Pigeon_0.7.0
 
 After install, launch with:
-  macOS:  ~/Desktop/Pigeon.command   (or run_pigeon_0_7.command in the install folder)
-  Linux:  ./run_pigeon_0_7.sh        (in the install folder)
+  macOS:  ~/Desktop/Pigeon.command   (or installer/run_pigeon_0_7.command in the install folder)
+  Linux:  ./installer/run_pigeon_0_7.sh (in the install folder)
 EOF
 }

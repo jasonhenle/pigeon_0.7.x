@@ -1,6 +1,6 @@
 #!/bin/bash
 # Install Pigeon on Raspberry Pi OS / Debian Linux (apt, venv, optional systemd autostart).
-# Prefer the top-level installer:  ./install_pigeon.sh
+# Prefer the top-level installer:  ./installer/install_pigeon.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +10,8 @@ source "${PIGEON_ROOT}/installer/common.sh"
 
 INSTALL_USER="${PIGEON_USER:-${SUDO_USER:-$(logname 2>/dev/null || echo "${USER:-pi}")}}"
 INSTALL_HOME="$(getent passwd "${INSTALL_USER}" 2>/dev/null | cut -d: -f6 || echo "/home/${INSTALL_USER}")"
-INSTALL_DIR="${PIGEON_INSTALL_DIR:-${INSTALL_HOME}/Pigeon_0.7.0}"
+PIGEON_VERSION="$(pigeon_version_string "${PIGEON_ROOT}")"
+INSTALL_DIR="${PIGEON_INSTALL_DIR:-${INSTALL_HOME}/Pigeon_${PIGEON_VERSION}}"
 IN_PLACE=0
 ENABLE_AUTOSTART=1
 MAKE_SHORTCUTS=1
@@ -63,7 +64,7 @@ if [[ "${EUID}" -ne 0 ]]; then
     bash "$0" "$@"
 fi
 
-VERSION="$(pigeon_version_string "${PIGEON_ROOT}")"
+VERSION="${PIGEON_VERSION}"
 echo "==> Pigeon ${VERSION} installer (Linux / Raspberry Pi)"
 
 pigeon_check_network() {
@@ -130,7 +131,7 @@ pigeon_install_setup_secrets() {
   mkdir -p "${dest_dir}"
   chown "${INSTALL_USER}:${INSTALL_USER}" "${dest_dir}"
   for name in tmdb_api_key tmdb_read_token pyatv_credentials; do
-    local src="${INSTALL_DIR}/setup/${name}"
+    local src="${INSTALL_DIR}/installer/setup/${name}"
     local dst="${dest_dir}/${name}"
     if [[ -f "${src}" && ! -f "${dst}" ]]; then
       install -m 600 -o "${INSTALL_USER}" -g "${INSTALL_USER}" "${src}" "${dst}"
@@ -152,19 +153,19 @@ fi
 pigeon_prepare_runtime_dirs "${INSTALL_DIR}"
 chown -R "${INSTALL_USER}:${INSTALL_USER}" "${INSTALL_DIR}"
 chmod +x \
-  "${INSTALL_DIR}/run_pigeon_0_7.sh" \
-  "${INSTALL_DIR}/install_pigeon.sh" \
-  "${INSTALL_DIR}/install-pigeon.sh" \
-  "${INSTALL_DIR}/run-pigeon.sh" \
-  "${INSTALL_DIR}/Install-Pigeon" \
-  "${INSTALL_DIR}/Run-Pigeon" \
+  "${INSTALL_DIR}/installer/run_pigeon_0_7.sh" \
+  "${INSTALL_DIR}/installer/install_pigeon.sh" \
+  "${INSTALL_DIR}/installer/install-pigeon.sh" \
+  "${INSTALL_DIR}/installer/run-pigeon.sh" \
+  "${INSTALL_DIR}/installer/Install-Pigeon" \
+  "${INSTALL_DIR}/installer/Run-Pigeon" \
   "${INSTALL_DIR}/installer/click_install_pi.sh" \
   "${INSTALL_DIR}/installer/click_run_pigeon_pi.sh" \
-  "${INSTALL_DIR}/Install-Pigeon.desktop" \
-  "${INSTALL_DIR}/Run-Pigeon.desktop" 2>/dev/null || true
+  "${INSTALL_DIR}/installer/Install-Pigeon.desktop" \
+  "${INSTALL_DIR}/installer/Run-Pigeon.desktop" 2>/dev/null || true
 
 echo "==> Creating Python virtual environment and installing pip packages (may take several minutes)…"
-if ! sudo -u "${INSTALL_USER}" bash -c "cd '${INSTALL_DIR}' && ./run_pigeon_0_7.sh --bootstrap-only"; then
+if ! sudo -u "${INSTALL_USER}" bash -c "cd '${INSTALL_DIR}' && ./installer/run_pigeon_0_7.sh --bootstrap-only"; then
   echo "pigeon: pip install failed. Common fixes:" >&2
   echo "  - Ensure the Pi has internet" >&2
   echo "  - Re-run Install-Pigeon" >&2
@@ -181,6 +182,7 @@ if [[ "${ENABLE_AUTOSTART}" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; th
     -e "s|@PIGEON_USER@|${INSTALL_USER}|g" \
     -e "s|@PIGEON_HOME@|${INSTALL_HOME}|g" \
     -e "s|@PIGEON_DIR@|${INSTALL_DIR}|g" \
+    -e "s|@PIGEON_VERSION@|${VERSION}|g" \
     "${SCRIPT_DIR}/pigeon.service" > "${SERVICE_PATH}"
   systemctl daemon-reload
   systemctl enable pigeon.service
@@ -189,7 +191,10 @@ fi
 if [[ "${MAKE_SHORTCUTS}" -eq 1 ]]; then
   DESKTOP_DIR="${INSTALL_HOME}/Desktop"
   mkdir -p "${DESKTOP_DIR}"
-  cp "${INSTALL_DIR}/Run-Pigeon" "${DESKTOP_DIR}/Run-Pigeon"
+  cat > "${DESKTOP_DIR}/Run-Pigeon" <<EOF
+#!/bin/bash
+exec bash "${INSTALL_DIR}/installer/click_run_pigeon_pi.sh"
+EOF
   chmod +x "${DESKTOP_DIR}/Run-Pigeon"
   chown "${INSTALL_USER}:${INSTALL_USER}" "${DESKTOP_DIR}/Run-Pigeon"
   cat > "${DESKTOP_DIR}/Run-Pigeon.desktop" <<EOF
@@ -198,7 +203,7 @@ Type=Application
 Name=Run Pigeon
 Comment=Launch Pigeon media display
 TryExec=bash
-Path=${INSTALL_DIR}
+Path=${INSTALL_DIR}/installer
 Exec=bash run-pigeon.sh
 Icon=video-display
 Terminal=false
@@ -216,7 +221,7 @@ echo "Launch from Desktop:"
 echo "  Double-click “Run Pigeon” on the Desktop"
 echo ""
 echo "Or from a folder:"
-echo "  cd '${INSTALL_DIR}' && ./run_pigeon_0_7.sh"
+echo "  cd '${INSTALL_DIR}' && ./installer/run_pigeon_0_7.sh"
 echo ""
 if [[ "${ENABLE_AUTOSTART}" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; then
   echo "Autostart on boot (after graphical login):"
@@ -230,6 +235,6 @@ if [[ "${ENABLE_AUTOSTART}" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; th
 fi
 echo "State and credentials: ${INSTALL_HOME}/.pigeon_0_6 (user ${INSTALL_USER})"
 echo ""
-echo "For metadata + TMDb artwork (copy from Mac or add setup/ files before install):"
-echo "  ${INSTALL_DIR}/setup/README.txt"
+echo "For metadata + TMDb artwork (copy from Mac or add installer/setup/ files before install):"
+echo "  ${INSTALL_DIR}/installer/setup/README.txt"
 echo ""

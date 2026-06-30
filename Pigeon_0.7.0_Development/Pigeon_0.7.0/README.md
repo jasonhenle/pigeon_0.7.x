@@ -8,7 +8,9 @@ Pigeon is a full-screen media display and control surface. It can show playback 
 
 ## Core folder map
 
-- `run_pigeon_0_7.command`: launch script for this build.
+- `installer/`: install and launch scripts for this build.
+  - `installer/run_pigeon_0_7.command`: macOS launch script.
+  - `installer/run_pigeon_0_7.sh`: Linux / Pi launch script.
 - `pigeonSystem/`: all runnable code and system modules for this build.
   - main app entrypoint: `pigeonSystem/pigeon_0_5.py`
   - package code: `pigeonSystem/pigeon/`

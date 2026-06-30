@@ -1683,12 +1683,7 @@ def main() -> int:
                     state=tk.NORMAL,
                 )
 
-        def _on_updates_button() -> None:
-            if not update_check_state.get("update_available"):
-                return
-            if update_check_state.get("applying"):
-                return
-            remote = str(update_check_state.get("remote_version") or "?")
+        def _begin_apply_update(*, remote: str, branch: object) -> None:
             local = version_string()
             if not messagebox.askyesno(
                 "Install update",
@@ -1705,7 +1700,14 @@ def main() -> int:
                 return
 
             install_root = Path(__file__).resolve().parent.parent
-            branch = update_check_state.get("github_branch")
+            try:
+                from pigeon.github_update import resolve_install_root
+
+                resolved = resolve_install_root(script_path=__file__)
+                if resolved is not None:
+                    install_root = resolved
+            except Exception:
+                pass
             progress = tk.Toplevel(root)
             progress.title("Updating Pigeon")
             progress.transient(root)
@@ -1755,6 +1757,83 @@ def main() -> int:
                         )
 
                 root.after(0, finish_apply)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _on_updates_button() -> None:
+            if update_check_state.get("applying") or update_check_state.get("checking"):
+                return
+
+            progress = tk.Toplevel(root)
+            progress.title("Updates")
+            progress.transient(root)
+            progress.grab_set()
+            status_var = tk.StringVar(value="Checking GitHub for updates…")
+            tk.Label(progress, textvariable=status_var, padx=16, pady=16).pack()
+            update_check_state["checking"] = True
+            update_btn.configure(state=tk.DISABLED)
+
+            def worker() -> None:
+                try:
+                    from pigeon.update_check import check_for_update
+
+                    result = check_for_update()
+                except Exception as e:
+                    from pigeon.update_check import UpdateCheckResult
+
+                    result = UpdateCheckResult(
+                        local_version=version_string(),
+                        remote_version=None,
+                        update_available=False,
+                        error=str(e),
+                    )
+
+                def finish_check() -> None:
+                    update_check_state["checking"] = False
+                    _finish_update_check(result)
+                    try:
+                        progress.grab_release()
+                        progress.destroy()
+                    except tk.TclError:
+                        pass
+                    update_btn.configure(state=tk.NORMAL)
+
+                    from pigeon.update_check import UpdateCheckResult
+
+                    if not isinstance(result, UpdateCheckResult):
+                        return
+                    if result.error:
+                        messagebox.showerror(
+                            "Updates",
+                            f"Could not check GitHub for updates.\n\n"
+                            f"Installed: {result.local_version}\n\n"
+                            f"{result.error}",
+                            parent=root,
+                        )
+                        return
+                    if result.update_available:
+                        _begin_apply_update(
+                            remote=str(result.remote_version or "?"),
+                            branch=result.github_branch,
+                        )
+                        return
+                    remote = result.remote_version
+                    if remote:
+                        body = (
+                            f"You are on the latest version GitHub reports.\n\n"
+                            f"Installed: {result.local_version}\n"
+                            f"GitHub:    {remote}"
+                        )
+                    else:
+                        body = (
+                            f"No update information from GitHub.\n\n"
+                            f"Installed: {result.local_version}\n\n"
+                            f"If the repo is private, set PIGEON_UPDATE_GITHUB_TOKEN "
+                            f"in the environment and try again."
+                        )
+                    messagebox.showinfo("Updates", body, parent=root)
+
+                root.after(0, finish_check)
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -5561,7 +5640,7 @@ def main() -> int:
                     hint = (
                         "pigeon: TMDb not configured — skipping artwork fetch. "
                         f"Add API key to {pigeon_state_dir() / 'tmdb_api_key'} "
-                        "(see setup/README on Pi)."
+                        "(see installer/setup/README on Pi)."
                     )
                     sys.stderr.write(hint + "\n")
                     sys.stderr.flush()

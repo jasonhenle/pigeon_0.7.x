@@ -1,5 +1,5 @@
 [Unit]
-Description=Pigeon media display (0.7)
+Description=Pigeon media display (@PIGEON_VERSION@)
 After=network-online.target graphical.target
 Wants=network-online.target
 
@@ -19,7 +19,7 @@ Environment=PIGEON_PI_FULLSCREEN=1
 Environment=PIGEON_APPLE_TV_SCAN_TIMEOUT=12
 # Wait for the desktop session before starting Tk.
 ExecStartPre=/bin/sleep 8
-ExecStart=@PIGEON_DIR@/run_pigeon_0_7.sh
+ExecStart=@PIGEON_DIR@/installer/run_pigeon_0_7.sh
 Restart=on-failure
 RestartSec=5
 

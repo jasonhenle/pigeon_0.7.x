@@ -6,7 +6,7 @@ There is only ONE installer to use:
     Install-Pigeon
 
 Steps:
-  1. Open this Pigeon_0.7.0 folder.
+  1. Open the Pigeon_0.7.0/installer folder.
   2. Double-click Install-Pigeon.
   3. Choose Execute (or Execute in terminal).
   4. Click Continue in the dialog.
@@ -22,7 +22,7 @@ The Pi does not get your Mac's TMDb key or Apple TV pairing automatically.
 Easiest fix: copy your Mac state folder to the Pi:
   scp -r ~/.pigeon_0_6 pi@YOUR_PI_ADDRESS:~/.pigeon_0_6
 
-Or read setup/README.txt in this folder before installing.
+Or read installer/setup/README.txt before installing.
 
 After running Pigeon once, check logs on the Pi:
   ~/.pigeon_0_6/pigeon.log

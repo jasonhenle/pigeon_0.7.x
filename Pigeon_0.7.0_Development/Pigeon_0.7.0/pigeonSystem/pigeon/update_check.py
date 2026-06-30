@@ -7,6 +7,7 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 from pigeon.version import version_string, version_tuple
 
@@ -22,6 +23,24 @@ _DEFAULT_VERSION_PATHS: tuple[str, ...] = (
 )
 _UA = "Pigeon/0.7 (update-check)"
 _VERSION_FIELD_RE = re.compile(r"^(MAJOR|MINOR|PATCH)\s*=\s*(\d+)\s*$", re.MULTILINE)
+
+
+def github_auth_headers(*, user_agent: str | None = None) -> dict[str, str]:
+    """Optional token via env or ``~/.pigeon_0_6/github_update_token`` (private repos)."""
+    headers = {"User-Agent": user_agent or _UA}
+    token = os.environ.get("PIGEON_UPDATE_GITHUB_TOKEN", "").strip()
+    if not token:
+        token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        try:
+            token_path = Path.home() / ".pigeon_0_6" / "github_update_token"
+            if token_path.is_file():
+                token = token_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 @dataclass(frozen=True)
@@ -70,12 +89,18 @@ def version_py_raw_url(*, branch: str | None = None, path: str | None = None) ->
 
 
 def _fetch_version_text(url: str, *, timeout_s: float) -> tuple[str | None, str | None]:
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    req = urllib.request.Request(url, headers=github_auth_headers())
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             return resp.read().decode("utf-8", errors="replace"), None
     except urllib.error.HTTPError as e:
-        return None, f"GitHub HTTP {e.code}: {e.reason}"
+        hint = ""
+        if e.code == 404:
+            hint = (
+                " (GitHub returned 404 — if the repo is private, set "
+                "PIGEON_UPDATE_GITHUB_TOKEN on the Pi.)"
+            )
+        return None, f"GitHub HTTP {e.code}: {e.reason}{hint}"
     except urllib.error.URLError as e:
         return None, f"Network error: {e.reason}"
     except OSError as e:

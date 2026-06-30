@@ -1,4 +1,4 @@
 #!/bin/bash
 # Double-click this file on Raspberry Pi (choose Execute).
 cd "$(dirname "$0")"
-exec bash ./installer/click_run_pigeon_pi.sh
+exec bash ./click_run_pigeon_pi.sh

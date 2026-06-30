@@ -18,16 +18,16 @@ Use this for a new Mac, a new Pi, or a second machine.
 2. Unzip the archive.
 3. Go to:  
    **`Pigeon_0.7.0_Development/Pigeon_0.7.0/`** inside the extracted folder.
-4. **Mac:** run `install_pigeon.command` or `./install_pigeon.sh`  
-   **Pi:** double-click **Install-Pigeon** (see `START-HERE.txt`).
+4. **Mac:** run `installer/install_pigeon.command` or `./installer/install_pigeon.sh`  
+   **Pi:** open `installer/` and double-click **Install-Pigeon** (see `installer/START-HERE.txt`).
 
 ### Option B — Clone with git
 
 ```bash
 git clone -b experiment https://github.com/jasonhenle/pigeon_0.5.git
 cd pigeon_0.5/Pigeon_0.7.0_Development/Pigeon_0.7.0
-./install_pigeon.sh          # Mac
-# or Install-Pigeon on Pi
+./installer/install_pigeon.sh   # Mac
+# or installer/Install-Pigeon on Pi
 ```
 
 ### What lives where after install
@@ -37,7 +37,7 @@ cd pigeon_0.5/Pigeon_0.7.0_Development/Pigeon_0.7.0
 | App folder (e.g. `~/Pigeon_0.7.0`, `~/Applications/Pigeon_0.7.0`) | Code, launcher, venv, local TMDb cache folders |
 | `~/.pigeon_0_6/` | **Settings:** locations, devices, TMDb API key, Apple TV pairing, logs |
 
-Copy **`~/.pigeon_0_6/`** from another machine to move settings (see `setup/README.txt` on Pi).
+Copy **`~/.pigeon_0_6/`** from another machine to move settings (see `installer/setup/README.txt` on Pi).
 
 ---
 
@@ -53,7 +53,7 @@ Pigeon will:
 
 - Download the latest app tree from GitHub (zip of the tracked branch).
 - Merge into your **current install folder** only.
-- Refresh Python dependencies (`run_pigeon_0_7.sh --bootstrap-only`).
+- Refresh Python dependencies (`installer/run_pigeon_0_7.sh --bootstrap-only`).
 - **Not** modify `~/.pigeon_0_6/` (devices, TMDb key, pairing, locations).
 - **Not** replace `pigeonTMDB/` cached artwork or `pigeonSystem/.venv` (venv is refreshed, not deleted blindly).
 

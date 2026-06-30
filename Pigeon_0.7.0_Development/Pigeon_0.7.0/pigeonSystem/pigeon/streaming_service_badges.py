@@ -14,6 +14,7 @@ from pathlib import Path
 APP_LOGOS_REL_DIR = "App logos"
 
 _LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".svg")
+_LOGO_EXTENSIONS_LOWER = frozenset(e.lower() for e in _LOGO_EXTENSIONS)
 
 # Order: first matching rule wins.
 # ``bundle_contains`` / ``name_contains`` are matched case-insensitively (substring).
@@ -31,6 +32,7 @@ _RULES: tuple[
     ("hbomax", None, ("HBOMax",), "HBO Max", ()),
     ("com.wbd", None, ("HBOMax",), "Max", ()),
     (None, "hbo max", ("HBOMax",), "HBO Max", ()),
+    (None, "max", ("HBOMax", "Max"), "Max", ()),
     ("paramount", None, ("ParamountPlus",), "Paramount+", ()),
     (None, "paramount+", ("ParamountPlus",), "Paramount+", ()),
     (None, "paramount plus", ("ParamountPlus",), "Paramount+", ()),
@@ -66,6 +68,8 @@ _RULES: tuple[
 
 def _first_app_logo_relpath(assets_root: Path, stems: tuple[str, ...]) -> str | None:
     logos_dir = assets_root / APP_LOGOS_REL_DIR
+    if not logos_dir.is_dir():
+        return None
     for stem_suffix in stems:
         base = f"AppLogo_{stem_suffix}"
         for ext in _LOGO_EXTENSIONS:
@@ -73,6 +77,16 @@ def _first_app_logo_relpath(assets_root: Path, stems: tuple[str, ...]) -> str | 
             p = logos_dir / name
             if p.is_file():
                 return f"{APP_LOGOS_REL_DIR}/{name}"
+        # Linux/Pi: shipped assets often use ``.PNG`` / ``.WEBP`` (macOS is case-insensitive).
+        base_lower = base.lower()
+        try:
+            for p in sorted(logos_dir.iterdir()):
+                if not p.is_file():
+                    continue
+                if p.stem.lower() == base_lower and p.suffix.lower() in _LOGO_EXTENSIONS_LOWER:
+                    return f"{APP_LOGOS_REL_DIR}/{p.name}"
+        except OSError:
+            pass
     return None
 
 

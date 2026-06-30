@@ -1,18 +1,23 @@
 #!/bin/bash
 # Build a Raspberry Pi–ready tarball from this Mac (or any Linux host).
-# Output: raspberryPi/dist/pigeon_0.7.0_raspberry_pi.tar.gz
+# Output: raspberryPi/dist/pigeon_<version>_raspberry_pi.tar.gz (version from pigeonSystem/pigeon/version.py)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PIGEON_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=../installer/common.sh
+source "${PIGEON_ROOT}/installer/common.sh"
+
+VERSION="$(pigeon_version_string "${PIGEON_ROOT}")"
+APP_DIR="$(pigeon_install_dir_basename "${PIGEON_ROOT}")"
 DIST_DIR="${SCRIPT_DIR}/dist"
 STAGING="${DIST_DIR}/staging"
-ARCHIVE_NAME="pigeon_0.7.0_raspberry_pi.tar.gz"
+ARCHIVE_NAME="pigeon_${VERSION}_raspberry_pi.tar.gz"
 
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}" "${DIST_DIR}"
 
-echo "==> Staging Pigeon build (excluding Mac venv, caches, and local TMDB art)…"
+echo "==> Staging Pigeon ${VERSION} (excluding Mac venv, caches, and local TMDB art)…"
 rsync -a \
   --exclude '.DS_Store' \
   --exclude 'pigeonSystem/.venv' \
@@ -27,18 +32,18 @@ rsync -a \
   --exclude 'pigeonTMDB/pigeonTMDB_TT' \
   --exclude 'pigeonTMDB/*.jpg' \
   --exclude 'pigeonTMDB/*.png' \
-  --exclude 'install_pigeon.command' \
-  --exclude 'install-pigeon.sh' \
-  --exclude 'Install-Pigeon.desktop' \
-  --exclude 'Run-Pigeon.desktop' \
+  --exclude 'installer/install_pigeon.command' \
+  --exclude 'installer/install-pigeon.sh' \
+  --exclude 'installer/Install-Pigeon.desktop' \
+  --exclude 'installer/Run-Pigeon.desktop' \
   --exclude 'installer/install_mac.sh' \
-  "${PIGEON_ROOT}/" "${STAGING}/Pigeon_0.7.0/"
+  "${PIGEON_ROOT}/" "${STAGING}/${APP_DIR}/"
 
 # Guard against empty or partial staging (e.g. wrong cwd, missing assets after a bad copy).
-STAGING_APP="${STAGING}/Pigeon_0.7.0"
+STAGING_APP="${STAGING}/${APP_DIR}"
 STAGING_BYTES="$(du -sk "${STAGING_APP}" | awk '{print $1}')"
 if [[ ! -f "${STAGING_APP}/pigeonSystem/pigeon_0_7.py" ]]; then
-  echo "ERROR: staging is missing pigeonSystem/pigeon_0_7.py — run from a full Pigeon_0.7.0 tree." >&2
+  echo "ERROR: staging is missing pigeonSystem/pigeon_0_7.py — run from a full Pigeon tree." >&2
   exit 1
 fi
 if [[ ! -d "${STAGING_APP}/pigeonAssets/App logos" ]]; then
@@ -51,24 +56,24 @@ if [[ "${STAGING_BYTES}" -lt 20480 ]]; then
 fi
 
 mkdir -p \
-  "${STAGING}/Pigeon_0.7.0/pigeonCashe" \
-  "${STAGING}/Pigeon_0.7.0/pigeonTMDB/pigeonTMDB_BD" \
-  "${STAGING}/Pigeon_0.7.0/pigeonTMDB/pigeonTMDB_ORIGINAL" \
-  "${STAGING}/Pigeon_0.7.0/pigeonTMDB/pigeonTMDB_Poster" \
-  "${STAGING}/Pigeon_0.7.0/pigeonTMDB/pigeonTMDB_TT"
+  "${STAGING_APP}/pigeonCashe" \
+  "${STAGING_APP}/pigeonTMDB/pigeonTMDB_BD" \
+  "${STAGING_APP}/pigeonTMDB/pigeonTMDB_ORIGINAL" \
+  "${STAGING_APP}/pigeonTMDB/pigeonTMDB_Poster" \
+  "${STAGING_APP}/pigeonTMDB/pigeonTMDB_TT"
 
 chmod +x \
-  "${STAGING}/Pigeon_0.7.0/run_pigeon_0_7.sh" \
-  "${STAGING}/Pigeon_0.7.0/install_pigeon.sh" \
-  "${STAGING}/Pigeon_0.7.0/run-pigeon.sh" \
-  "${STAGING}/Pigeon_0.7.0/Install-Pigeon" \
-  "${STAGING}/Pigeon_0.7.0/Run-Pigeon" \
-  "${STAGING}/Pigeon_0.7.0/installer/click_install_pi.sh" \
-  "${STAGING}/Pigeon_0.7.0/installer/click_run_pigeon_pi.sh" \
-  "${STAGING}/Pigeon_0.7.0/raspberryPi/install_on_pi.sh"
+  "${STAGING_APP}/installer/run_pigeon_0_7.sh" \
+  "${STAGING_APP}/installer/install_pigeon.sh" \
+  "${STAGING_APP}/installer/run-pigeon.sh" \
+  "${STAGING_APP}/installer/Install-Pigeon" \
+  "${STAGING_APP}/installer/Run-Pigeon" \
+  "${STAGING_APP}/installer/click_install_pi.sh" \
+  "${STAGING_APP}/installer/click_run_pigeon_pi.sh" \
+  "${STAGING_APP}/raspberryPi/install_on_pi.sh"
 
 echo "==> Writing ${DIST_DIR}/${ARCHIVE_NAME}"
-tar -C "${STAGING}" -czf "${DIST_DIR}/${ARCHIVE_NAME}" Pigeon_0.7.0
+tar -C "${STAGING}" -czf "${DIST_DIR}/${ARCHIVE_NAME}" "${APP_DIR}"
 
 BYTES="$(wc -c < "${DIST_DIR}/${ARCHIVE_NAME}" | tr -d ' ')"
 if [[ "${BYTES}" -lt 1048576 ]]; then
@@ -81,4 +86,4 @@ echo "Done: ${DIST_DIR}/${ARCHIVE_NAME} (${MB} MB)"
 echo ""
 echo "Copy to the Pi, then on the Pi:"
 echo "  tar -xzf ${ARCHIVE_NAME}"
-echo "  Open the Pigeon_0.7.0 folder and double-click Install-Pigeon"
+echo "  Open the ${APP_DIR}/installer folder and double-click Install-Pigeon"

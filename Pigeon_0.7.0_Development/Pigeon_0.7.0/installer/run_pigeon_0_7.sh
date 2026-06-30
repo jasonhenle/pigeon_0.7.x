@@ -1,9 +1,11 @@
 #!/bin/bash
+# Pigeon 0.7 launcher for Linux / Raspberry Pi OS.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
-SYSTEM_DIR="${SCRIPT_DIR}/pigeonSystem"
+INSTALLER_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "${INSTALLER_DIR}/.." && pwd)"
+cd "${ROOT}"
+SYSTEM_DIR="${ROOT}/pigeonSystem"
 VENV_REBUILD_REASON=""
 
 python_is_supported() {
@@ -17,12 +19,7 @@ pick_python_with_tk() {
   local resolved=""
   for candidate in \
     python3 python3.13 python3.12 python3.11 python3.10 \
-    /opt/homebrew/bin/python3 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11 /opt/homebrew/bin/python3.10 \
-    /usr/local/bin/python3 /usr/local/bin/python3.13 /usr/local/bin/python3.12 /usr/local/bin/python3.11 /usr/local/bin/python3.10 \
-    /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
-    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 \
-    /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 \
-    /Library/Frameworks/Python.framework/Versions/3.10/bin/python3; do
+    /usr/bin/python3 /usr/local/bin/python3; do
     if [[ "${candidate}" == /* ]]; then
       [[ -x "${candidate}" ]] || continue
       resolved="${candidate}"
@@ -38,22 +35,18 @@ pick_python_with_tk() {
   return 1
 }
 
-# Old trees may still import the removed ``mic_wave_visualizer`` module (SyntaxError on Py 3.14+).
-# Patch the import and drop the legacy file so launch works even if pigeon_0_7.py was not re-copied.
 MAIN_PY="${SYSTEM_DIR}/pigeon_0_7.py"
 WAVES_PY="${SYSTEM_DIR}/pigeon/audio_waves.py"
 LEGACY_VIZ="${SYSTEM_DIR}/pigeon/mic_wave_visualizer.py"
 if [[ -f "${MAIN_PY}" ]] && grep -q 'pigeon\.mic_wave_visualizer' "${MAIN_PY}" 2>/dev/null; then
-  sed -i '' 's/from pigeon\.mic_wave_visualizer import blend_mic_visualizer/from pigeon.audio_waves import blend_mic_visualizer/g' "${MAIN_PY}" || true
+  sed -i 's/from pigeon\.mic_wave_visualizer import blend_mic_visualizer/from pigeon.audio_waves import blend_mic_visualizer/g' "${MAIN_PY}" || true
 fi
 [[ ! -f "${LEGACY_VIZ}" ]] || rm -f "${LEGACY_VIZ}"
 if [[ ! -f "${WAVES_PY}" ]]; then
-  echo "pigeon: missing pigeon/audio_waves.py — copy or pull the latest Pigeon_python folder." >&2
+  echo "pigeon: missing pigeon/audio_waves.py — copy or pull the latest Pigeon build." >&2
   exit 1
 fi
 
-# If the project folder was moved/copied, an old .venv still points pip/scripts at the
-# previous path (pyvenv.cfg "command = ... -m venv <path>"). Rebuild in that case.
 EXPECTED_VENV="${SYSTEM_DIR}/.venv"
 if [[ -f "${EXPECTED_VENV}/pyvenv.cfg" ]]; then
   VENV_FROM_CFG="$(grep '^command = ' "${EXPECTED_VENV}/pyvenv.cfg" 2>/dev/null | sed -n 's/.* -m venv //p' | tr -d '\r' || true)"
@@ -69,24 +62,22 @@ VENV_BIN="${SYSTEM_DIR}/.venv/bin"
 if [[ ! -d "${SYSTEM_DIR}/.venv" ]]; then
   BASE_PY="$(pick_python_with_tk || true)"
   if [[ -z "${BASE_PY}" ]]; then
-    echo "pigeon: no Python 3.10+ with tkinter support found on this Mac." >&2
-    echo "pigeon: install a Python.org 3.12/3.11 build (includes Tk), then re-run launcher." >&2
-    echo "pigeon: download https://www.python.org/downloads/macos/" >&2
+    echo "pigeon: no Python 3.10+ with tkinter found." >&2
+    echo "pigeon: on Raspberry Pi OS run: sudo apt install python3 python3-venv python3-tk" >&2
+    echo "pigeon: or run raspberryPi/install_on_pi.sh from this folder." >&2
     exit 1
   fi
   [[ -n "${VENV_REBUILD_REASON}" ]] || VENV_REBUILD_REASON="missing-venv"
   "${BASE_PY}" -m venv "${SYSTEM_DIR}/.venv"
 fi
 
-# Use the venv interpreter directly — `python` is often missing on macOS outside the venv.
 PY="${VENV_BIN}/python3"
 [[ -x "$PY" ]] || PY="${VENV_BIN}/python"
 if [[ ! -x "$PY" ]]; then
   BASE_PY="$(pick_python_with_tk || true)"
   [[ -n "${BASE_PY}" ]] || {
-    echo "pigeon: no Python 3.10+ with tkinter support found on this Mac." >&2
-    echo "pigeon: install a Python.org 3.12/3.11 build (includes Tk), then re-run launcher." >&2
-    echo "pigeon: download https://www.python.org/downloads/macos/" >&2
+    echo "pigeon: no Python 3.10+ with tkinter found." >&2
+    echo "pigeon: on Raspberry Pi OS run: sudo apt install python3 python3-venv python3-tk" >&2
     exit 1
   }
   echo "pigeon: venv interpreter is broken on this machine. Rebuilding..." >&2
@@ -101,8 +92,7 @@ if ! python_is_supported "$PY"; then
   BASE_PY="$(pick_python_with_tk || true)"
   [[ -n "${BASE_PY}" ]] || {
     echo "pigeon: current venv python is not usable (needs Python 3.10+ with tkinter)." >&2
-    echo "pigeon: install a Python.org 3.12/3.11 build (includes Tk), then re-run launcher." >&2
-    echo "pigeon: download https://www.python.org/downloads/macos/" >&2
+    echo "pigeon: on Raspberry Pi OS run: sudo apt install python3 python3-venv python3-tk" >&2
     exit 1
   }
   echo "pigeon: venv python is missing tkinter or too old. Rebuilding..." >&2
@@ -118,12 +108,39 @@ fi
 }
 
 "$PY" -m pip install --upgrade pip >/dev/null
-"$PY" -m pip install -r "${SYSTEM_DIR}/requirements.txt"
+REQ_FILE="${SYSTEM_DIR}/requirements.txt"
+if [[ "$(uname -s)" == "Linux" && -f "${SYSTEM_DIR}/requirements-pi.txt" ]]; then
+  REQ_FILE="${SYSTEM_DIR}/requirements-pi.txt"
+fi
+"$PY" -m pip install -r "${REQ_FILE}"
+
+if [[ "${1:-}" == "--bootstrap-only" ]]; then
+  echo "pigeon: python environment ready." >&2
+  exit 0
+fi
 
 if [[ -n "${VENV_REBUILD_REASON}" ]]; then
   echo "pigeon: python environment ready (${VENV_REBUILD_REASON})." >&2
 fi
 echo "Starting Pigeon…" >&2
-# -u: unbuffered stderr so startup lines (e.g. pigeon: running script) appear immediately.
-export PYTHONPYCACHEPREFIX="${SCRIPT_DIR}/pigeonCashe"
+export PYTHONPYCACHEPREFIX="${ROOT}/pigeonCashe"
+# Pi / Linux: 800×480 logical target; UI letterboxes 800×400 with black bars. Fullscreen fills the monitor.
+export PIGEON_DISPLAY_W="${PIGEON_DISPLAY_W:-800}"
+export PIGEON_DISPLAY_H="${PIGEON_DISPLAY_H:-480}"
+export PIGEON_WINDOW_SCALE="${PIGEON_WINDOW_SCALE:-1.0}"
+export PIGEON_PI_FULLSCREEN="${PIGEON_PI_FULLSCREEN:-1}"
+export PIGEON_APPLE_TV_SCAN_TIMEOUT="${PIGEON_APPLE_TV_SCAN_TIMEOUT:-12}"
+
+STATE_DIR="${HOME}/.pigeon_0_6"
+mkdir -p "${STATE_DIR}"
+if [[ ! -f "${STATE_DIR}/tmdb_api_key" && ! -f "${STATE_DIR}/tmdb_read_token" ]]; then
+  if [[ -f "${ROOT}/installer/setup/tmdb_api_key" ]]; then
+    cp "${ROOT}/installer/setup/tmdb_api_key" "${STATE_DIR}/tmdb_api_key"
+    chmod 600 "${STATE_DIR}/tmdb_api_key" 2>/dev/null || true
+  elif [[ -f "${ROOT}/installer/setup/tmdb_read_token" ]]; then
+    cp "${ROOT}/installer/setup/tmdb_read_token" "${STATE_DIR}/tmdb_read_token"
+    chmod 600 "${STATE_DIR}/tmdb_read_token" 2>/dev/null || true
+  fi
+fi
+
 exec "$PY" -u "${MAIN_PY}" "$@"

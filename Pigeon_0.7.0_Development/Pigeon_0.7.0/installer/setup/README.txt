@@ -19,12 +19,12 @@ This folder includes:
 
 Option B — place files here before Install-Pigeon
 -------------------------------------------------
-Put one-line secret files in this setup/ folder (same names as above), then run
-Install-Pigeon. The installer copies them into ~/.pigeon_0_6 on first install only.
+Put one-line secret files in this installer/setup/ folder (same names as above), then run
+Install-Pigeon (in the parent installer/ folder). The installer copies them into ~/.pigeon_0_6 on first install only.
 
-  setup/tmdb_api_key      — from https://www.themoviedb.org/settings/api
-  setup/tmdb_read_token   — optional JWT read token (instead of api key)
-  setup/pyatv_credentials — optional; usually easier to pair on the Pi in-app
+  installer/setup/tmdb_api_key      — from https://www.themoviedb.org/settings/api
+  installer/setup/tmdb_read_token   — optional JWT read token (instead of api key)
+  installer/setup/pyatv_credentials — optional; usually easier to pair on the Pi in-app
 
 Option C — configure on the Pi
 ------------------------------

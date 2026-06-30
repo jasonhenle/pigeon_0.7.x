@@ -1,6 +1,8 @@
 # Pigeon on Raspberry Pi
 
-This folder contains everything needed to run Pigeon 0.7 on **Raspberry Pi OS** (64-bit recommended: Pi 4 / Pi 5 with desktop).
+This folder contains everything needed to run Pigeon **0.7.5** on **Raspberry Pi OS** (64-bit recommended: Pi 4 / Pi 5 with desktop).
+
+Build version is read from `pigeonSystem/pigeon/version.py` when you run `package_for_pi.sh`.
 
 ## What you need on the Pi
 
@@ -17,12 +19,12 @@ cd /path/to/Pigeon_0.7.0
 bash raspberryPi/package_for_pi.sh
 ```
 
-This writes `raspberryPi/dist/pigeon_0.7.0_raspberry_pi.tar.gz` (~60–80 MB without local TMDB cache).
+This writes `raspberryPi/dist/pigeon_0.7.5_raspberry_pi.tar.gz` (~60–80 MB without local TMDB cache).
 
 ### 2. Copy to the Pi
 
 ```bash
-scp raspberryPi/dist/pigeon_0.7.0_raspberry_pi.tar.gz pi@YOUR_PI_IP:~
+scp raspberryPi/dist/pigeon_0.7.5_raspberry_pi.tar.gz pi@YOUR_PI_IP:~
 ```
 
 Or use a USB drive, `rsync`, AirDrop-to-files, etc.
@@ -30,11 +32,11 @@ Or use a USB drive, `rsync`, AirDrop-to-files, etc.
 ### 3. Install on the Pi (no terminal)
 
 1. On the Pi, open **File Manager** and go to your **Downloads** or **Home** folder.
-2. Right-click `pigeon_0.7.0_raspberry_pi.tar.gz` → **Extract Here** (or use Archive Manager).
-3. Open the **`Pigeon_0.7.0`** folder (not the folder above it).
+2. Right-click `pigeon_0.7.5_raspberry_pi.tar.gz` → **Extract Here** (or use Archive Manager).
+3. Open the **`Pigeon_0.7.5/installer`** folder.
 4. **Double-click `Install-Pigeon`** (no spaces in the name).
 
-Read **`START-HERE.txt`** in that folder if anything is unclear.
+Read **`installer/START-HERE.txt`** if anything is unclear.
 
 The first time, the Pi may ask you to trust the launcher — choose **Execute** (not Open).
 
@@ -46,15 +48,15 @@ After install, **Run Pigeon** appears on your **Desktop**.
 
 ```bash
 cd ~
-tar -xzf pigeon_0.7.0_raspberry_pi.tar.gz
-cd Pigeon_0.7.0
-./install_pigeon.sh
+tar -xzf pigeon_0.7.5_raspberry_pi.tar.gz
+cd Pigeon_0.7.5
+./installer/install_pigeon.sh
 ```
 
 The installer:
 
 - Installs system packages (`python3-tk`, PortAudio for the mic visualizer, OpenCV libs, etc.)
-- Copies Pigeon to `~/Pigeon_0.7.0`
+- Copies Pigeon to `~/Pigeon_0.7.5` (version from `version.py`)
 - Creates the Python virtualenv and installs `requirements.txt`
 - Adds **Run Pigeon** and **Install Pigeon** icons on the Desktop
 - Registers a **systemd** service for optional boot autostart
@@ -84,7 +86,7 @@ Pigeon on Pi runs **fullscreen** with a **800×480** window target. The UI is co
 To use a fixed window instead of fullscreen:
 
 ```bash
-PIGEON_PI_FULLSCREEN=0 ./run_pigeon_0_7.sh
+PIGEON_PI_FULLSCREEN=0 ./installer/run_pigeon_0_7.sh
 ```
 
 Optional overrides: `PIGEON_DISPLAY_W`, `PIGEON_DISPLAY_H` (default 800×480).
@@ -103,7 +105,7 @@ Optional overrides: `PIGEON_DISPLAY_W`, `PIGEON_DISPLAY_H` (default 800×480).
 
 | Feature | Mac | Raspberry Pi |
 |--------|-----|----------------|
-| Launcher | `run_pigeon_0_7.command` | `run_pigeon_0_7.sh` |
+| Launcher | `installer/run_pigeon_0_7.command` | `installer/run_pigeon_0_7.sh` |
 | Splash video HW decode | VideoToolbox | Software decode via OpenCV (PNG splash also works) |
 | Fonts | Menlo | DejaVu / system sans |
 | Apple TV pairing | Full pyatv | pyatv works on Linux — pair from Settings on the Pi |
@@ -119,7 +121,7 @@ sudo apt install python3 python3-venv python3-tk
 **Black window / no display (systemd)**
 
 - Ensure the Pi boots to desktop and `DISPLAY=:0` matches your session.
-- Try manual `./run_pigeon_0_7.sh` from a terminal on the Pi first.
+- Try manual `./installer/run_pigeon_0_7.sh` from a terminal on the Pi first.
 
 **`pip install` slow or fails on Pi**
 
