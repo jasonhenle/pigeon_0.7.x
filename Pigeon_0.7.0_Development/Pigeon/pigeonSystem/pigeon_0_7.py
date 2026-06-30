@@ -1683,22 +1683,7 @@ def main() -> int:
                     state=tk.NORMAL,
                 )
 
-        def _begin_apply_update(*, remote: str, branch: object) -> None:
-            local = version_string()
-            if not messagebox.askyesno(
-                "Install update",
-                f"A newer Pigeon is on GitHub.\n\n"
-                f"Installed: {local}\n"
-                f"Latest:    {remote}\n\n"
-                f"Install now?\n\n"
-                f"• App code and UI assets (pigeonAssets) will be updated from GitHub\n"
-                f"• Settings stay in ~/.pigeon_0_6 (devices, TMDb key, pairing)\n"
-                f"• Cached TMDb downloads in the app folder are kept\n\n"
-                f"You will need to quit and relaunch Pigeon when finished.",
-                parent=root,
-            ):
-                return
-
+        def _resolve_install_root_for_update() -> Path:
             install_root = Path(__file__).resolve().parent.parent
             try:
                 from pigeon.github_update import resolve_install_root
@@ -1708,6 +1693,10 @@ def main() -> int:
                     install_root = resolved
             except Exception:
                 pass
+            return install_root
+
+        def _run_github_apply_worker(*, remote: str = "?") -> None:
+            install_root = _resolve_install_root_for_update()
             progress = tk.Toplevel(root)
             progress.title("Updating Pigeon")
             progress.transient(root)
@@ -1721,10 +1710,7 @@ def main() -> int:
                 try:
                     from pigeon.github_update import apply_github_update
 
-                    result = apply_github_update(
-                        install_root,
-                        branch=str(branch) if branch else None,
-                    )
+                    result = apply_github_update(install_root, branch=None)
                 except Exception as e:
                     from pigeon.github_update import ApplyUpdateResult
 
@@ -1741,7 +1727,10 @@ def main() -> int:
                     if result.ok:
                         messagebox.showinfo("Update complete", result.message, parent=root)
                         update_check_state["update_available"] = False
-                        update_check_state["remote_version"] = remote
+                        if result.remote_version:
+                            update_check_state["remote_version"] = result.remote_version
+                        else:
+                            update_check_state["remote_version"] = remote
                         _sync_update_button_style()
                         if messagebox.askyesno(
                             "Restart Pigeon",
@@ -1760,7 +1749,46 @@ def main() -> int:
 
             threading.Thread(target=worker, daemon=True).start()
 
+        def _linux_on_updates_button() -> None:
+            """Pi/Linux: skip Python version check; run curl|bash updater from GitHub."""
+            if update_check_state.get("applying") or update_check_state.get("checking"):
+                return
+            local = version_string()
+            if not messagebox.askyesno(
+                "Updates",
+                f"Download and install the latest Pigeon from GitHub?\n\n"
+                f"Installed: {local}\n\n"
+                f"• Uses curl only (public repo — no GitHub token)\n"
+                f"• App code and pigeonAssets are updated\n"
+                f"• Settings in ~/.pigeon_0_6 are kept\n\n"
+                f"Continue?",
+                parent=root,
+            ):
+                return
+            _run_github_apply_worker()
+
+        def _begin_apply_update(*, remote: str, branch: object) -> None:
+            local = version_string()
+            if not messagebox.askyesno(
+                "Install update",
+                f"A newer Pigeon is on GitHub.\n\n"
+                f"Installed: {local}\n"
+                f"Latest:    {remote}\n\n"
+                f"Install now?\n\n"
+                f"• App code and UI assets (pigeonAssets) will be updated from GitHub\n"
+                f"• Settings stay in ~/.pigeon_0_6 (devices, TMDb key, pairing)\n"
+                f"• Cached TMDb downloads in the app folder are kept\n\n"
+                f"You will need to quit and relaunch Pigeon when finished.",
+                parent=root,
+            ):
+                return
+
+            _run_github_apply_worker(remote=str(remote))
+
         def _on_updates_button() -> None:
+            if sys.platform.startswith("linux"):
+                _linux_on_updates_button()
+                return
             if update_check_state.get("applying") or update_check_state.get("checking"):
                 return
 

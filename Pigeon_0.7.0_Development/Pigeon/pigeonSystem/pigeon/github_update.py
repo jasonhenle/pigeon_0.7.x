@@ -24,10 +24,11 @@ from pigeon.update_check import (
 from pigeon.update_assets import ensure_required_assets
 
 _UA = "Pigeon/0.7 (github-update)"
-_SHELL_UPDATE_SCRIPT = "pi_update_from_github.sh"
+_SHELL_UPDATE_SCRIPT = "pigeon_github_update.sh"
+_LEGACY_SHELL_UPDATE_SCRIPT = "pi_update_from_github.sh"
 _BOOTSTRAP_SCRIPT_RAW = (
     "https://raw.githubusercontent.com/jasonhenle/pigeon_0.7.x/main/"
-    "Pigeon_0.7.0_Development/Pigeon/installer/pi_update_from_github.sh"
+    "Pigeon_0.7.0_Development/Pigeon/installer/pigeon_github_update.sh"
 )
 _LAUNCHER_NAMES = ("run_pigeon_0_7.sh", "run_pigeon_0_6.sh", "Run-Pigeon", "run-pigeon.sh")
 _INSTALLER_DIR = "installer"
@@ -210,77 +211,70 @@ def _display_path(path: Path) -> str:
     return str(path).encode("ascii", errors="replace").decode("ascii")
 
 
-def _ensure_shell_update_script(install_root: Path) -> Path | None:
-    """Return ``installer/pi_update_from_github.sh``, bootstrapping from GitHub raw if missing."""
-    script = install_root / _INSTALLER_DIR / _SHELL_UPDATE_SCRIPT
-    if script.is_file():
-        return script
-    curl = shutil.which("curl")
-    if not curl:
-        return None
-    try:
-        script.parent.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run(
-            [curl, "-fsSL", "-o", safe_subprocess_path(script), _BOOTSTRAP_SCRIPT_RAW],
-            capture_output=True,
-            check=False,
-            env=_minimal_subprocess_env(),
-        )
-        if proc.returncode == 0 and script.is_file():
-            script.chmod(script.stat().st_mode | 0o111)
-            return script
-    except (OSError, UnicodeEncodeError):
-        pass
-    return None
-
-
-def _apply_linux_shell_update(install_root: Path) -> ApplyUpdateResult | None:
+def _apply_linux_shell_update(install_root: Path) -> ApplyUpdateResult:
     """
-    Pi/Linux: run curl-only shell updater (never touches Python http.client).
+    Pi/Linux: always run a fresh curl|bash updater from GitHub (never Python http.client).
 
-    Returns ``None`` only when the shell path cannot run (caller may try Python path).
+    Fetches ``pigeon_github_update.sh`` from raw.githubusercontent.com every time so this
+    works even when the installed copy is several versions behind.
     """
     if not sys.platform.startswith("linux"):
-        return None
+        return ApplyUpdateResult(False, "Internal error: shell update called off Linux.")
     bash = shutil.which("bash")
-    if not bash:
-        return None
-    root = Path(safe_subprocess_path(install_root))
-    script = _ensure_shell_update_script(root)
-    if script is None:
-        return None
+    curl = shutil.which("curl")
+    if not bash or not curl:
+        return ApplyUpdateResult(
+            False,
+            "Linux update requires bash and curl.\n\nRun: sudo apt install curl",
+        )
+    root = safe_subprocess_path(install_root.resolve())
+    env = _minimal_subprocess_env()
+    env["PIGEON_UPDATE_URL"] = _BOOTSTRAP_SCRIPT_RAW
+    env["PIGEON_INSTALL_ROOT"] = root
     try:
         proc = subprocess.run(
-            [bash, safe_subprocess_path(script), safe_subprocess_path(root)],
+            [
+                bash,
+                "-c",
+                'curl -fsSL "$PIGEON_UPDATE_URL" | bash -s -- "$PIGEON_INSTALL_ROOT"',
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
             timeout=900,
-            env=_minimal_subprocess_env(),
-            cwd=safe_subprocess_path(root),
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired, UnicodeEncodeError) as e:
         return ApplyUpdateResult(False, f"Shell update failed: {e}")
     combined = "\n".join(x for x in ((proc.stdout or "").strip(), (proc.stderr or "").strip()) if x)
+    try:
+        from pigeon.pi_diagnostics import append_pigeon_log
+
+        for line in combined.splitlines()[-20:]:
+            append_pigeon_log(line)
+    except Exception:
+        pass
     if proc.returncode != 0:
         return ApplyUpdateResult(
             False,
-            "Update script failed.\n\n"
-            + (combined[-1200:] if combined else f"exit code {proc.returncode}"),
+            "GitHub update script failed.\n\n"
+            + (combined[-1500:] if combined else f"exit code {proc.returncode}")
+            + "\n\nFrom a Pi terminal you can also run:\n"
+            "  curl -fsSL \"$URL\" | bash -s -- ~/Pigeon_*\n"
+            f"  URL={_BOOTSTRAP_SCRIPT_RAW}",
         )
     ver = ""
     m = re.search(r"Pigeon (\d+\.\d+\.\d+) installed", combined)
     if m:
         ver = m.group(1)
     state_dir = pigeon_state_dir()
-    msg = combined.split("\n")[-3:] if combined else ["Update finished."]
     return ApplyUpdateResult(
         True,
-        "Updated from GitHub (curl shell path).\n\n"
+        "Updated from GitHub (curl shell).\n\n"
         f"Your settings in {PIGEON_STATE_DIR_TILDE} ({_display_path(state_dir)}) were not changed.\n\n"
-        + "\n".join(msg)
+        + (combined.split("\n")[-2:] and "\n".join(combined.split("\n")[-2:]) or "Update finished.")
         + "\n\nQuit and relaunch Pigeon to run the new version.",
         remote_version=ver or None,
     )
@@ -302,9 +296,8 @@ def apply_github_update(
     prepare_github_update_environment()
     install_root = Path(safe_subprocess_path(install_root.resolve()))
 
-    shell_result = _apply_linux_shell_update(install_root)
-    if shell_result is not None:
-        return shell_result
+    if sys.platform.startswith("linux"):
+        return _apply_linux_shell_update(install_root)
 
     br = (branch or _branch_candidates()[0]).strip()
 

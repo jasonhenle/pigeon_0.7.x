@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -354,13 +357,44 @@ def _private_repo_hint() -> str:
     )
 
 
+def _linux_curl_get_simple(url: str, *, timeout_s: float) -> bytes | None:
+    """Public raw.githubusercontent.com fetch without Authorization headers."""
+    if not sys.platform.startswith("linux"):
+        return None
+    curl = shutil.which("curl")
+    if not curl:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                curl,
+                "-fsSL",
+                "--max-time",
+                str(max(1, int(timeout_s))),
+                _ascii_only(url),
+            ],
+            capture_output=True,
+            check=False,
+            env=_minimal_subprocess_env(),
+        )
+    except (OSError, UnicodeEncodeError):
+        return None
+    if proc.returncode == 0 and proc.stdout:
+        return proc.stdout
+    return None
+
+
 def _fetch_version_text(url: str, *, timeout_s: float, api: bool = False) -> tuple[str | None, str | None]:
     headers = github_auth_headers()
     if api:
         headers["Accept"] = _latin1_header("application/vnd.github.raw")
         headers["X-GitHub-Api-Version"] = _latin1_header("2022-11-28")
     try:
-        body = github_http_get(url, timeout_s=timeout_s, headers=headers)
+        body: bytes | None = None
+        if not api and not github_token():
+            body = _linux_curl_get_simple(url, timeout_s=timeout_s)
+        if body is None:
+            body = github_http_get(url, timeout_s=timeout_s, headers=headers)
         return body.decode("utf-8", errors="replace"), None
     except UnicodeEncodeError as e:
         return None, f"Encoding error talking to GitHub: {e}"
