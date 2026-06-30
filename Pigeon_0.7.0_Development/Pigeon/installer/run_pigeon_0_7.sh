@@ -131,6 +131,9 @@ export PIGEON_WINDOW_SCALE="${PIGEON_WINDOW_SCALE:-1.0}"
 export PIGEON_PI_FULLSCREEN="${PIGEON_PI_FULLSCREEN:-1}"
 export PIGEON_APPLE_TV_SCAN_TIMEOUT="${PIGEON_APPLE_TV_SCAN_TIMEOUT:-12}"
 
+# Public repo: stray GitHub tokens in the environment break the in-app updater (latin-1).
+unset PIGEON_UPDATE_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN GITHUB_PAT 2>/dev/null || true
+
 STATE_DIR="${HOME}/.pigeon_0_6"
 mkdir -p "${STATE_DIR}"
 if [[ ! -f "${STATE_DIR}/tmdb_api_key" && ! -f "${STATE_DIR}/tmdb_read_token" ]]; then

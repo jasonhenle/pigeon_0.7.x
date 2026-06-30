@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -78,6 +77,7 @@ def prepare_github_update_environment() -> None:
     cause of ``latin-1`` errors in http.client on Raspberry Pi.
     """
     _scrub_github_token_file()
+    _scrub_environ_to_ascii()
     if _github_repo_is_public() and os.environ.get("PIGEON_UPDATE_REQUIRE_TOKEN", "").strip().lower() not in (
         "1",
         "true",
@@ -94,6 +94,25 @@ def prepare_github_update_environment() -> None:
         val = os.environ.get(key)
         if val:
             os.environ[key] = _ascii_only(str(val).strip())
+
+
+def _scrub_environ_to_ascii() -> None:
+    """Strip non-ASCII characters from all environment values (fixes U+202F in inherited env)."""
+    for key in list(os.environ.keys()):
+        val = os.environ.get(key)
+        if val is None:
+            continue
+        clean = _ascii_only(str(val))
+        if clean != val:
+            if clean:
+                os.environ[key] = clean
+            else:
+                os.environ.pop(key, None)
+
+
+def safe_subprocess_path(path: Path | str) -> str:
+    """Path string safe for subprocess argv on Pi (ASCII-only, no U+202F)."""
+    return _ascii_only(str(Path(path).resolve()))
 
 
 def _minimal_subprocess_env() -> dict[str, str]:
@@ -219,26 +238,55 @@ def github_repo_url() -> str:
 def _curl_http_get(url: str, *, timeout_s: float, headers: dict[str, str]) -> bytes:
     import shutil
     import subprocess
+    import tempfile
 
     curl = shutil.which("curl")
     if not curl:
-        raise OSError("curl is required for GitHub downloads on this system.")
+        raise OSError("curl is required for GitHub downloads. Run: sudo apt install curl")
+    safe_url = _ascii_only(url)
     cmd = [
         curl,
         "-fsSL",
         "--max-time",
         str(max(1, int(timeout_s))),
     ]
-    for hk, hv in headers.items():
-        if hk and hv is not None:
-            cmd.extend(["-H", f"{hk}: {hv}"])
-    cmd.append(url)
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        check=False,
-        env=_minimal_subprocess_env(),
-    )
+    header_path: str | None = None
+    if headers:
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="ascii",
+                suffix=".pigeon-curl-headers",
+                delete=False,
+            ) as hf:
+                for hk, hv in headers.items():
+                    if hk and hv is not None:
+                        hf.write(f"{_ascii_only(str(hk))}: {_ascii_only(str(hv))}\n")
+                header_path = hf.name
+            cmd.extend(["-H", f"@{header_path}"])
+        except OSError as e:
+            if header_path:
+                try:
+                    Path(header_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise OSError(f"Could not write curl headers: {e}") from e
+    cmd.append(safe_url)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=False,
+            env=_minimal_subprocess_env(),
+        )
+    except UnicodeEncodeError as e:
+        raise OSError(f"subprocess encoding error (check install path for bad characters): {e}") from e
+    finally:
+        if header_path:
+            try:
+                Path(header_path).unlink(missing_ok=True)
+            except OSError:
+                pass
     if proc.returncode == 0 and proc.stdout:
         return proc.stdout
     err = (proc.stderr or proc.stdout or b"").decode("utf-8", errors="replace").strip()
@@ -246,70 +294,12 @@ def _curl_http_get(url: str, *, timeout_s: float, headers: dict[str, str]) -> by
 
 
 def github_http_get(url: str, *, timeout_s: float, headers: dict[str, str] | None = None) -> bytes:
-    """HTTPS GET with latin-1-safe headers; follows redirects (GitHub zipballs → codeload)."""
-    import http.client
-    import shutil
-    import subprocess
-    from urllib.parse import urljoin, urlparse
-
+    """HTTPS GET via curl (never http.client — avoids latin-1 header crashes on Pi)."""
     safe_headers = {
-        _latin1_header(str(k)): _latin1_header(str(v)) for k, v in (headers or {}).items()
+        _ascii_only(str(k)): _ascii_only(str(v)) for k, v in (headers or {}).items()
     }
     safe_url = _ascii_only(url)
-
-    # Linux/Pi: never use http.client (latin-1 header encoding); curl only.
-    if sys.platform.startswith("linux"):
-        return _curl_http_get(safe_url, timeout_s=timeout_s, headers=safe_headers)
-
-    curl = shutil.which("curl")
-    if curl:
-        try:
-            return _curl_http_get(safe_url, timeout_s=timeout_s, headers=safe_headers)
-        except OSError:
-            pass
-
-    current = safe_url
-    max_redirects = 8
-
-    for _ in range(max_redirects + 1):
-        parsed = urlparse(current)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise ValueError(f"Invalid GitHub URL: {url!r}")
-        host = _ascii_only(parsed.hostname)
-        path = parsed.path or "/"
-        if parsed.query:
-            path = f"{path}?{parsed.query}"
-        path = _ascii_only(path)
-        conn = http.client.HTTPSConnection(host, parsed.port or 443, timeout=timeout_s)
-        try:
-            conn.request("GET", path, headers=safe_headers)
-            resp = conn.getresponse()
-            body = resp.read()
-            if resp.status in (301, 302, 303, 307, 308):
-                location = resp.getheader("Location")
-                if not location:
-                    raise urllib.error.HTTPError(
-                        current,
-                        resp.status,
-                        resp.reason or "redirect without Location",
-                        resp.headers,
-                        None,
-                    )
-                current = _ascii_only(urljoin(current, location))
-                continue
-            if resp.status >= 400:
-                raise urllib.error.HTTPError(
-                    current,
-                    resp.status,
-                    resp.reason,
-                    resp.headers,
-                    None,
-                )
-            return body
-        finally:
-            conn.close()
-
-    raise urllib.error.HTTPError(url, 302, "Too many redirects", {}, None)
+    return _curl_http_get(safe_url, timeout_s=timeout_s, headers=safe_headers)
 
 
 def _branch_candidates() -> list[str]:
