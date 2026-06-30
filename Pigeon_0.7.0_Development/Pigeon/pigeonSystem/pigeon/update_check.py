@@ -12,8 +12,8 @@ from pathlib import Path
 from pigeon.version import version_string, version_tuple
 
 _DEFAULT_GITHUB_USER = "jasonhenle"
-_DEFAULT_GITHUB_REPO = "pigeon_0.5"
-_DEFAULT_GITHUB_BRANCH = "experiment"
+_DEFAULT_GITHUB_REPO = "pigeon_0.7.x"
+_DEFAULT_GITHUB_BRANCH = "main"
 _DEFAULT_VERSION_PATHS: tuple[str, ...] = (
     "Pigeon_0.7.0_Development/Pigeon/pigeonSystem/pigeon/version.py",
     "Pigeon_0.7.0_Development/Pigeon_0.7.0/pigeonSystem/pigeon/version.py",
@@ -173,7 +173,7 @@ def fetch_remote_version_tuple(*, timeout_s: float = 12.0) -> tuple[tuple[int, i
         return (
             None,
             "version.py was not found on GitHub for branch "
-            f"{_branch_candidates()[0]!r}. Push the latest code to experiment.",
+            f"{_branch_candidates()[0]!r}. Push the latest code to main.",
             version_py_raw_url(),
             None,
         )

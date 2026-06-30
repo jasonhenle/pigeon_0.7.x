@@ -63,7 +63,7 @@ def resolve_install_root(*, script_path: str | Path | None = None) -> Path | Non
 
 def github_zipball_url(*, branch: str) -> str:
     user = os.environ.get("PIGEON_UPDATE_GITHUB_USER", "jasonhenle").strip()
-    repo = os.environ.get("PIGEON_UPDATE_GITHUB_REPO", "pigeon_0.5").strip()
+    repo = os.environ.get("PIGEON_UPDATE_GITHUB_REPO", "pigeon_0.7.x").strip()
     br = branch.strip()
     return f"https://github.com/{user}/{repo}/archive/refs/heads/{br}.zip"
 
