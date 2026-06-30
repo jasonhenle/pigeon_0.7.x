@@ -66,7 +66,7 @@ def github_zipball_url(*, branch: str) -> str:
     user = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_USER", "jasonhenle").strip())
     repo = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_REPO", "pigeon_0.7.x").strip())
     br = _ascii_only(branch.strip())
-    return f"https://github.com/{user}/{repo}/archive/refs/heads/{br}.zip"
+    return f"https://codeload.github.com/{user}/{repo}/zip/refs/heads/{br}"
 
 
 def github_full_download_page_url() -> str:
@@ -204,6 +204,13 @@ def apply_github_update(
         tmp_zip.close()
         zip_path = Path(tmp_zip.name)
         body = github_http_get(url, timeout_s=timeout_s, headers=github_auth_headers(user_agent=_UA))
+        if len(body) < 4 or body[:2] != b"PK":
+            snippet = body[:240].decode("utf-8", errors="replace").strip()
+            return ApplyUpdateResult(
+                False,
+                "GitHub did not return a zip archive (download may have been blocked or redirected).\n\n"
+                + (snippet[:200] if snippet else "(empty response)"),
+            )
         zip_path.write_bytes(body)
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="pigeon-update-"))

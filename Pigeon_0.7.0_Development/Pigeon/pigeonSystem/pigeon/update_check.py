@@ -107,35 +107,52 @@ def github_repo_url() -> str:
 
 
 def github_http_get(url: str, *, timeout_s: float, headers: dict[str, str] | None = None) -> bytes:
-    """HTTPS GET with latin-1-safe headers (avoids U+202F etc. in token/env)."""
+    """HTTPS GET with latin-1-safe headers; follows redirects (GitHub zipballs → codeload)."""
     import http.client
-    from urllib.parse import urlparse
+    from urllib.parse import urljoin, urlparse
 
-    safe_url = _ascii_only(url)
-    parsed = urlparse(safe_url)
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise ValueError(f"Invalid GitHub URL: {url!r}")
     safe_headers = {str(k): _latin1_header(str(v)) for k, v in (headers or {}).items()}
-    path = parsed.path or "/"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-    path = _ascii_only(path)
-    conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=timeout_s)
-    try:
-        conn.request("GET", path, headers=safe_headers)
-        resp = conn.getresponse()
-        body = resp.read()
-        if resp.status >= 400:
-            raise urllib.error.HTTPError(
-                safe_url,
-                resp.status,
-                resp.reason,
-                resp.headers,
-                None,
-            )
-        return body
-    finally:
-        conn.close()
+    current = _ascii_only(url)
+    max_redirects = 8
+
+    for _ in range(max_redirects + 1):
+        parsed = urlparse(current)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError(f"Invalid GitHub URL: {url!r}")
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        path = _ascii_only(path)
+        conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=timeout_s)
+        try:
+            conn.request("GET", path, headers=safe_headers)
+            resp = conn.getresponse()
+            body = resp.read()
+            if resp.status in (301, 302, 303, 307, 308):
+                location = resp.getheader("Location")
+                if not location:
+                    raise urllib.error.HTTPError(
+                        current,
+                        resp.status,
+                        resp.reason or "redirect without Location",
+                        resp.headers,
+                        None,
+                    )
+                current = _ascii_only(urljoin(current, location))
+                continue
+            if resp.status >= 400:
+                raise urllib.error.HTTPError(
+                    current,
+                    resp.status,
+                    resp.reason,
+                    resp.headers,
+                    None,
+                )
+            return body
+        finally:
+            conn.close()
+
+    raise urllib.error.HTTPError(url, 302, "Too many redirects", {}, None)
 
 
 def _branch_candidates() -> list[str]:
