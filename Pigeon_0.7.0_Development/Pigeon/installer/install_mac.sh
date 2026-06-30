@@ -7,7 +7,8 @@ PIGEON_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
 
-INSTALL_DIR="${PIGEON_INSTALL_DIR:-${HOME}/Applications/Pigeon_0.7.0}"
+PIGEON_VERSION="$(pigeon_version_string "${PIGEON_ROOT}")"
+INSTALL_DIR="${PIGEON_INSTALL_DIR:-${HOME}/Applications/Pigeon_${PIGEON_VERSION}}"
 IN_PLACE=0
 MAKE_SHORTCUT=1
 
@@ -26,12 +27,12 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      pigeon_print_usage
+      pigeon_print_usage "${PIGEON_ROOT}"
       exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
-      pigeon_print_usage >&2
+      pigeon_print_usage "${PIGEON_ROOT}" >&2
       exit 1
       ;;
   esac

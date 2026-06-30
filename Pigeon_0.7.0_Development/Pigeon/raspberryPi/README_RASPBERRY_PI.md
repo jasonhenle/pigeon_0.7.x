@@ -15,7 +15,7 @@ Build version is read from `pigeonSystem/pigeon/version.py` when you run `packag
 ### 1. Build the transfer archive (on your Mac)
 
 ```bash
-cd /path/to/Pigeon_0.7.0
+cd /path/to/Pigeon
 bash raspberryPi/package_for_pi.sh
 ```
 
@@ -138,6 +138,6 @@ sudo apt install libgl1 libglib2.0-0 libgomp1
 | File | Purpose |
 |------|---------|
 | `package_for_pi.sh` | Run on Mac — builds the `.tar.gz` |
-| `install_on_pi.sh` | Run on Pi — apt deps, venv, systemd |
-| `pigeon.service` | systemd unit template |
 | `README_RASPBERRY_PI.md` | This guide |
+
+Pi install scripts live in **`installer/`** (`install_on_pi.sh`, `Install-Pigeon`, `pigeon.service`).

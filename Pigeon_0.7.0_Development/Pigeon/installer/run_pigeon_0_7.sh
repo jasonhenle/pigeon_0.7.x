@@ -64,7 +64,7 @@ if [[ ! -d "${SYSTEM_DIR}/.venv" ]]; then
   if [[ -z "${BASE_PY}" ]]; then
     echo "pigeon: no Python 3.10+ with tkinter found." >&2
     echo "pigeon: on Raspberry Pi OS run: sudo apt install python3 python3-venv python3-tk" >&2
-    echo "pigeon: or run raspberryPi/install_on_pi.sh from this folder." >&2
+    echo "pigeon: or run installer/install_on_pi.sh from this folder." >&2
     exit 1
   fi
   [[ -n "${VENV_REBUILD_REASON}" ]] || VENV_REBUILD_REASON="missing-venv"

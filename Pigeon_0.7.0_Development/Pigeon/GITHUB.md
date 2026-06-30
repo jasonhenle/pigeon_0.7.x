@@ -17,7 +17,7 @@ Use this for a new Mac, a new Pi, or a second machine.
    **https://github.com/jasonhenle/pigeon_0.5/archive/refs/heads/experiment.zip**
 2. Unzip the archive.
 3. Go to:  
-   **`Pigeon_0.7.0_Development/Pigeon_0.7.0/`** inside the extracted folder.
+   **`Pigeon_0.7.0_Development/Pigeon/`** inside the extracted folder.
 4. **Mac:** run `installer/install_pigeon.command` or `./installer/install_pigeon.sh`  
    **Pi:** open `installer/` and double-click **Install-Pigeon** (see `installer/START-HERE.txt`).
 
@@ -25,7 +25,7 @@ Use this for a new Mac, a new Pi, or a second machine.
 
 ```bash
 git clone -b experiment https://github.com/jasonhenle/pigeon_0.5.git
-cd pigeon_0.5/Pigeon_0.7.0_Development/Pigeon_0.7.0
+cd pigeon_0.5/Pigeon_0.7.0_Development/Pigeon
 ./installer/install_pigeon.sh   # Mac
 # or installer/Install-Pigeon on Pi
 ```
@@ -34,7 +34,7 @@ cd pigeon_0.5/Pigeon_0.7.0_Development/Pigeon_0.7.0
 
 | Location | Contents |
 |----------|----------|
-| App folder (e.g. `~/Pigeon_0.7.0`, `~/Applications/Pigeon_0.7.0`) | Code, launcher, venv, local TMDb cache folders |
+| App folder (e.g. `~/Pigeon_0.7.5`, `~/Applications/Pigeon_0.7.5`) | Code, launcher, venv, local TMDb cache folders |
 | `~/.pigeon_0_6/` | **Settings:** locations, devices, TMDb API key, Apple TV pairing, logs |
 
 Copy **`~/.pigeon_0_6/`** from another machine to move settings (see `installer/setup/README.txt` on Pi).

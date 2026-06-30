@@ -14,6 +14,7 @@ DIST_DIR="${SCRIPT_DIR}/dist"
 STAGING="${DIST_DIR}/staging"
 ARCHIVE_NAME="pigeon_${VERSION}_raspberry_pi.tar.gz"
 
+rm -f "${DIST_DIR}"/pigeon_*_raspberry_pi.tar.gz
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}" "${DIST_DIR}"
 
@@ -70,7 +71,16 @@ chmod +x \
   "${STAGING_APP}/installer/Run-Pigeon" \
   "${STAGING_APP}/installer/click_install_pi.sh" \
   "${STAGING_APP}/installer/click_run_pigeon_pi.sh" \
-  "${STAGING_APP}/raspberryPi/install_on_pi.sh"
+  "${STAGING_APP}/installer/install_on_pi.sh"
+
+# Stamp versioned folder name into Pi quick-start (dev tree uses placeholders).
+if [[ -f "${PIGEON_ROOT}/installer/START-HERE.txt" ]]; then
+  sed \
+    -e "s|@APP_DIR@|${APP_DIR}|g" \
+    -e "s|@VERSION@|${VERSION}|g" \
+    "${PIGEON_ROOT}/installer/START-HERE.txt" > "${STAGING_APP}/installer/START-HERE.txt"
+fi
+echo "${VERSION}" > "${STAGING_APP}/BUILD_VERSION.txt"
 
 echo "==> Writing ${DIST_DIR}/${ARCHIVE_NAME}"
 tar -C "${STAGING}" -czf "${DIST_DIR}/${ARCHIVE_NAME}" "${APP_DIR}"

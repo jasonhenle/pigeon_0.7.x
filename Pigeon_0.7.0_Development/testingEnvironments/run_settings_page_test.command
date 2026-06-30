@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEV_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SYSTEM_DIR="${DEV_DIR}/Pigeon_0.7.0/pigeonSystem"
+SYSTEM_DIR="${DEV_DIR}/Pigeon/pigeonSystem"
 cd "$DEV_DIR"
 
 VENV_BIN="${SYSTEM_DIR}/.venv/bin"

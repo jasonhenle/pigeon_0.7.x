@@ -3,7 +3,7 @@ Standalone preview for the Pigeon 0.7 settings page (SVG menu + arrow-key focus)
 
 From ``Pigeon_0.7.0_Development``::
 
-    Pigeon_0.7.0/pigeonSystem/.venv/bin/python testingEnvironments/settings_page_test.py
+    Pigeon/pigeonSystem/.venv/bin/python testingEnvironments/settings_page_test.py
 
 Or double-click / run::
 
@@ -30,7 +30,7 @@ from pathlib import Path
 
 def _ensure_pigeon_on_path() -> None:
     dev_root = Path(__file__).resolve().parents[1]
-    system = dev_root / "Pigeon_0.7.0" / "pigeonSystem"
+    system = dev_root / "Pigeon" / "pigeonSystem"
     s = str(system)
     if s not in sys.path:
         sys.path.insert(0, s)

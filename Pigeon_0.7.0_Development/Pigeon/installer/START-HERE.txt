@@ -1,12 +1,12 @@
-Pigeon 0.7 — Raspberry Pi
-=========================
+Pigeon @VERSION@ — Raspberry Pi
+================================
 
 There is only ONE installer to use:
 
     Install-Pigeon
 
 Steps:
-  1. Open the Pigeon_0.7.0/installer folder.
+  1. Open the @APP_DIR@/installer folder (the folder created when you extract the tarball).
   2. Double-click Install-Pigeon.
   3. Choose Execute (or Execute in terminal).
   4. Click Continue in the dialog.

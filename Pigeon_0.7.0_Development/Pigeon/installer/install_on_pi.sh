@@ -1,12 +1,12 @@
 #!/bin/bash
 # Install Pigeon on Raspberry Pi OS / Debian Linux (apt, venv, optional systemd autostart).
-# Prefer the top-level installer:  ./installer/install_pigeon.sh
+# Prefer:  ./installer/install_pigeon.sh
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PIGEON_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-# shellcheck source=../installer/common.sh
-source "${PIGEON_ROOT}/installer/common.sh"
+INSTALLER_DIR="$(cd "$(dirname "$0")" && pwd)"
+PIGEON_ROOT="$(cd "${INSTALLER_DIR}/.." && pwd)"
+# shellcheck source=common.sh
+source "${INSTALLER_DIR}/common.sh"
 
 INSTALL_USER="${PIGEON_USER:-${SUDO_USER:-$(logname 2>/dev/null || echo "${USER:-pi}")}}"
 INSTALL_HOME="$(getent passwd "${INSTALL_USER}" 2>/dev/null | cut -d: -f6 || echo "/home/${INSTALL_USER}")"
@@ -40,12 +40,12 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      pigeon_print_usage
+      pigeon_print_usage "${PIGEON_ROOT}"
       exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
-      pigeon_print_usage >&2
+      pigeon_print_usage "${PIGEON_ROOT}" >&2
       exit 1
       ;;
   esac
@@ -183,7 +183,7 @@ if [[ "${ENABLE_AUTOSTART}" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; th
     -e "s|@PIGEON_HOME@|${INSTALL_HOME}|g" \
     -e "s|@PIGEON_DIR@|${INSTALL_DIR}|g" \
     -e "s|@PIGEON_VERSION@|${VERSION}|g" \
-    "${SCRIPT_DIR}/pigeon.service" > "${SERVICE_PATH}"
+    "${INSTALLER_DIR}/pigeon.service" > "${SERVICE_PATH}"
   systemctl daemon-reload
   systemctl enable pigeon.service
 fi

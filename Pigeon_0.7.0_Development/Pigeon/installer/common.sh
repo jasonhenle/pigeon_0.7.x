@@ -46,7 +46,12 @@ pigeon_prepare_runtime_dirs() {
 }
 
 pigeon_print_usage() {
-  cat <<'EOF'
+  local root="${1:-}"
+  local ver="0.7.5"
+  if [[ -n "${root}" ]]; then
+    ver="$(pigeon_version_string "${root}")"
+  fi
+  cat <<EOF
 Pigeon installer
 
 Usage:
@@ -59,8 +64,8 @@ Options:
   --no-autostart   Skip systemd autostart setup (Linux / Pi only)
   -h, --help       Show this help
 
-macOS default install dir:  ~/Applications/Pigeon_0.7.0
-Linux / Pi default dir:   ~/Pigeon_0.7.0
+macOS default install dir:  ~/Applications/Pigeon_${ver}
+Linux / Pi default dir:   ~/Pigeon_${ver}
 
 After install, launch with:
   macOS:  ~/Desktop/Pigeon.command   (or installer/run_pigeon_0_7.command in the install folder)

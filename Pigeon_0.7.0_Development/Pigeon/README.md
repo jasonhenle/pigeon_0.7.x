@@ -1,6 +1,6 @@
-# Pigeon 0.7.0
+# Pigeon 0.7
 
-This folder is the runnable/shareable build for Pigeon `0.7.0`.
+This folder is the runnable/shareable build for Pigeon (see `pigeonSystem/pigeon/version.py` for the current semver).
 
 ## What this build is
 
@@ -65,5 +65,5 @@ Pigeon is a full-screen media display and control surface. It can show playback 
 
 ## Build notes
 
-- This build version is `0.7.0`.
+- This build version is defined in `pigeonSystem/pigeon/version.py` (currently 0.7.5).
 - Changelog lives at `Desktop/Pigeon/pigeonChangelog/CHANGELOG.md`.
