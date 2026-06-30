@@ -27,6 +27,24 @@ _UA = "Pigeon/0.7 (update-check)"
 _VERSION_FIELD_RE = re.compile(r"^(MAJOR|MINOR|PATCH)\s*=\s*(\d+)\s*$", re.MULTILINE)
 
 
+def _latin1_header(value: str) -> str:
+    """HTTP/1.1 header values must be encodable as latin-1."""
+    return value.encode("latin-1", errors="ignore").decode("latin-1")
+
+
+def _sanitize_github_token(raw: str) -> str:
+    """Strip BOM, whitespace (incl. U+202F), and non-ASCII from pasted tokens."""
+    if not raw:
+        return ""
+    cleaned: list[str] = []
+    for ch in raw.lstrip("\ufeff"):
+        if ch.isspace():
+            continue
+        if ord(ch) < 128:
+            cleaned.append(ch)
+    return "".join(cleaned)
+
+
 def github_token() -> str:
     """Token from env or ``~/.pigeon_0_6/github_update_token``."""
     token = os.environ.get("PIGEON_UPDATE_GITHUB_TOKEN", "").strip()
@@ -39,15 +57,15 @@ def github_token() -> str:
                 token = token_path.read_text(encoding="utf-8").strip()
         except OSError:
             token = ""
-    return token
+    return _sanitize_github_token(token)
 
 
 def github_auth_headers(*, user_agent: str | None = None) -> dict[str, str]:
     """Optional token for private repos."""
-    headers = {"User-Agent": user_agent or _UA}
+    headers = {"User-Agent": _latin1_header(user_agent or _UA)}
     token = github_token()
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = _latin1_header(f"Bearer {token}")
     return headers
 
 
@@ -122,8 +140,8 @@ def _private_repo_hint() -> str:
 def _fetch_version_text(url: str, *, timeout_s: float, api: bool = False) -> tuple[str | None, str | None]:
     headers = github_auth_headers()
     if api:
-        headers["Accept"] = "application/vnd.github.raw"
-        headers["X-GitHub-Api-Version"] = "2022-11-28"
+        headers["Accept"] = _latin1_header("application/vnd.github.raw")
+        headers["X-GitHub-Api-Version"] = _latin1_header("2022-11-28")
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:

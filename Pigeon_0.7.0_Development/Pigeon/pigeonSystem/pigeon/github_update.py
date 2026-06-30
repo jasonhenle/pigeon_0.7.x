@@ -173,6 +173,11 @@ def _run_bootstrap(install_root: Path) -> tuple[bool, str]:
     return True, "Python dependencies refreshed."
 
 
+def _display_path(path: Path) -> str:
+    """User-visible path safe for Tk / latin-1 transports."""
+    return str(path).encode("ascii", errors="replace").decode("ascii")
+
+
 def apply_github_update(
     install_root: Path,
     *,
@@ -231,9 +236,16 @@ def apply_github_update(
         return ApplyUpdateResult(
             True,
             f"Updated from GitHub ({br}).\n\n"
-            f"Your settings in {PIGEON_STATE_DIR_TILDE} ({state_dir}) were not changed.\n"
+            f"Your settings in {PIGEON_STATE_DIR_TILDE} ({_display_path(state_dir)}) were not changed.\n"
             f"Cached TMDb art in the app folder was kept.\n\n"
             f"{msg_b}\n\nQuit and relaunch Pigeon to run the new version.",
+        )
+    except UnicodeEncodeError as e:
+        return ApplyUpdateResult(
+            False,
+            "Update failed due to a text encoding problem (often a bad character in "
+            "github_update_token or the install path).\n\n"
+            f"{e}",
         )
     except Exception as e:
         return ApplyUpdateResult(False, str(e))
