@@ -35,3 +35,15 @@ Option C — configure on the Pi
 Logs
 ----
 After launch, check ~/.pigeon_0_6/pigeon.log on the Pi for metadata/TMDb errors.
+
+Manual GitHub update (latin-1 / Updates button error)
+-----------------------------------------------------
+If in-app Updates fails with a latin-1 or U+202F encoding error, run once on the Pi:
+
+  rm -f ~/.pigeon_0_6/github_update_token
+  curl -fsSL -o /tmp/pi_update.sh \
+    "https://raw.githubusercontent.com/jasonhenle/pigeon_0.7.x/main/Pigeon_0.7.0_Development/Pigeon/installer/pi_update_from_github.sh"
+  bash /tmp/pi_update.sh
+
+If Pigeon is already installed, you can also run:
+  bash ~/Pigeon_*/installer/pi_update_from_github.sh

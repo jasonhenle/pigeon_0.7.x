@@ -1691,9 +1691,9 @@ def main() -> int:
                 f"Installed: {local}\n"
                 f"Latest:    {remote}\n\n"
                 f"Install now?\n\n"
-                f"• App code will be updated from GitHub\n"
+                f"• App code and UI assets (pigeonAssets) will be updated from GitHub\n"
                 f"• Settings stay in ~/.pigeon_0_6 (devices, TMDb key, pairing)\n"
-                f"• Cached artwork in the app folder is kept\n\n"
+                f"• Cached TMDb downloads in the app folder are kept\n\n"
                 f"You will need to quit and relaunch Pigeon when finished.",
                 parent=root,
             ):

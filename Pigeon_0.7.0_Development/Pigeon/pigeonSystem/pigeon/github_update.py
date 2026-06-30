@@ -13,12 +13,13 @@ from pathlib import Path
 from pigeon.runtime_paths import PIGEON_STATE_DIR_TILDE, pigeon_state_dir
 from pigeon.update_check import (
     _branch_candidates,
-    _latin1_safe_env,
-    _scrub_github_token_file,
+    _minimal_subprocess_env,
+    prepare_github_update_environment,
     github_auth_headers,
     github_http_get,
     github_repo_url,
 )
+from pigeon.update_assets import ensure_required_assets
 
 _UA = "Pigeon/0.7 (github-update)"
 _LAUNCHER_NAMES = ("run_pigeon_0_7.sh", "run_pigeon_0_6.sh", "Run-Pigeon", "run-pigeon.sh")
@@ -52,7 +53,9 @@ def resolve_install_root(*, script_path: str | Path | None = None) -> Path | Non
         candidates.extend([p.parent.parent, p.parent.parent.parent])
     env = os.environ.get("PIGEON_INSTALL_DIR", "").strip()
     if env:
-        candidates.append(Path(env).expanduser())
+        from pigeon.update_check import _ascii_only
+
+        candidates.append(Path(_ascii_only(env)).expanduser())
     cwd = Path.cwd()
     candidates.extend([cwd, cwd.parent])
     seen: set[str] = set()
@@ -120,9 +123,9 @@ def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
                 encoding="utf-8",
                 errors="replace",
                 check=False,
-                env=_latin1_safe_env(),
+                env=_minimal_subprocess_env(),
             )
-        except OSError as e:
+        except (OSError, UnicodeEncodeError) as e:
             return False, str(e)
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip()
@@ -149,13 +152,16 @@ def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
                 dst_sys,
                 ignore=shutil.ignore_patterns(".venv", "__pycache__", ".cursor"),
             )
-        for sub in ("installer", "raspberryPi"):
+        for sub in ("installer", "raspberryPi", "pigeonAssets"):
             src_sub = source / sub
             if src_sub.is_dir():
                 dst_sub = dest / sub
-                if dst_sub.exists():
+                if dst_sub.exists() and sub != "pigeonAssets":
                     shutil.rmtree(dst_sub)
-                shutil.copytree(src_sub, dst_sub)
+                if sub == "pigeonAssets":
+                    shutil.copytree(src_sub, dst_sub, dirs_exist_ok=True)
+                else:
+                    shutil.copytree(src_sub, dst_sub)
     except OSError as e:
         return False, str(e)
     return True, "Files copied (rsync not found; partial sync)."
@@ -182,9 +188,9 @@ def _run_bootstrap(install_root: Path) -> tuple[bool, str]:
             errors="replace",
             check=False,
             timeout=600,
-            env=_latin1_safe_env(),
+            env=_minimal_subprocess_env(),
         )
-    except (OSError, subprocess.TimeoutExpired) as e:
+    except (OSError, subprocess.TimeoutExpired, UnicodeEncodeError) as e:
         return False, str(e)
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-500:].strip()
@@ -208,8 +214,9 @@ def apply_github_update(
 
     Does **not** modify ``~/.pigeon_0_6`` (devices, TMDb keys, pairing, locations).
     Does **not** replace ``pigeonTMDB/`` cached artwork or ``pigeonSystem/.venv`` (re-bootstrap after).
+    Merges ``pigeonAssets/`` (status bar, logos, poster chrome) from GitHub.
     """
-    _scrub_github_token_file()
+    prepare_github_update_environment()
     br = (branch or _branch_candidates()[0]).strip()
     url = github_zipball_url(branch=br)
     install_root = install_root.resolve()
@@ -250,6 +257,15 @@ def apply_github_update(
         if not ok:
             return ApplyUpdateResult(False, f"Could not install update: {msg}")
 
+        ok_a, msg_a = ensure_required_assets(
+            install_root, source_root=app_src, branch=br
+        )
+        if not ok_a:
+            return ApplyUpdateResult(
+                False,
+                f"Update installed but required UI assets could not be restored:\n\n{msg_a}",
+            )
+
         ok_b, msg_b = _run_bootstrap(install_root)
         if not ok_b:
             return ApplyUpdateResult(
@@ -262,13 +278,17 @@ def apply_github_update(
             f"Updated from GitHub ({br}).\n\n"
             f"Your settings in {PIGEON_STATE_DIR_TILDE} ({_display_path(state_dir)}) were not changed.\n"
             f"Cached TMDb art in the app folder was kept.\n\n"
+            f"{msg_a}\n"
             f"{msg_b}\n\nQuit and relaunch Pigeon to run the new version.",
         )
     except UnicodeEncodeError as e:
         return ApplyUpdateResult(
             False,
             "Update failed due to a text encoding problem (often a bad character in "
-            "github_update_token or the install path).\n\n"
+            "github_update_token, GITHUB_TOKEN, or the install path).\n\n"
+            "On Raspberry Pi, run once from a terminal:\n"
+            "  rm -f ~/.pigeon_0_6/github_update_token\n"
+            "  bash ~/Pigeon_*/installer/pi_update_from_github.sh\n\n"
             f"{e}",
         )
     except Exception as e:

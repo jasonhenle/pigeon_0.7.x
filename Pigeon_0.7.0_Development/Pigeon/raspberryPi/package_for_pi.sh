@@ -71,7 +71,8 @@ chmod +x \
   "${STAGING_APP}/installer/Run-Pigeon" \
   "${STAGING_APP}/installer/click_install_pi.sh" \
   "${STAGING_APP}/installer/click_run_pigeon_pi.sh" \
-  "${STAGING_APP}/installer/install_on_pi.sh"
+  "${STAGING_APP}/installer/install_on_pi.sh" \
+  "${STAGING_APP}/installer/pi_update_from_github.sh"
 
 # Stamp versioned folder name into Pi quick-start (dev tree uses placeholders).
 if [[ -f "${PIGEON_ROOT}/installer/START-HERE.txt" ]]; then

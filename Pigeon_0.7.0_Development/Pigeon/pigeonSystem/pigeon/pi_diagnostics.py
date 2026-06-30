@@ -104,7 +104,7 @@ def run_linux_startup_checks() -> None:
         if not bar.is_file():
             _emit(
                 f"pigeon [Pi]: status bar assets missing under {assets} — "
-                "reinstall from a full pigeon_*_raspberry_pi.tar.gz (not GitHub zip alone)."
+                "tap Updates (or run installer/pi_update_from_github.sh) to pull pigeonAssets from GitHub."
             )
     except Exception:
         pass
