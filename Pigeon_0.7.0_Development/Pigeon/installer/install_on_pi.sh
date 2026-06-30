@@ -163,7 +163,8 @@ chmod +x \
   "${INSTALL_DIR}/installer/click_run_pigeon_pi.sh" \
   "${INSTALL_DIR}/installer/Install-Pigeon.desktop" \
   "${INSTALL_DIR}/installer/Run-Pigeon.desktop" \
-  "${INSTALL_DIR}/installer/pi_update_from_github.sh" 2>/dev/null || true
+  "${INSTALL_DIR}/installer/pi_update_from_github.sh" \
+  "${INSTALL_DIR}/installer/install_from_github.sh" 2>/dev/null || true
 
 echo "==> Creating Python virtual environment and installing pip packages (may take several minutes)…"
 if ! sudo -u "${INSTALL_USER}" bash -c "cd '${INSTALL_DIR}' && ./installer/run_pigeon_0_7.sh --bootstrap-only"; then

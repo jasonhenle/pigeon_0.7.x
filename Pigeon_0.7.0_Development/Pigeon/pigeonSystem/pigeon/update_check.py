@@ -360,7 +360,7 @@ def _private_repo_hint() -> str:
         "  ~/.pigeon_0_6/github_update_token\n\n"
         "Put a GitHub personal access token with read access to that repo, "
         "then tap Updates again.\n\n"
-        "Or reinstall from a fresh pigeon_*_raspberry_pi.tar.gz built on your Mac."
+        "Or reinstall from GitHub: bash installer/install_from_github.sh"
     )
 
 

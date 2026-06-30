@@ -18,7 +18,9 @@ Then use Run-Pigeon on your Desktop to launch Pigeon.
 In-app updates
 --------------
 Settings → Updates pulls from https://github.com/jasonhenle/pigeon_0.7.x (branch main).
-No token is required for the public repo. See GITHUB.md for details.
+Fresh installs: https://github.com/jasonhenle/pigeon_0.7.x/releases or
+  bash installer/install_from_github.sh
+See GITHUB.md for details.
 
 Metadata and TMDb artwork (IMPORTANT on Pi)
 -------------------------------------------

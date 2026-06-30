@@ -1,40 +1,60 @@
 # Pigeon and GitHub
 
 Repository: **https://github.com/jasonhenle/pigeon_0.7.x**  
-Default branch for downloads/updates: **`main`** (override with env `PIGEON_UPDATE_GITHUB_BRANCH`).
+Default branch: **`main`**
 
-Pigeon splits **app files** (this folder) from **your settings** (`~/.pigeon_0_6/`). Updates never delete settings.
+**GitHub is the canonical source for Pigeon.** The full app (code, `pigeonAssets/`, installers) lives in this repo. Fresh installs and in-app updates both use it. You do **not** need a Mac to download or package Pigeon.
+
+Pigeon splits **app files** (this repo) from **your settings** (`~/.pigeon_0_6/`). Updates never delete settings.
 
 ---
 
-## 1. Full download (install Pigeon from scratch)
+## 1. Fresh install (new Pi, new Mac, new machine)
 
-Use this for a new Mac, a new Pi, or a second machine.
+### Recommended — one script (Pi / Linux / Mac)
 
-### Option A — Download ZIP (no git)
+```bash
+curl -fsSL -o /tmp/pigeon-install.sh \
+  "https://raw.githubusercontent.com/jasonhenle/pigeon_0.7.x/main/Pigeon_0.7.0_Development/Pigeon/installer/install_from_github.sh"
+bash /tmp/pigeon-install.sh
+```
 
-1. Open:  
-   **https://github.com/jasonhenle/pigeon_0.7.x/archive/refs/heads/main.zip**
-2. Unzip the archive.
-3. Go to:  
-   **`Pigeon_0.7.0_Development/Pigeon/`** inside the extracted folder.
-4. **Mac:** run `installer/install_pigeon.command` or `./installer/install_pigeon.sh`  
-   **Pi:** open `installer/` and double-click **Install-Pigeon** (see `installer/START-HERE.txt`).
+| Platform | What the script does |
+|----------|----------------------|
+| **Raspberry Pi / Linux** | Downloads the latest **[GitHub Release](https://github.com/jasonhenle/pigeon_0.7.x/releases)** tarball (`pigeon_*_raspberry_pi.tar.gz`, includes all assets). If no release exists yet, falls back to the main-branch zip (same content as Updates). Runs `installer/install_on_pi.sh`. |
+| **macOS** | Downloads main-branch zip and runs `installer/install_pigeon.sh`. |
 
-### Option B — Clone with git
+Optional: `bash /tmp/pigeon-install.sh --dir "$HOME/MyPigeon"` or `--in-place` (Pi, install inside extracted folder).
+
+### Alternative — GitHub Releases (Pi)
+
+1. Open **https://github.com/jasonhenle/pigeon_0.7.x/releases**
+2. Download `pigeon_<version>_raspberry_pi.tar.gz`
+3. Extract, open `Pigeon_<version>/installer/`, double-click **Install-Pigeon** (see `START-HERE.txt`)
+
+Releases are built automatically when `pigeonSystem/pigeon/version.py` changes on `main`.
+
+### Alternative — ZIP or git (any platform)
+
+**ZIP:** https://github.com/jasonhenle/pigeon_0.7.x/archive/refs/heads/main.zip  
+Then go to **`Pigeon_0.7.0_Development/Pigeon/`** inside the extracted folder and run the installer for your platform.
+
+**Clone:**
 
 ```bash
 git clone https://github.com/jasonhenle/pigeon_0.7.x.git
 cd pigeon_0.7.x/Pigeon_0.7.0_Development/Pigeon
-./installer/install_pigeon.sh   # Mac
-# or installer/Install-Pigeon on Pi
+./installer/install_pigeon.sh          # Mac
+./installer/install_on_pi.sh           # Pi / Linux
 ```
+
+The zip and clone contain the **same tracked files** as Updates (including `pigeonAssets/`). Runtime caches (`pigeonCashe/`, downloaded TMDb art in `pigeonTMDB/`) are created locally and are not in git.
 
 ### What lives where after install
 
 | Location | Contents |
 |----------|----------|
-| App folder (e.g. `~/Pigeon_0.7.7`, `~/Applications/Pigeon_0.7.7`) | Code, launcher, venv, local TMDb cache folders |
+| App folder (e.g. `~/Pigeon_0.7.20`) | Code, launcher, venv, local TMDb cache folders |
 | `~/.pigeon_0_6/` | **Settings:** locations, devices, TMDb API key, Apple TV pairing, logs |
 
 Copy **`~/.pigeon_0_6/`** from another machine to move settings (see `installer/setup/README.txt` on Pi).
@@ -51,31 +71,31 @@ When GitHub has a **newer** `pigeonSystem/pigeon/version.py` than your installed
 
 Pigeon will:
 
-- Download the latest app tree from GitHub (zip of the tracked branch).
-- Merge into your **current install folder** only.
-- Refresh Python dependencies (`installer/run_pigeon_0_7.sh --bootstrap-only`).
-- **Not** modify `~/.pigeon_0_6/` (devices, TMDb key, pairing, locations).
-- **Not** replace `pigeonTMDB/` cached artwork or `pigeonSystem/.venv` (venv is refreshed, not deleted blindly).
+- Download the latest app tree from GitHub (zip of `main`).
+- Merge into your **current install folder** (including `pigeonAssets/`).
+- Refresh Python dependencies.
+- **Not** modify `~/.pigeon_0_6/`.
+- **Not** replace cached TMDb downloads in `pigeonTMDB/`.
 
-Quit and relaunch Pigeon when prompted.
+Quit and relaunch when prompted.
 
-If the button stays gray, you are already on the latest version GitHub reports, or `version.py` is not yet pushed to the branch Pigeon checks.
+**Pi already on a release tarball?** Updates keep your install folder current without re-downloading the tarball. For a clean reinstall, use `install_from_github.sh` or a Release download.
 
 ### Optional GitHub token
 
-`jasonhenle/pigeon_0.7.x` is **public**, so Updates work without a token on Mac and Pi.
+`jasonhenle/pigeon_0.7.x` is **public** — no token required.
 
-For a private fork or heavy API use, set `~/.pigeon_0_6/github_update_token` (one-line PAT) or `PIGEON_UPDATE_GITHUB_TOKEN` in the environment.
+For a private fork: `~/.pigeon_0_6/github_update_token` or `PIGEON_UPDATE_GITHUB_TOKEN`.
 
 ---
 
-## Version bumps (for maintainers)
+## 3. Maintainers — version bumps and releases
 
-On each release pushed to GitHub, bump **`pigeonSystem/pigeon/version.py`** (`MAJOR` / `MINOR` / `PATCH`) and push. Installed copies compare that file to decide if **Updates** should turn red.
+1. Bump **`pigeonSystem/pigeon/version.py`** (`MAJOR` / `MINOR` / `PATCH`).
+2. Push to **`main`**.
+3. GitHub Actions (`.github/workflows/pigeon-release.yml`) builds `pigeon_<version>_raspberry_pi.tar.gz` and publishes **Release `v<version>`**.
 
-- **Patch** — small fixes (`0.7.6` → `0.7.7`)
-- **Minor** — feature releases (human-driven)
-- **Major** — breaking / rebrand (future `1.0.0`)
+You can also run **`raspberryPi/package_for_pi.sh`** locally; tarballs in `raspberryPi/dist/` are gitignored because Releases are the published copies.
 
 ---
 
@@ -87,5 +107,5 @@ On each release pushed to GitHub, bump **`pigeonSystem/pigeon/version.py`** (`MA
 | `PIGEON_UPDATE_GITHUB_REPO` | Default `pigeon_0.7.x` |
 | `PIGEON_UPDATE_GITHUB_BRANCH` | Branch for version check and zip download (default `main`) |
 | `PIGEON_UPDATE_GITHUB_TOKEN` | Optional GitHub PAT |
-| `PIGEON_UPDATE_GITHUB_RAW` | Full URL to `version.py` (advanced) |
 | `PIGEON_STATE_DIR` | Settings directory (default `~/.pigeon_0_6`) |
+| `PIGEON_INSTALL_DIR` | Target install path for installers |

@@ -195,7 +195,7 @@ def ensure_required_assets(
         extra = f" (+{len(missing) - 4} more)" if len(missing) > 4 else ""
         lines.append(
             f"Warning: {len(missing)} required asset(s) still missing ({sample}{extra}). "
-            "Reinstall from pigeon_*_raspberry_pi.tar.gz if the UI looks wrong."
+            "Reinstall from GitHub Releases or run installer/install_from_github.sh if the UI looks wrong."
         )
         return False, "\n".join(lines)
 
