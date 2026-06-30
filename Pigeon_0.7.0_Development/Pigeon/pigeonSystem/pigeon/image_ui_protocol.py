@@ -119,7 +119,10 @@ def load_image_bgra(path: Path | str) -> np.ndarray | None:
         return _load_svg_as_bgra(p)
     raw = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
     if raw is None or raw.size == 0:
-        return None
+        bgr = _load_bgr_via_pil(p)
+        if bgr is None:
+            return None
+        raw = bgr
     return _bgr_or_gray_array_to_bgra(raw)
 
 
@@ -206,6 +209,22 @@ def bgr_scale_uniform_height(img_bgr: np.ndarray, target_h: int) -> np.ndarray:
     return cv2.resize(img_bgr, (tw, th), interpolation=cv_resize_interp(w0, h0, tw, th))
 
 
+def _load_bgr_via_pil(path: Path) -> np.ndarray | None:
+    """Fallback when OpenCV cannot decode (common on some Pi JPEG builds)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(path) as im:
+            rgb = np.asarray(im.convert("RGB"), dtype=np.uint8)
+        if rgb.size == 0:
+            return None
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except OSError:
+        return None
+
+
 def load_bgr(path: Path | str) -> np.ndarray | None:
     """Load image as BGR uint8, or None."""
     p = Path(path)
@@ -213,7 +232,9 @@ def load_bgr(path: Path | str) -> np.ndarray | None:
         return None
     raw = cv2.imread(str(p), cv2.IMREAD_COLOR)
     if raw is None or raw.size == 0:
-        return None
+        raw = _load_bgr_via_pil(p)
+        if raw is None or raw.size == 0:
+            return None
     if raw.ndim == 2:
         return cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
     return raw

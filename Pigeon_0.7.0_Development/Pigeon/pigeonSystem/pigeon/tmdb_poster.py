@@ -29,6 +29,9 @@ import os
 import random
 import re
 import secrets
+import shutil
+import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -48,7 +51,12 @@ from pigeon.media_cache import (
     find_cached_reformatted_asset,
     title_key,
 )
-from pigeon.media_folders import pigeon_pulled_media_dir, purge_directory_contents, trim_pulled_media_dir
+from pigeon.media_folders import (
+    ensure_tmdb_media_dirs,
+    pigeon_pulled_media_dir,
+    purge_directory_contents,
+    trim_pulled_media_dir,
+)
 from pigeon.runtime_paths import pigeon_state_dir as _pigeon_state_dir
 
 TMDB_API_BASE = "https://api.themoviedb.org/3"
@@ -983,23 +991,101 @@ def _match_rank(query: str, item: dict) -> tuple[int, int]:
     return best
 
 
+def _sanitize_api_secret(raw: str | bytes) -> str:
+    """Strip BOM, whitespace (incl. U+202F), and non-ASCII from pasted API keys/tokens."""
+    if not raw:
+        return ""
+    if isinstance(raw, bytes):
+        return bytes(b for b in raw if 32 <= b < 127).decode("ascii")
+    cleaned: list[str] = []
+    for ch in raw.lstrip("\ufeff"):
+        if ch.isspace():
+            continue
+        if ord(ch) < 128:
+            cleaned.append(ch)
+    return "".join(cleaned)
+
+
+def _minimal_subprocess_env() -> dict[str, str]:
+    keep = (
+        "PATH",
+        "HOME",
+        "USER",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    )
+    out: dict[str, str] = {}
+    for key in keep:
+        val = os.environ.get(key)
+        if val:
+            out[key] = "".join(ch for ch in str(val) if 32 <= ord(ch) < 127)
+    if "PATH" not in out:
+        out["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+    if "HOME" not in out:
+        try:
+            out["HOME"] = str(Path.home())
+        except RuntimeError:
+            pass
+    return out
+
+
+def _http_get_bytes(url: str, *, timeout_s: float = 60.0, headers: dict[str, str] | None = None) -> bytes:
+    """HTTPS GET for TMDb API and image CDN (curl on Linux for reliable Pi SSL)."""
+    safe_headers = {
+        str(k): "".join(ch for ch in str(v) if ord(ch) < 256) for k, v in (headers or {}).items()
+    }
+    if sys.platform.startswith("linux"):
+        curl = shutil.which("curl")
+        if not curl:
+            raise OSError("curl is required for TMDb downloads on Linux.")
+        cmd = [curl, "-fsSL", "--max-time", str(max(1, int(timeout_s)))]
+        for hk, hv in safe_headers.items():
+            if hk and hv is not None:
+                cmd.extend(["-H", f"{hk}: {hv}"])
+        cmd.append(url)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=False,
+            env=_minimal_subprocess_env(),
+        )
+        if proc.returncode == 0 and proc.stdout:
+            return proc.stdout
+        err = (proc.stderr or proc.stdout or b"").decode("utf-8", errors="replace").strip()
+        raise OSError(err or f"curl exited {proc.returncode}")
+
+    req = urllib.request.Request(url, headers=safe_headers or {"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        return resp.read()
+
+
 def load_tmdb_api_key() -> str | None:
-    k = os.environ.get("PIGEON_TMDB_API_KEY", "").strip()
+    k = _sanitize_api_secret(os.environ.get("PIGEON_TMDB_API_KEY", ""))
     if k:
         return k
     p = _pigeon_state_dir() / "tmdb_api_key"
     if p.is_file():
-        return p.read_text(encoding="utf-8").strip() or None
+        try:
+            return _sanitize_api_secret(p.read_bytes()) or None
+        except OSError:
+            return None
     return None
 
 
 def load_tmdb_read_token() -> str | None:
-    t = os.environ.get("PIGEON_TMDB_READ_TOKEN", "").strip()
+    t = _sanitize_api_secret(os.environ.get("PIGEON_TMDB_READ_TOKEN", ""))
     if t:
         return t
     p = _pigeon_state_dir() / "tmdb_read_token"
     if p.is_file():
-        return p.read_text(encoding="utf-8").strip() or None
+        try:
+            return _sanitize_api_secret(p.read_bytes()) or None
+        except OSError:
+            return None
     return None
 
 
@@ -1009,10 +1095,10 @@ def tmdb_is_configured() -> bool:
 
 
 def _request_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    headers = {"User-Agent": _UA}
     token = load_tmdb_read_token()
     if token:
-        req.add_header("Authorization", f"Bearer {token}")
+        headers["Authorization"] = f"Bearer {token}"
     else:
         api_key = load_tmdb_api_key()
         if not api_key:
@@ -1022,17 +1108,14 @@ def _request_json(url: str) -> dict:
             )
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}{urllib.parse.urlencode({'api_key': api_key})}"
-        req = urllib.request.Request(url, headers={"User-Agent": _UA})
 
-    with urllib.request.urlopen(req, timeout=45) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    body = _http_get_bytes(url, timeout_s=45.0, headers=headers)
+    return json.loads(body.decode("utf-8"))
 
 
 def _download_binary(url: str, dest: Path) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = resp.read()
+    data = _http_get_bytes(url, timeout_s=60.0, headers={"User-Agent": _UA})
     dest.write_bytes(data)
 
 
@@ -1566,6 +1649,7 @@ def apply_tmdb_movie_query(
         return False, "Empty search.", None
     # Protocol: keep ORIGINAL as transient staging only; clear leftovers before each new TMDB pull.
     try:
+        ensure_tmdb_media_dirs()
         purge_directory_contents(pigeon_pulled_media_dir())
     except Exception:
         pass

@@ -48,9 +48,20 @@ def pigeon_reformatted_media_dir() -> Path:
 
 
 def ensure_reformatted_media_dir() -> Path:
-    d = pigeon_tmdb_root_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return ensure_tmdb_media_dirs()
+
+
+def ensure_tmdb_media_dirs() -> Path:
+    """Create pigeonTMDB cache folders (BD, TT, Poster, staging)."""
+    root = pigeon_tmdb_root_dir()
+    for sub in (
+        "pigeonTMDB_ORIGINAL",
+        "pigeonTMDB_BD",
+        "pigeonTMDB_TT",
+        "pigeonTMDB_Poster",
+    ):
+        (root / sub).mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def legacy_pigeondata_pulled_dir() -> Path:

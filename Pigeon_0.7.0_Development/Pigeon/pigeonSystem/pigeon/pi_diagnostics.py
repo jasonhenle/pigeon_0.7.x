@@ -56,6 +56,15 @@ def run_linux_startup_checks() -> None:
             f"Create {state / 'tmdb_api_key'} (one line, from themoviedb.org) "
             "or copy ~/.pigeon_0_6 from your Mac."
         )
+    else:
+        _emit("pigeon [Pi]: TMDb API key found — artwork fetch enabled.")
+
+    try:
+        from pigeon.media_folders import ensure_tmdb_media_dirs
+
+        ensure_tmdb_media_dirs()
+    except Exception:
+        pass
 
     try:
         import pyatv  # noqa: F401

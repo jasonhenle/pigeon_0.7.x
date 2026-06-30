@@ -5666,6 +5666,12 @@ def main() -> int:
             apple_tv_auto_state["last_tmdb_fetch_input"] = q_in
             apple_tv_auto_state["last_tmdb_fetch_refined"] = q
             apple_tv_auto_state["last_tmdb_fetch_prefer"] = str(prefer or "auto").strip() or "auto"
+            try:
+                from pigeon.pi_diagnostics import append_pigeon_log
+
+                append_pigeon_log(f"tmdb fetch started: {q!r} prefer={prefer!r}")
+            except Exception:
+                pass
 
             def finish_tmdb(ok_m: bool, msg_m: str, backdrop_master: np.ndarray | None = None) -> None:
                 nonlocal skip_cache, cap, scene_enabled, last_frame, scaled_display, scaled_version, playing, use_backdrop_scene, backdrop_master_bgr, saved_backdrop_master_bgr, saved_backdrop_app_logo_letterbox_fit, backdrop_app_logo_letterbox_fit, brightness_current, brightness_from, brightness_target, brightness_t0, active_tmdb_title_key, active_tmdb_display_title, tmdb_logo_patch_bgra, tmdb_logo_app_fallback_active
@@ -5806,6 +5812,8 @@ def main() -> int:
                         pass
                 if dev_phase == DevPhase.SETTINGS:
                     sync_developer_chrome()
+                skip_cache = None
+                render_once()
 
             def worker() -> None:
                 try:
