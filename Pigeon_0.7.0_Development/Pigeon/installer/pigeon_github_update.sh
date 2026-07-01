@@ -55,15 +55,26 @@ trap 'rm -rf "${WORKDIR}"' EXIT
 
 curl -fsSL -o "${WORKDIR}/pigeon.zip" "${ZIP_URL}" || die "curl download failed (network or GitHub blocked)"
 
-python3 - <<'PY' "${WORKDIR}/pigeon.zip" "${WORKDIR}/extract"
+python3 - <<'PY' "${WORKDIR}/pigeon.zip" "${WORKDIR}/extract" "${APP_REL}"
 import sys
 import zipfile
 from pathlib import Path
 
-zip_path, out = Path(sys.argv[1]), Path(sys.argv[2])
+zip_path, out, app_rel = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+marker = app_rel.rstrip("/") + "/"
 out.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(zip_path) as zf:
-    zf.extractall(out)
+    for info in zf.infolist():
+        name = info.filename
+        if marker not in name:
+            continue
+        target = out / name
+        if info.is_dir() or name.endswith("/"):
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(info) as src, open(target, "wb") as dst:
+            dst.write(src.read())
 PY
 
 EXTRACT="${WORKDIR}/extract"
