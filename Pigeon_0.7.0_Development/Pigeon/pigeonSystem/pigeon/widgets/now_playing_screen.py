@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.compositing import alpha_blend_bgra_over_bgr
 from pigeon.design import DESIGN_H, DESIGN_W
-from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold
+from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold, resolve_ui_font_medium
 from pigeon.image_ui_protocol import load_image_bgra
 from pigeon.widgets.playback_overlay import (
     _image_contain_center_bgra,
@@ -53,6 +53,7 @@ _COLOR_UNPLAYED_BGR = (40, 40, 40)
 
 _SVG_W = 800.0
 _SVG_H = 480.0
+_Y_SCALE = float(DESIGN_H) / _SVG_H
 
 # Logical Illustrator layer ids (encoded in SVG via _encode_svg_layer_id).
 _HIDE_LAYER_LOGICAL: tuple[str, ...] = (
@@ -86,7 +87,7 @@ def _encode_svg_layer_id(logical_id: str) -> str:
 
 
 def _sy(y_svg: float) -> int:
-    return int(round(y_svg))
+    return int(round(y_svg * _Y_SCALE))
 
 
 def _sx(x_svg: float) -> int:
@@ -208,17 +209,9 @@ def _apply_indicator_colors(root: ET.Element, state: NowPlayingScreenState) -> N
                 _set_node_fill(node, color)
 
 
-def apply_now_playing_svg_state(
-    root: ET.Element,
-    state: NowPlayingScreenState,
-    *,
-    hide_svg_tt_black: bool = False,
-) -> None:
+def apply_now_playing_svg_state(root: ET.Element, state: NowPlayingScreenState) -> None:
     """Mutate an SVG element tree: hide demo/dynamic layers; recolor status dots."""
-    hide_layers = list(_HIDE_LAYER_LOGICAL)
-    if hide_svg_tt_black:
-        hide_layers.append("03_widget_now_playing_tmdb_TT_black")
-    for logical_id in hide_layers:
+    for logical_id in _HIDE_LAYER_LOGICAL:
         _set_visible(_find_by_logical_id(root, logical_id), False)
     _apply_indicator_colors(root, state)
 
@@ -294,7 +287,6 @@ def render_now_playing_svg_base_bgra(
     *,
     svg_path: Path | str | None = None,
     assets_dir: Path | str | None = None,
-    hide_svg_tt_black: bool = False,
 ) -> np.ndarray:
     """Load the now-playing SVG, apply ``state`` to static chrome, return 800×480 BGRA."""
     if svg_path is not None:
@@ -305,7 +297,7 @@ def render_now_playing_svg_base_bgra(
         raise FileNotFoundError(f"now-playing SVG not found: {path}")
 
     root = _svg_tree_from_path(path)
-    apply_now_playing_svg_state(root, state, hide_svg_tt_black=hide_svg_tt_black)
+    apply_now_playing_svg_state(root, state)
     return _rasterize_svg_tree(root)
 
 
@@ -469,12 +461,14 @@ def _fit_text_patch(
     *,
     size_px: int,
     fill_rgb: tuple[int, int, int],
+    bold: bool = True,
     anchor: str = "ls",
 ) -> tuple[np.ndarray, int, int]:
-    """Render label text with Sharp Sans Extra Bold (or bold fallback)."""
     if not text:
         return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
-    path = resolve_ui_font_extrabold() or resolve_ui_font_bold()
+    path = resolve_ui_font_extrabold() if bold else resolve_ui_font_medium()
+    if not path:
+        path = resolve_ui_font_bold()
     font = _load_font(str(path or ""), size_px)
     probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
@@ -849,13 +843,8 @@ class NowPlayingScreenWidget:
             roi[:] = alpha_blend_bgra_over_bgr(roi, sub)
 
     def _render_svg_base(self) -> np.ndarray:
-        hide_tt = self._tt_bgra is not None and self._tt_bgra.size > 0
         try:
-            return render_now_playing_svg_base_bgra(
-                self._state,
-                assets_dir=self._assets_dir,
-                hide_svg_tt_black=hide_tt,
-            )
+            return render_now_playing_svg_base_bgra(self._state, assets_dir=self._assets_dir)
         except (FileNotFoundError, RuntimeError):
             return _fallback_base_bgra()
 
@@ -898,15 +887,17 @@ class NowPlayingScreenWidget:
             if played_crop is not None:
                 self._paste_patch(out, played_crop, _BAR_L, _BAR_T)
 
-        # TMDb TT: full black treatment always; color title cropped left→right on top.
+        # TMDb TT normal: same crop reveal over full-size fit (not horizontal stretch).
         if self._tt_bgra is not None and self._tt_bgra.size > 0:
             tt_fit = _fit_status_bar_slot_bgra(self._tt_bgra, _BAR_W, _BAR_H)
-            tt_black = _tt_to_black_bgra(tt_fit)
-            self._paste_patch(out, tt_black, _BAR_L, _BAR_T)
             if played_w > 0:
                 color_crop = _reveal_crop_bgra_left(tt_fit, played_w)
                 if color_crop is not None:
                     self._paste_patch(out, color_crop, _BAR_L, _BAR_T)
+            if played_w < _BAR_W:
+                tt_black = _tt_to_black_bgra(tt_fit)
+                unplayed_crop = tt_black[:, played_w:, :].copy()
+                self._paste_patch(out, unplayed_crop, _BAR_L + played_w, _BAR_T)
 
         if st.show_paused and played_w > 0:
             paused = _text_patch_bgra(
@@ -959,22 +950,22 @@ class NowPlayingScreenWidget:
                 tc_text,
                 size_px=max(10, _sy(30.0)),
                 fill_rgb=(0, 0, 0),
+                bold=True,
             )
             tx = tc_x + max(0, (_TC_W - tw) // 2)
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
         # Vertical progress edge: white stroke at played-bar crop X, linking badge → timecode.
-        if played_w > 0:
-            progress_edge_x = _BAR_L + played_w
-            _draw_vertical_stroke_bgra(
-                out,
-                progress_edge_x,
-                _BADGE_Y,
-                _TC_Y + _TC_H,
-                stroke_bgr=_COLOR_ACCENT_BGR,
-                stroke=_BAR_STROKE,
-            )
+        progress_edge_x = _BAR_L + played_w
+        _draw_vertical_stroke_bgra(
+            out,
+            progress_edge_x,
+            _BADGE_Y,
+            _TC_Y + _TC_H,
+            stroke_bgr=_COLOR_ACCENT_BGR,
+            stroke=_BAR_STROKE,
+        )
 
         # Clock — right aligned at design x anchor.
         clk = _clock_text()
@@ -982,6 +973,7 @@ class NowPlayingScreenWidget:
             clk,
             size_px=_CLOCK_SIZE_PX,
             fill_rgb=(225, 0, 24),
+            bold=True,
             anchor="rs",
         )
         self._paste_patch(out, clk_patch, _CLOCK_X - cw, _CLOCK_Y - ch // 2)
@@ -993,6 +985,7 @@ class NowPlayingScreenWidget:
                 cfg_line,
                 size_px=_AUDIO_CFG_SIZE,
                 fill_rgb=(225, 0, 24),
+                bold=True,
             )
             self._paste_patch(out, cfg_patch, _AUDIO_CFG_X, _AUDIO_CFG_Y - _sy(20))
         vol_line = _receiver_volume_display_line(st.volume)
@@ -1001,6 +994,7 @@ class NowPlayingScreenWidget:
                 vol_line,
                 size_px=_VOLUME_SIZE,
                 fill_rgb=(225, 0, 24),
+                bold=True,
             )
             self._paste_patch(out, vol_patch, _VOLUME_X, _VOLUME_Y - _sy(26))
 
