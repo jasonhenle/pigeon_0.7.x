@@ -1,13 +1,17 @@
 """
-Pigeon 0.7 now-playing screen — layout from ``now_playing_test_070126`` (800×480 art → 800×400 design).
+Pigeon 0.7 now-playing screen — SVG layer chrome from ``now_playing_test_070126`` (800×480 → 800×400).
 
-Geometry is taken from ``pigeonAssets/now_playing_test_070126.svg`` (Y scaled ×400/480). Dynamic layers
-(TMDb backdrop/TT, streaming badge, timecodes, progress, text) are drawn programmatically; the SVG ships
-for Pi asset sync and reference.
+Static chrome is rasterized from ``pigeonAssets/now_playing_test_070126.svg`` (see
+:func:`render_now_playing_svg_base_bgra`). Dynamic layers (TMDb backdrop/TT, streaming badge,
+timecodes, progress, live text) are drawn programmatically on top.
 """
 
 from __future__ import annotations
 
+import io
+import os
+import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -28,6 +32,9 @@ from pigeon.widgets.playback_overlay import (
 )
 from pigeon.widgets.status_bar import DesignPatch
 
+SVG_NS = "http://www.w3.org/2000/svg"
+ET.register_namespace("", SVG_NS)
+
 # --- Colors (Numbers spec) ---
 _COLOR_UI_HEX = "#E10018"
 _COLOR_ACCENT_HEX = "#FFFFFF"
@@ -43,8 +50,39 @@ _COLOR_SUCCESS_BGR = (0, 216, 1)
 _COLOR_FAIL_BGR = (24, 0, 225)
 _COLOR_UNPLAYED_BGR = (40, 40, 40)
 
+_SVG_W = 800.0
 _SVG_H = 480.0
 _Y_SCALE = float(DESIGN_H) / _SVG_H
+
+# Logical Illustrator layer ids (encoded in SVG via _encode_svg_layer_id).
+_HIDE_LAYER_LOGICAL: tuple[str, ...] = (
+    "04_widget_backdrop_tmdb_backdrop",
+    "03_widget_now_playing_tmdb_TT_black",
+    "03_widget_now_playing_tmdb_TT_normal",
+    "03_widget_now_playing_status_bar_played",
+    "03_widget_now_playing_badge_service",
+    "03_widget_now_playing_badge_container",
+    "03_widget_now_playing_timecode_container",
+    "03_widget_now_playing_timecode_text",
+    "02_widget_clock_text",
+    "05_widget_audio_config_text",
+    "05_widget_audio_config_volume_text",
+)
+
+_INDICATOR_LAYER_LOGICAL: tuple[tuple[str, str], ...] = (
+    ("01_icon_audio_indicator", "indicator_audio"),
+    ("01_icon_now_playing_indicator", "indicator_now_playing"),
+    ("01_icon_indicator_reveiver", "indicator_receiver"),
+    ("01_icon_indicator_tmdb", "indicator_tmdb"),
+)
+
+
+def _encode_svg_layer_id(logical_id: str) -> str:
+    """Map ``07_background`` → ``_x30_7_x5F_background`` (Illustrator XML id encoding)."""
+    body = logical_id
+    if body.startswith("0"):
+        body = "_x30_" + body[1:]
+    return body.replace("_", "_x5F_")
 
 
 def _sy(y_svg: float) -> int:
@@ -83,16 +121,6 @@ _CLOCK_X = _sx(503.5525)
 _CLOCK_Y = _sy(452.3979)
 _CLOCK_SIZE_PX = max(12, _sy(60.0))
 
-# Status indicators (layer 01).
-_INDICATOR_R = max(2, _sx(7.551))
-_INDICATOR_Y = _sy(436.842)
-_INDICATOR_XS = (
-    _sx(416.691),  # audio
-    _sx(436.691),  # now playing
-    _sx(456.691),  # receiver
-    _sx(476.691),  # tmdb
-)
-
 # Audio config + volume (layer 05).
 _AUDIO_CFG_X = _sx(31.4322)
 _AUDIO_CFG_Y = _sy(215.9585)
@@ -100,21 +128,6 @@ _AUDIO_CFG_SIZE = max(10, _sy(26.0))
 _VOLUME_X = _sx(64.672)
 _VOLUME_Y = _sy(444.8463)
 _VOLUME_SIZE = max(10, _sy(34.0))
-
-# Audio level meters (layer 06) — stub at full height.
-_LEVEL_LABEL_Y = _sy(243.979)
-_LEVEL_BAR_TOP = _sy(249.952)
-_LEVEL_BAR_BOTTOM = _sy(343.8)
-_LEVEL_SPECS: tuple[tuple[str, int, int], ...] = (
-    ("SL", _sx(38.968), _sy(42.271)),
-    ("L", _sx(63.488), _sy(129.543)),
-    ("C", _sx(87.68), _sy(93.835)),
-    ("R", _sx(112.035), _sy(129.543)),
-    ("SR", _sx(136.391), _sy(42.271)),
-    ("LFE", _sx(197.68), _sy(93.835)),
-)
-_LEVEL_LABEL_SIZE = max(8, _sy(20.0))
-
 
 @dataclass
 class NowPlayingScreenState:
@@ -138,8 +151,146 @@ class NowPlayingScreenState:
     indicator_audio: bool = False
 
 
-def default_now_playing_svg_path(assets_dir: Path | str) -> Path:
-    return Path(assets_dir) / "now_playing_test_070126.svg"
+def default_now_playing_svg_path(assets_dir: Path | str | None = None) -> Path:
+    """Resolve now-playing SVG (override with ``PIGEON_NOW_PLAYING_SVG``)."""
+    env = os.environ.get("PIGEON_NOW_PLAYING_SVG", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    if assets_dir is not None:
+        return Path(assets_dir) / "now_playing_test_070126.svg"
+    pigeon_root = Path(__file__).resolve().parents[3]
+    return pigeon_root / "pigeonAssets" / "now_playing_test_070126.svg"
+
+
+def _find_by_id(root: ET.Element, layer_id: str) -> ET.Element | None:
+    for el in root.iter():
+        if el.get("id") == layer_id:
+            return el
+    return None
+
+
+def _find_by_logical_id(root: ET.Element, logical_id: str) -> ET.Element | None:
+    return _find_by_id(root, _encode_svg_layer_id(logical_id))
+
+
+def _set_visible(el: ET.Element | None, visible: bool) -> None:
+    if el is None:
+        return
+    if visible:
+        el.attrib.pop("display", None)
+    else:
+        el.set("display", "none")
+
+
+def _set_node_fill(node: ET.Element, hex_color: str) -> None:
+    style = node.get("style") or ""
+    if "fill:" in style:
+        node.set("style", re.sub(r"fill:[^;\"']+", f"fill:{hex_color}", style))
+    node.set("fill", hex_color)
+
+
+def _apply_indicator_colors(root: ET.Element, state: NowPlayingScreenState) -> None:
+    for logical_id, attr in _INDICATOR_LAYER_LOGICAL:
+        group = _find_by_logical_id(root, logical_id)
+        if group is None:
+            continue
+        ok = bool(getattr(state, attr))
+        color = _COLOR_SUCCESS_HEX if ok else _COLOR_FAIL_HEX
+        for node in group.iter():
+            if node.tag.endswith("circle"):
+                _set_node_fill(node, color)
+
+
+def apply_now_playing_svg_state(root: ET.Element, state: NowPlayingScreenState) -> None:
+    """Mutate an SVG element tree: hide demo/dynamic layers; recolor status dots."""
+    for logical_id in _HIDE_LAYER_LOGICAL:
+        _set_visible(_find_by_logical_id(root, logical_id), False)
+    _apply_indicator_colors(root, state)
+
+
+def _svg_tree_from_path(path: Path) -> ET.Element:
+    tree = ET.parse(path)
+    root = tree.getroot()
+    root.set("viewBox", f"0 0 {int(_SVG_W)} {int(_SVG_H)}")
+    root.set("width", str(int(_SVG_W)))
+    root.set("height", str(int(_SVG_H)))
+    return root
+
+
+def _scale_raster_to_design(bgra: np.ndarray, src_w: int, src_h: int) -> np.ndarray:
+    if bgra.shape[0] != src_h or bgra.shape[1] != src_w:
+        bgra = cv2.resize(bgra, (src_w, src_h), interpolation=cv2.INTER_AREA)
+    return cv2.resize(bgra, (int(DESIGN_W), int(DESIGN_H)), interpolation=cv2.INTER_AREA)
+
+
+def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
+    """Return BGRA uint8 (DESIGN_H × DESIGN_W). Uses PyMuPDF; cairosvg if available."""
+    svg_bytes = ET.tostring(root, encoding="utf-8")
+    src_w, src_h = int(_SVG_W), int(_SVG_H)
+
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=svg_bytes, filetype="svg")
+        page = doc[0]
+        pix = page.get_pixmap(
+            matrix=fitz.Matrix(src_w / page.rect.width, src_h / page.rect.height)
+        )
+        rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+        if pix.n == 4:
+            bgra = cv2.cvtColor(rgb, cv2.COLOR_RGBA2BGRA)
+        else:
+            bgra = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGRA)
+        return _scale_raster_to_design(bgra, src_w, src_h)
+    except ImportError:
+        pass
+
+    try:
+        import cairosvg
+
+        out = io.BytesIO()
+        cairosvg.svg2png(
+            bytestring=svg_bytes,
+            write_to=out,
+            output_width=src_w,
+            output_height=src_h,
+        )
+        data = np.frombuffer(out.getvalue(), dtype=np.uint8)
+        raw = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            raise RuntimeError("SVG raster decode failed")
+        if raw.ndim == 2:
+            bgra = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGRA)
+        elif raw.shape[2] == 3:
+            bgra = cv2.cvtColor(raw, cv2.COLOR_BGR2BGRA)
+        else:
+            bgra = raw
+        return _scale_raster_to_design(bgra, src_w, src_h)
+    except OSError as exc:
+        raise RuntimeError(
+            "Now-playing screen needs PyMuPDF (pip install pymupdf) or cairosvg with system cairo."
+        ) from exc
+
+    raise RuntimeError("Install pymupdf or cairosvg to rasterize the now-playing SVG.")
+
+
+def render_now_playing_svg_base_bgra(
+    state: NowPlayingScreenState,
+    *,
+    svg_path: Path | str | None = None,
+    assets_dir: Path | str | None = None,
+) -> np.ndarray:
+    """Load the now-playing SVG, apply ``state`` to static chrome, return 800×400 BGRA."""
+    if svg_path is not None:
+        path = Path(svg_path)
+    else:
+        path = default_now_playing_svg_path(assets_dir)
+    if not path.is_file():
+        raise FileNotFoundError(f"now-playing SVG not found: {path}")
+
+    root = _svg_tree_from_path(path)
+    apply_now_playing_svg_state(root, state)
+    return _rasterize_svg_tree(root)
 
 
 @lru_cache(maxsize=8)
@@ -267,6 +418,14 @@ def _tt_to_black_bgra(src: np.ndarray) -> np.ndarray:
     out[alpha, 0] = 0
     out[alpha, 1] = 0
     out[alpha, 2] = 0
+    return out
+
+
+def _fallback_base_bgra() -> np.ndarray:
+    """Flat background when SVG rasterization is unavailable."""
+    out = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
+    out[:, :, :3] = _COLOR_BG_BGR
+    out[:, :, 3] = 255
     return out
 
 
@@ -532,13 +691,17 @@ class NowPlayingScreenWidget:
         else:
             roi[:] = alpha_blend_bgra_over_bgr(roi, sub)
 
+    def _render_svg_base(self) -> np.ndarray:
+        try:
+            return render_now_playing_svg_base_bgra(self._state, assets_dir=self._assets_dir)
+        except (FileNotFoundError, RuntimeError):
+            return _fallback_base_bgra()
+
     def _render_frame_bgra(self) -> np.ndarray:
         st = self._state
-        out = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
-        out[:, :, :3] = _COLOR_BG_BGR
-        out[:, :, 3] = 255
+        out = self._render_svg_base()
 
-        # Backdrop inset + stroke container.
+        # Live TMDb backdrop inside SVG container bounds.
         if self._backdrop_bgr is not None and self._backdrop_bgr.size > 0:
             bd_patch = cv2.resize(
                 self._backdrop_bgr,
@@ -555,34 +718,10 @@ class NowPlayingScreenWidget:
             bd_bgra = bd_bgra.copy()
             bd_bgra[:, :, 3] = cv2.bitwise_and(bd_bgra[:, :, 3], mask)
             self._paste_patch(out, bd_bgra, _BACKDROP_X, _BACKDROP_Y)
-        _draw_rounded_rect_bgra(
-            out,
-            _BACKDROP_X,
-            _BACKDROP_Y,
-            _BACKDROP_W,
-            _BACKDROP_H,
-            fill_bgr=_COLOR_BG_BGR,
-            stroke_bgr=_COLOR_ACCENT_BGR,
-            radius=_BACKDROP_RX,
-            stroke=_BAR_STROKE,
-        )
 
         progress = st.progress if st.trt_substantive else 0.0
         played_w = int(round(progress * float(_BAR_W)))
         played_w = max(0, min(_BAR_W, played_w))
-
-        # Unplayed track (full bar, dark fill + stroke).
-        _draw_rounded_rect_bgra(
-            out,
-            _BAR_L,
-            _BAR_T,
-            _BAR_W,
-            _BAR_H,
-            fill_bgr=_COLOR_UNPLAYED_BGR,
-            stroke_bgr=_COLOR_ACCENT_BGR,
-            radius=_BAR_RX,
-            stroke=_BAR_STROKE,
-        )
 
         # Played bar fill (under title treatment).
         if played_w > 0:
@@ -677,7 +816,7 @@ class NowPlayingScreenWidget:
         )
         self._paste_patch(out, clk_patch, _CLOCK_X - cw, _CLOCK_Y - ch // 2)
 
-        # Audio config + volume.
+        # Audio config + volume (placeholder SVG text hidden; live values drawn here).
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
             cfg_patch, _, _ = _fit_text_patch(
@@ -696,46 +835,6 @@ class NowPlayingScreenWidget:
                 bold=True,
             )
             self._paste_patch(out, vol_patch, _VOLUME_X, _VOLUME_Y - _sy(26))
-
-        # Audio level stubs (full height).
-        bar_h_full = max(4, _LEVEL_BAR_BOTTOM - _LEVEL_BAR_TOP)
-        for label, bar_x, _bar_h in _LEVEL_SPECS:
-            bx = bar_x
-            bw = max(4, _sx(14.928))
-            _draw_rounded_rect_bgra(
-                out,
-                bx,
-                _LEVEL_BAR_TOP,
-                bw,
-                bar_h_full,
-                fill_bgr=_COLOR_UI_BGR,
-                radius=2,
-            )
-            lbl_patch, _, _ = _fit_text_patch(
-                label,
-                size_px=_LEVEL_LABEL_SIZE,
-                fill_rgb=(225, 0, 24),
-                bold=True,
-            )
-            self._paste_patch(out, lbl_patch, bx - 2, _LEVEL_LABEL_Y - _sy(18))
-
-        # Status dots.
-        flags = (
-            st.indicator_audio,
-            st.indicator_now_playing,
-            st.indicator_receiver,
-            st.indicator_tmdb,
-        )
-        for cx, ok in zip(_INDICATOR_XS, flags):
-            color = _COLOR_SUCCESS_BGR if ok else _COLOR_FAIL_BGR
-            cv2.circle(
-                out,
-                (int(cx), int(_INDICATOR_Y)),
-                int(_INDICATOR_R),
-                (*color, 255),
-                -1,
-                lineType=cv2.LINE_AA,
-            )
 
         return out
 
