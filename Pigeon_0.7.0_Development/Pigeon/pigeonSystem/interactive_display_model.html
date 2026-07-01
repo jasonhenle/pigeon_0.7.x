@@ -120,7 +120,7 @@
 <body>
   <h1>Pigeon display model</h1>
   <p class="sub">
-    Interactive map of the <strong>800×400</strong> design surface and <strong>19×8</strong> grid from
+    Interactive map of the <strong>800×480</strong> design surface and <strong>19×8</strong> grid from
     <code>pigeon/design.py</code>, with overlays for <strong>View 1</strong> (<code>ViewOneLayout</code>:
     pigeonFull vs pigeonSimple), <strong>View 2</strong> (mic visualizer), and shared widgets. Open this file in a browser; no server required.
   </p>
@@ -177,7 +177,7 @@
   <script>
 (function () {
   const DESIGN_W = 800;
-  const DESIGN_H = 400;
+  const DESIGN_H = 480;
   const GRID_COLS = 19;
   const GRID_ROWS = 8;
 
@@ -331,7 +331,7 @@
         <li>Key <strong>1</strong> on view 1 toggles pigeonSimple (see other mode).</li>
       </ul>
       <dl class="kv">
-        <dt>Design</dt><dd>800×400 px</dd>
+        <dt>Design</dt><dd>800×480 px</dd>
         <dt>Grid</dt><dd>19×8, cell ${g.cell}px, origin (${g.x0}, ${g.y0})</dd>
         <dt>Clock</dt><dd>row 0.5, col_right 15, 5×1 (clock_calendar)</dd>
         <dt>App badge</dt><dd>row 0.5, col_right 18, 2×1 (playback_overlay)</dd>
@@ -346,7 +346,7 @@
     simple: {
       title: "View 1 — pigeonSimple",
       html: `<ul>
-        <li>Black 800×400 base; <strong>no</strong> backdrop image.</li>
+        <li>Black 800×480 base; <strong>no</strong> backdrop image.</li>
         <li><strong>Title logo</strong> larger, uniform-fit inside grid box cols 3–16, rows 3–6 (from <code>rect_for_span_at_cell(14,4, row=3, col=3)</code>).</li>
         <li>Same <strong>clock</strong> and <strong>status bar</strong> as pigeonFull via shared <code>compose_display_from_source</code> path.</li>
       </ul>`,
@@ -375,7 +375,7 @@
     },
     grid: {
       title: "Grid reference",
-      html: `<p style="margin:0">Nineteen columns × eight rows (1-based labels on cells). Margins outside the grid are unused grid margin on the 800×400 canvas.</p>`,
+      html: `<p style="margin:0">Nineteen columns × eight rows (1-based labels on cells). Margins outside the grid are unused grid margin on the 800×480 canvas.</p>`,
       flow: `get_grid_geometry():
   cell = min(floor(W/19), floor(H/8))
   x0,y0 center the 19·cell × 8·cell block`,

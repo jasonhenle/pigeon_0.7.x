@@ -48,7 +48,7 @@ from pigeon.audio_waves import MIC_VIZ_INTRO_TOTAL_S, blend_mic_visualizer
 
 # Match main app window / internal composite cap (see pigeon_0_5.WINDOW_W/H).
 _DEFAULT_TEST_W = 800
-_DEFAULT_TEST_H = 400
+_DEFAULT_TEST_H = 480
 
 
 def _synth_mono_block_512(t_wall: float) -> np.ndarray:

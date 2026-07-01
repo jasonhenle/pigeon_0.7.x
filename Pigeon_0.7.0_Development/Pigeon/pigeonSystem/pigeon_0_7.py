@@ -296,9 +296,9 @@ def _env_truthy(name: str, *, default: bool = False) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-# Native UI composes at 800×400 (2:1). Window/display target is 800×480 (letterboxed bars as needed).
+# Native UI composes at 800×480. Window/display target matches the Pi panel (800×480).
 UI_TARGET_W = 800
-UI_TARGET_H = 400
+UI_TARGET_H = 480
 DISPLAY_W = _env_int("PIGEON_DISPLAY_W", 800)
 DISPLAY_H = _env_int("PIGEON_DISPLAY_H", 480)
 try:
@@ -331,8 +331,8 @@ def _composite_cap_dims(display_w: int, display_h: int) -> tuple[int, int, bool]
     """
     Internal composite size for video + mic EQ + UI blits.
 
-    Always composes at the native 800×400 design resolution, then
-    ``_present_frame_to_display`` letterboxes/pillarboxes to the live window.
+    Always composes at the native 800×480 design resolution, then
+    ``_present_frame_to_display`` letterboxes/pillarboxes to the live window when needed.
     """
     dw = max(1, int(display_w))
     dh = max(1, int(display_h))
@@ -353,7 +353,7 @@ def _present_frame_to_display(image: np.ndarray, display_w: int, display_h: int)
 
 
 def _bgra_to_display_window(bgra: np.ndarray) -> np.ndarray:
-    """Fit splash/UI BGRA (800×400) into the live display window with black bars."""
+    """Fit splash/UI BGRA (800×480) into the live display window with black bars when needed."""
     if not _PIGEON_EXT:
         return bgra
     assert resize_bgra_if_needed is not None
@@ -2452,6 +2452,7 @@ def main() -> int:
             played_text = ""
             clk = apple_tv_playback_clock
             if clk.get("live_mode"):
+                remaining_text = "LIVE"
                 played_text = "LIVE"
             else:
                 pair = _playback_extrapolated_pair()
@@ -2495,6 +2496,8 @@ def main() -> int:
             )
             has_rx = bool(inc or cfg or vol)
             has_tmdb = tt_bgra is not None or backdrop_bgr is not None
+            sb = streaming_badge_state
+            badge_label = str(sb.get("label") or "").strip()
             if now_playing_screen_widget.update_state(
                 progress=progress,
                 remaining_text=remaining_text,
@@ -2516,6 +2519,9 @@ def main() -> int:
                     if status_bar_widget is not None
                     else False
                 ),
+                badge_show=bool(badge_bgra is not None or fn or badge_label),
+                badge_filename=fn,
+                badge_label=badge_label,
             ):
                 skip_cache = None
 
@@ -3460,7 +3466,7 @@ def main() -> int:
                 cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
                 if _use_new_now_playing_ui():
                     canvas_np = np.zeros((int(DESIGN_H), int(DESIGN_W), 3), dtype=np.uint8)
-                    canvas_np[:] = (32, 32, 32)
+                    canvas_np[:] = (0, 0, 0)
                     _sync_now_playing_screen_state()
                     if now_playing_screen_widget is not None:
                         now_playing_screen_widget.render(canvas_np)
@@ -4133,7 +4139,7 @@ def main() -> int:
         ) -> np.ndarray:
             """
             Build display output: scale **source** video to design, draw widgets, optionally grid,
-            then scale down. Using the raw frame avoids letterboxing an already 800×400 image (which shifted
+            then scale down. Using the raw frame avoids letterboxing an already 800×480 image (which shifted
             the grid/poster and cropped them on the left). Developer grid mode uses uniform letterboxing so
             the full design width (including grid column 1) is visible on narrow windows.
             """
@@ -4274,7 +4280,7 @@ def main() -> int:
             if not (_use_new_now_playing_ui() and not cs):
                 _blend_top_gradient_design(canvas)
             if not cs and _use_new_now_playing_ui():
-                canvas[:] = (32, 32, 32)
+                canvas[:] = (0, 0, 0)
                 _sync_now_playing_screen_state()
                 if now_playing_screen_widget is not None:
                     now_playing_screen_widget.render(canvas)

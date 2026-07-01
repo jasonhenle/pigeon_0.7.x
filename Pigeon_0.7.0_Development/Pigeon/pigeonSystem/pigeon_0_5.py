@@ -274,10 +274,10 @@ except ImportError:
     _PIGEON_EXT = False
 
 
-# Default Tk geometry: 2:1 aspect, ~30% larger than the legacy 800×400 launch size.
+# Default Tk geometry: 800×480 (5:3), ~30% larger than the native Pi panel size.
 _LAUNCH_WINDOW_SCALE = 1.3
 WINDOW_W = int(round(800 * _LAUNCH_WINDOW_SCALE))
-WINDOW_H = int(round(400 * _LAUNCH_WINDOW_SCALE))
+WINDOW_H = int(round(480 * _LAUNCH_WINDOW_SCALE))
 
 
 def _resize_bgr_to_dims(dst_w: int, dst_h: int, src: np.ndarray) -> np.ndarray:
@@ -691,10 +691,10 @@ def main() -> int:
     root = tk.Tk()
     root.title("")
     root.geometry(f"{WINDOW_W}x{WINDOW_H}")
-    root.minsize(int(round(400 * _LAUNCH_WINDOW_SCALE)), int(round(200 * _LAUNCH_WINDOW_SCALE)))
+    root.minsize(int(round(400 * _LAUNCH_WINDOW_SCALE)), int(round(240 * _LAUNCH_WINDOW_SCALE)))
     root.resizable(True, True)
     try:
-        root.wm_aspect(2, 1, 2, 1)
+        root.wm_aspect(5, 3, 5, 3)
     except tk.TclError:
         pass
     root.protocol("WM_DELETE_WINDOW", root.quit)
@@ -3460,7 +3460,7 @@ def main() -> int:
         ) -> np.ndarray:
             """
             Build WINDOW_W×WINDOW_H output: scale **source** video to design, draw widgets, optionally grid,
-            then scale down. Using the raw frame avoids letterboxing an already 800×400 image (which shifted
+            then scale down. Using the raw frame avoids letterboxing an already 800×480 image (which shifted
             the grid/poster and cropped them on the left). Developer grid mode uses uniform letterboxing so
             the full design width (including grid column 1) is visible on narrow windows.
             """

@@ -172,7 +172,7 @@ def build_absolute_grid_overlay_bgra(
     """
     Absolute-pixel grid for viewFive.
 
-    - Major lines every 50 px across the full 800×400 design canvas.
+    - Major lines every 50 px across the full 800×480 design canvas.
     - Optional minor lines at 25%/50%/75% between majors (12.5/25/37.5 px).
     - Top + left labels number lines (0 at edge, then 1 at 50 px, etc.).
     """

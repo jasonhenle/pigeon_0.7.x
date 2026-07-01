@@ -131,7 +131,7 @@ def scale_uniform_letterbox(image: np.ndarray, target_w: int, target_h: int) -> 
     Uniform scale so the **entire** image fits inside ``target_w``×``target_h``, centered on black bars.
 
     Unlike ``scale_height_and_center_crop`` (scale-to-height then crop width), this never discards
-    horizontal content. Used for developer grid mode so narrow windows (e.g. 800×400) still show
+    horizontal content. Used for developer grid mode so narrow windows (e.g. 800×480) still show
     design columns 1–2 instead of cropping them off.
     """
     src_h, src_w = image.shape[:2]

@@ -1,4 +1,4 @@
-"""Canonical 2:1 design resolution and 19×8 grid math (800×400).
+"""Canonical design resolution and 19×8 grid math (800×480).
 
 152 boxes (19 × 8), square cells centered on canvas. Matches the live Tk window / composite cap.
 """
@@ -11,7 +11,7 @@ import numpy as np
 
 # Design canvas = nominal display / internal composite (performance target).
 DESIGN_W = 800
-DESIGN_H = 400
+DESIGN_H = 480
 
 GRID_COLS = 19
 GRID_ROWS = 8

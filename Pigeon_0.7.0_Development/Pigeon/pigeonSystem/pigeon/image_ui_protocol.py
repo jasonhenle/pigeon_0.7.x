@@ -1,7 +1,7 @@
 """
 Image preparation for Pigeon UI widgets.
 
-Design resolution and documented UI caps follow ``pigeon.design`` (800×400 landscape baseline).
+Design resolution and documented UI caps follow ``pigeon.design`` (800×480 landscape baseline).
 
 Poster master: 1800×2700 BGRA — uniform width 1800, vertical letterbox (transparent) or center-crop
 if content height exceeds 2700. Widget display scales the master by fixed factors per poster size.

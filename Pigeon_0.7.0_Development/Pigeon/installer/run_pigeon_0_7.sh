@@ -124,7 +124,7 @@ if [[ -n "${VENV_REBUILD_REASON}" ]]; then
 fi
 echo "Starting Pigeon…" >&2
 export PYTHONPYCACHEPREFIX="${ROOT}/pigeonCashe"
-# Pi / Linux: 800×480 logical target; UI letterboxes 800×400 with black bars. Fullscreen fills the monitor.
+# Pi / Linux: 800×480 logical target; UI composes at native 800×480. Fullscreen fills the monitor.
 export PIGEON_DISPLAY_W="${PIGEON_DISPLAY_W:-800}"
 export PIGEON_DISPLAY_H="${PIGEON_DISPLAY_H:-480}"
 export PIGEON_WINDOW_SCALE="${PIGEON_WINDOW_SCALE:-1.0}"

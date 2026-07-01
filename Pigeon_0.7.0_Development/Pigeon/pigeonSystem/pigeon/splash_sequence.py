@@ -1,4 +1,4 @@
-"""Launch splash: PNG sequence (e.g. 800×400 RGBA) under ``pigeonAssets/pigeonSplash``.
+"""Launch splash: PNG sequence (e.g. 800×480 RGBA) under ``pigeonAssets/pigeonSplash``.
 
 Alpha is preserved end-to-end: the overlay is a full-``shell`` layer above ``content_host``,
 so transparent pixels show the composited scene underneath. The last ``SPLASH_FADE_OUT_FRAMES``
@@ -21,7 +21,7 @@ from pigeon.version import MAJOR, MINOR
 SPLASH_SEQUENCE_DIRNAME = "pigeonSplash"
 _LEGACY_SPLASH_SEQUENCE_DIRNAME = "P_0.5_WIDGET_splash"
 SPLASH_NOMINAL_W = 800
-SPLASH_NOMINAL_H = 400
+SPLASH_NOMINAL_H = 480
 SPLASH_FPS = 30
 # Hard cap so a huge folder cannot block startup for minutes.
 SPLASH_MAX_DURATION_S = 18.0

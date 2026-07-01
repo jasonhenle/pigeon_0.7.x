@@ -39,7 +39,7 @@ This downloads the latest **[GitHub Release](https://github.com/jasonhenle/pigeo
 
 ## Display (800×480)
 
-Fullscreen by default (`PIGEON_PI_FULLSCREEN=1`). UI is 800×400 with letterbox bars.
+Fullscreen by default (`PIGEON_PI_FULLSCREEN=1`). UI is 800×480 (matches the Pi panel).
 
 ```bash
 PIGEON_PI_FULLSCREEN=0 ./installer/run_pigeon_0_7.sh

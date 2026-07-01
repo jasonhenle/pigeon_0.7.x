@@ -54,7 +54,7 @@ def blend_overlay_bgr(base_bgr, overlay_bgra):
 
 def stage_overlay_for_display(display_w: int, display_h: int):
     """
-    Main UI: scale design overlay by height, center-crop to display (e.g. 800×400 2:1 window).
+    Main UI: scale design overlay by height, center-crop to display (e.g. 800×480 window).
     """
     src = build_stage_overlay_source_bgra()
     return scale_height_and_center_crop(src, display_w, display_h)

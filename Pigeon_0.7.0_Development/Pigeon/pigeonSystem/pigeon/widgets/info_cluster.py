@@ -113,7 +113,7 @@ def build_info_cluster_design_patches(
     location_alpha: float,
     shadow_bgr: tuple[int, int, int] | None,
 ) -> list[DesignPatch]:
-    """Rasterize the cluster for the current design canvas (800×400)."""
+    """Rasterize the cluster for the current design canvas (800×480)."""
     slots = _compact_cluster_slots(
         include_clock=clock_widget is not None,
         audio_config=audio_config,

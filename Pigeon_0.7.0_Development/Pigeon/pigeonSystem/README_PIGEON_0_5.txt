@@ -1,11 +1,11 @@
 # Pigeon 0.5
 
-**Pigeon** is a fixed-resolution (800×400) “Now Playing” display app prototype.  
+**Pigeon** is a fixed-resolution (800×480) “Now Playing” display app prototype.  
 Version **0.5** implements a **scene** as a background video with play/pause + looping.
 
 ## What it does (0.5)
 
-- Opens an **800×400** window.
+- Opens an **800×480** window.
 - Loads a scene MP4 and starts **paused**.
 - **SPACEBAR** toggles play/pause.
 - Loops back to the beginning when the video ends.

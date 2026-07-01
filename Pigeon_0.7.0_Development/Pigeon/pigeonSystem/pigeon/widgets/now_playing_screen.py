@@ -1,5 +1,5 @@
 """
-Pigeon 0.7 now-playing screen — SVG layer chrome from ``now_playing_test_070126`` (800×480 → 800×400).
+Pigeon 0.7 now-playing screen — SVG layer chrome from ``now_playing_test_070126`` (800×480).
 
 Static chrome is rasterized from ``pigeonAssets/now_playing_test_070126.svg`` (see
 :func:`render_now_playing_svg_base_bgra`). Dynamic layers (TMDb backdrop/TT, streaming badge,
@@ -23,7 +23,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.compositing import alpha_blend_bgra_over_bgr
 from pigeon.design import DESIGN_H, DESIGN_W
-from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold, resolve_ui_font_medium
+from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold
+from pigeon.image_ui_protocol import load_image_bgra
 from pigeon.widgets.playback_overlay import (
     _image_contain_center_bgra,
     _receiver_audio_display_line,
@@ -38,21 +39,20 @@ ET.register_namespace("", SVG_NS)
 # --- Colors (Numbers spec) ---
 _COLOR_UI_HEX = "#E10018"
 _COLOR_ACCENT_HEX = "#FFFFFF"
-_COLOR_BG_HEX = "#202020"
+_COLOR_BG_HEX = "#000000"
 _COLOR_SUCCESS_HEX = "#01D800"
 _COLOR_FAIL_HEX = "#E10018"
 _COLOR_UNPLAYED_HEX = "#282828"
 
 _COLOR_UI_BGR = (24, 0, 225)
 _COLOR_ACCENT_BGR = (255, 255, 255)
-_COLOR_BG_BGR = (32, 32, 32)
+_COLOR_BG_BGR = (0, 0, 0)
 _COLOR_SUCCESS_BGR = (0, 216, 1)
 _COLOR_FAIL_BGR = (24, 0, 225)
 _COLOR_UNPLAYED_BGR = (40, 40, 40)
 
 _SVG_W = 800.0
 _SVG_H = 480.0
-_Y_SCALE = float(DESIGN_H) / _SVG_H
 
 # Logical Illustrator layer ids (encoded in SVG via _encode_svg_layer_id).
 _HIDE_LAYER_LOGICAL: tuple[str, ...] = (
@@ -86,7 +86,7 @@ def _encode_svg_layer_id(logical_id: str) -> str:
 
 
 def _sy(y_svg: float) -> int:
-    return int(round(y_svg * _Y_SCALE))
+    return int(round(y_svg))
 
 
 def _sx(x_svg: float) -> int:
@@ -107,6 +107,13 @@ _BAR_W = _sx(487.96)
 _BAR_H = _sy(216.295)
 _BAR_RX = max(4, _sx(23.455))
 _BAR_STROKE = max(1, _sx(3.0))
+
+# Full-image played status bar assets (user replaces SVG demo slice with these).
+_STATUS_BAR_PLAYED_ASSET_NAMES: tuple[str, ...] = (
+    "03_widget_now_playing_status_bar_played.png",
+    "03_widget_now_playing_status_bar_played.webp",
+    "status_bar_played.png",
+)
 
 # Badge + timecode containers (layer 03).
 _BADGE_W = _sx(182.571)
@@ -201,9 +208,17 @@ def _apply_indicator_colors(root: ET.Element, state: NowPlayingScreenState) -> N
                 _set_node_fill(node, color)
 
 
-def apply_now_playing_svg_state(root: ET.Element, state: NowPlayingScreenState) -> None:
+def apply_now_playing_svg_state(
+    root: ET.Element,
+    state: NowPlayingScreenState,
+    *,
+    hide_svg_tt_black: bool = False,
+) -> None:
     """Mutate an SVG element tree: hide demo/dynamic layers; recolor status dots."""
-    for logical_id in _HIDE_LAYER_LOGICAL:
+    hide_layers = list(_HIDE_LAYER_LOGICAL)
+    if hide_svg_tt_black:
+        hide_layers.append("03_widget_now_playing_tmdb_TT_black")
+    for logical_id in hide_layers:
         _set_visible(_find_by_logical_id(root, logical_id), False)
     _apply_indicator_colors(root, state)
 
@@ -279,8 +294,9 @@ def render_now_playing_svg_base_bgra(
     *,
     svg_path: Path | str | None = None,
     assets_dir: Path | str | None = None,
+    hide_svg_tt_black: bool = False,
 ) -> np.ndarray:
-    """Load the now-playing SVG, apply ``state`` to static chrome, return 800×400 BGRA."""
+    """Load the now-playing SVG, apply ``state`` to static chrome, return 800×480 BGRA."""
     if svg_path is not None:
         path = Path(svg_path)
     else:
@@ -289,7 +305,7 @@ def render_now_playing_svg_base_bgra(
         raise FileNotFoundError(f"now-playing SVG not found: {path}")
 
     root = _svg_tree_from_path(path)
-    apply_now_playing_svg_state(root, state)
+    apply_now_playing_svg_state(root, state, hide_svg_tt_black=hide_svg_tt_black)
     return _rasterize_svg_tree(root)
 
 
@@ -316,6 +332,88 @@ def _rounded_rect_mask(w: int, h: int, radius: int) -> np.ndarray:
     cv2.circle(mask, (r, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
     cv2.circle(mask, (w - r - 1, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
     return mask
+
+
+def _rounded_rect_mask_left_only(w: int, h: int, radius: int) -> np.ndarray:
+    """Rounded top-left / bottom-left only; right edge stays square for progress crop."""
+    if w < 1 or h < 1:
+        return np.zeros((max(0, h), max(0, w)), dtype=np.uint8)
+    r = max(0, min(radius, min(w, h) // 2))
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if r <= 0:
+        mask[:, :] = 255
+        return mask
+    cv2.rectangle(mask, (r, 0), (w - 1, h - 1), 255, -1)
+    cv2.rectangle(mask, (0, r), (w - 1, h - r - 1), 255, -1)
+    cv2.circle(mask, (r, r), r, 255, -1, lineType=cv2.LINE_AA)
+    cv2.circle(mask, (r, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
+    return mask
+
+
+def _draw_left_rounded_rect_bgra(
+    bgra: np.ndarray,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    fill_bgr: tuple[int, int, int],
+    stroke_bgr: tuple[int, int, int] | None = None,
+    radius: int = 0,
+    stroke: int = 0,
+) -> None:
+    if w < 1 or h < 1:
+        return
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(int(DESIGN_W), x + w), min(int(DESIGN_H), y + h)
+    if x0 >= x1 or y0 >= y1:
+        return
+    lw, lh = x1 - x0, y1 - y0
+    mask = _rounded_rect_mask_left_only(lw, lh, min(radius, lw // 2, lh // 2))
+    patch = np.zeros((lh, lw, 4), dtype=np.uint8)
+    patch[:, :, :3] = fill_bgr
+    patch[:, :, 3] = mask
+    if stroke_bgr is not None and stroke > 0:
+        edge = cv2.Canny(mask, 50, 150)
+        if stroke > 1:
+            k = max(1, stroke)
+            edge = cv2.dilate(edge, np.ones((k, k), np.uint8))
+        patch[edge > 0, :3] = stroke_bgr
+        patch[edge > 0, 3] = 255
+    roi = bgra[y0:y1, x0:x1]
+    if roi.shape[2] >= 4:
+        roi[:, :, :3] = alpha_blend_bgra_over_bgr(roi[:, :, :3], patch)
+        roi[:, :, 3] = np.maximum(roi[:, :, 3], patch[:, :, 3])
+    else:
+        roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
+
+
+def _draw_vertical_stroke_bgra(
+    bgra: np.ndarray,
+    x: int,
+    y0: int,
+    y1: int,
+    *,
+    stroke_bgr: tuple[int, int, int] = _COLOR_ACCENT_BGR,
+    stroke: int = _BAR_STROKE,
+) -> None:
+    """Vertical progress edge line (matches status-bar stroke weight)."""
+    if y0 > y1:
+        y0, y1 = y1, y0
+    xi = max(0, min(int(DESIGN_W) - 1, int(x)))
+    yt = max(0, int(y0))
+    yb = min(int(DESIGN_H) - 1, int(y1))
+    if yb <= yt:
+        return
+    thickness = max(1, int(stroke))
+    cv2.line(
+        bgra,
+        (xi, yt),
+        (xi, yb),
+        (*stroke_bgr, 255),
+        thickness=thickness,
+        lineType=cv2.LINE_AA,
+    )
 
 
 def _draw_rounded_rect_bgra(
@@ -371,14 +469,12 @@ def _fit_text_patch(
     *,
     size_px: int,
     fill_rgb: tuple[int, int, int],
-    bold: bool = True,
     anchor: str = "ls",
 ) -> tuple[np.ndarray, int, int]:
+    """Render label text with Sharp Sans Extra Bold (or bold fallback)."""
     if not text:
         return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
-    path = resolve_ui_font_extrabold() if bold else resolve_ui_font_medium()
-    if not path:
-        path = resolve_ui_font_bold()
+    path = resolve_ui_font_extrabold() or resolve_ui_font_bold()
     font = _load_font(str(path or ""), size_px)
     probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
@@ -421,6 +517,57 @@ def _tt_to_black_bgra(src: np.ndarray) -> np.ndarray:
     return out
 
 
+def _fit_status_bar_slot_bgra(src: np.ndarray, slot_w: int, slot_h: int) -> np.ndarray:
+    """Scale ``src`` once into the status-bar slot (uniform); never stretch per progress."""
+    if src.shape[1] == slot_w and src.shape[0] == slot_h:
+        return src.copy()
+    return _image_contain_center_bgra(src, slot_w, slot_h)
+
+
+def _reveal_crop_bgra_left(full: np.ndarray, reveal_w: int) -> np.ndarray | None:
+    """Return the left ``reveal_w`` columns of a full-size layer (square right crop edge)."""
+    if full is None or full.size == 0 or reveal_w <= 0:
+        return None
+    rw = max(0, min(int(reveal_w), int(full.shape[1])))
+    if rw <= 0:
+        return None
+    return full[:, :rw].copy()
+
+
+def _build_status_bar_played_full_bgra_vector() -> np.ndarray:
+    """Full-width played bar raster used for left→right crop when no PNG asset is present."""
+    canvas = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
+    _draw_left_rounded_rect_bgra(
+        canvas,
+        _BAR_L,
+        _BAR_T,
+        _BAR_W,
+        _BAR_H,
+        fill_bgr=_COLOR_UI_BGR,
+        stroke_bgr=_COLOR_ACCENT_BGR,
+        radius=_BAR_RX,
+        stroke=_BAR_STROKE,
+    )
+    return canvas[_BAR_T : _BAR_T + _BAR_H, _BAR_L : _BAR_L + _BAR_W].copy()
+
+
+@lru_cache(maxsize=4)
+def _load_status_bar_played_full_bgra(assets_dir_str: str) -> np.ndarray:
+    """Load/cache the full played status bar at bar dimensions (crop source, not progress width)."""
+    assets_dir = Path(assets_dir_str)
+    for name in _STATUS_BAR_PLAYED_ASSET_NAMES:
+        p = assets_dir / name
+        if not p.is_file():
+            continue
+        try:
+            img = load_image_bgra(p)
+        except Exception:
+            continue
+        if img is not None and img.size > 0:
+            return _fit_status_bar_slot_bgra(img, _BAR_W, _BAR_H)
+    return _build_status_bar_played_full_bgra_vector()
+
+
 def _fallback_base_bgra() -> np.ndarray:
     """Flat background when SVG rasterization is unavailable."""
     out = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
@@ -438,6 +585,7 @@ class NowPlayingScreenWidget:
         self._backdrop_bgr: np.ndarray | None = None
         self._tt_bgra: np.ndarray | None = None
         self._badge_bgra: np.ndarray | None = None
+        self._status_bar_played_full_bgra: np.ndarray | None = None
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
 
@@ -595,6 +743,9 @@ class NowPlayingScreenWidget:
         show_paused: bool = False,
         trt_substantive: bool = True,
         theater_dim_suppressed: bool = False,
+        badge_show: bool = False,
+        badge_filename: str = "",
+        badge_label: str = "",
     ) -> bool:
         """Batch update from ``pigeon_0_7`` holders; returns True when the cached frame is stale."""
         changed = False
@@ -626,6 +777,12 @@ class NowPlayingScreenWidget:
         if self.set_backdrop_bgr(tmdb_backdrop_bgr):
             changed = True
         if self.set_tt_bgra(tmdb_tt_bgra):
+            changed = True
+        if self.set_streaming_badge(
+            show=bool(badge_show),
+            filename=str(badge_filename or ""),
+            label=str(badge_label or ""),
+        ):
             changed = True
         badge_arr = (
             np.asarray(service_badge_bgra, dtype=np.uint8).copy()
@@ -692,10 +849,22 @@ class NowPlayingScreenWidget:
             roi[:] = alpha_blend_bgra_over_bgr(roi, sub)
 
     def _render_svg_base(self) -> np.ndarray:
+        hide_tt = self._tt_bgra is not None and self._tt_bgra.size > 0
         try:
-            return render_now_playing_svg_base_bgra(self._state, assets_dir=self._assets_dir)
+            return render_now_playing_svg_base_bgra(
+                self._state,
+                assets_dir=self._assets_dir,
+                hide_svg_tt_black=hide_tt,
+            )
         except (FileNotFoundError, RuntimeError):
             return _fallback_base_bgra()
+
+    def _status_bar_played_full_bgra(self) -> np.ndarray:
+        if self._status_bar_played_full_bgra is None:
+            self._status_bar_played_full_bgra = _load_status_bar_played_full_bgra(
+                str(self._assets_dir.resolve())
+            )
+        return self._status_bar_played_full_bgra
 
     def _render_frame_bgra(self) -> np.ndarray:
         st = self._state
@@ -723,30 +892,21 @@ class NowPlayingScreenWidget:
         played_w = int(round(progress * float(_BAR_W)))
         played_w = max(0, min(_BAR_W, played_w))
 
-        # Played bar fill (under title treatment).
+        # Played status bar — full asset cropped left→right (never width-resized per progress).
         if played_w > 0:
-            _draw_rounded_rect_bgra(
-                out,
-                _BAR_L,
-                _BAR_T,
-                played_w,
-                _BAR_H,
-                fill_bgr=_COLOR_UI_BGR,
-                stroke_bgr=_COLOR_ACCENT_BGR,
-                radius=_BAR_RX,
-                stroke=_BAR_STROKE,
-            )
+            played_crop = _reveal_crop_bgra_left(self._status_bar_played_full_bgra(), played_w)
+            if played_crop is not None:
+                self._paste_patch(out, played_crop, _BAR_L, _BAR_T)
 
-        # TMDb TT: color in played region; black in unplayed (reveals color left→right).
+        # TMDb TT: full black treatment always; color title cropped left→right on top.
         if self._tt_bgra is not None and self._tt_bgra.size > 0:
-            tt_fit = _image_contain_center_bgra(self._tt_bgra, _BAR_W, _BAR_H)
+            tt_fit = _fit_status_bar_slot_bgra(self._tt_bgra, _BAR_W, _BAR_H)
+            tt_black = _tt_to_black_bgra(tt_fit)
+            self._paste_patch(out, tt_black, _BAR_L, _BAR_T)
             if played_w > 0:
-                color_crop = tt_fit[:, :played_w, :].copy()
-                self._paste_patch(out, color_crop, _BAR_L, _BAR_T)
-            if played_w < _BAR_W:
-                tt_black = _tt_to_black_bgra(tt_fit)
-                crop = tt_black[:, played_w:, :].copy()
-                self._paste_patch(out, crop, _BAR_L + played_w, _BAR_T)
+                color_crop = _reveal_crop_bgra_left(tt_fit, played_w)
+                if color_crop is not None:
+                    self._paste_patch(out, color_crop, _BAR_L, _BAR_T)
 
         if st.show_paused and played_w > 0:
             paused = _text_patch_bgra(
@@ -794,16 +954,27 @@ class NowPlayingScreenWidget:
             radius=max(2, _sy(8)),
         )
         tc_text = str(st.remaining_text or "").strip()
-        if tc_text and st.trt_substantive:
+        if tc_text:
             tc_patch, tw, th = _fit_text_patch(
                 tc_text,
                 size_px=max(10, _sy(30.0)),
-                fill_rgb=(40, 40, 40),
-                bold=False,
+                fill_rgb=(0, 0, 0),
             )
             tx = tc_x + max(0, (_TC_W - tw) // 2)
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
+
+        # Vertical progress edge: white stroke at played-bar crop X, linking badge → timecode.
+        if played_w > 0:
+            progress_edge_x = _BAR_L + played_w
+            _draw_vertical_stroke_bgra(
+                out,
+                progress_edge_x,
+                _BADGE_Y,
+                _TC_Y + _TC_H,
+                stroke_bgr=_COLOR_ACCENT_BGR,
+                stroke=_BAR_STROKE,
+            )
 
         # Clock — right aligned at design x anchor.
         clk = _clock_text()
@@ -811,7 +982,6 @@ class NowPlayingScreenWidget:
             clk,
             size_px=_CLOCK_SIZE_PX,
             fill_rgb=(225, 0, 24),
-            bold=True,
             anchor="rs",
         )
         self._paste_patch(out, clk_patch, _CLOCK_X - cw, _CLOCK_Y - ch // 2)
@@ -823,7 +993,6 @@ class NowPlayingScreenWidget:
                 cfg_line,
                 size_px=_AUDIO_CFG_SIZE,
                 fill_rgb=(225, 0, 24),
-                bold=True,
             )
             self._paste_patch(out, cfg_patch, _AUDIO_CFG_X, _AUDIO_CFG_Y - _sy(20))
         vol_line = _receiver_volume_display_line(st.volume)
@@ -832,7 +1001,6 @@ class NowPlayingScreenWidget:
                 vol_line,
                 size_px=_VOLUME_SIZE,
                 fill_rgb=(225, 0, 24),
-                bold=True,
             )
             self._paste_patch(out, vol_patch, _VOLUME_X, _VOLUME_Y - _sy(26))
 
