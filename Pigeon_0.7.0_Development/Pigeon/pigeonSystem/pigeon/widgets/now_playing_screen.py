@@ -579,7 +579,7 @@ class NowPlayingScreenWidget:
         self._backdrop_bgr: np.ndarray | None = None
         self._tt_bgra: np.ndarray | None = None
         self._badge_bgra: np.ndarray | None = None
-        self._status_bar_played_full_bgra: np.ndarray | None = None
+        self._status_bar_played_full_cache: np.ndarray | None = None
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
 
@@ -848,12 +848,12 @@ class NowPlayingScreenWidget:
         except (FileNotFoundError, RuntimeError):
             return _fallback_base_bgra()
 
-    def _status_bar_played_full_bgra(self) -> np.ndarray:
-        if self._status_bar_played_full_bgra is None:
-            self._status_bar_played_full_bgra = _load_status_bar_played_full_bgra(
+    def _get_status_bar_played_full_bgra(self) -> np.ndarray:
+        if self._status_bar_played_full_cache is None:
+            self._status_bar_played_full_cache = _load_status_bar_played_full_bgra(
                 str(self._assets_dir.resolve())
             )
-        return self._status_bar_played_full_bgra
+        return self._status_bar_played_full_cache
 
     def _render_frame_bgra(self) -> np.ndarray:
         st = self._state
@@ -883,7 +883,7 @@ class NowPlayingScreenWidget:
 
         # Played status bar — full asset cropped left→right (never width-resized per progress).
         if played_w > 0:
-            played_crop = _reveal_crop_bgra_left(self._status_bar_played_full_bgra(), played_w)
+            played_crop = _reveal_crop_bgra_left(self._get_status_bar_played_full_bgra(), played_w)
             if played_crop is not None:
                 self._paste_patch(out, played_crop, _BAR_L, _BAR_T)
 
