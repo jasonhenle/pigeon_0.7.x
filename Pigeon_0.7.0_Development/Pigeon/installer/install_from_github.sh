@@ -84,7 +84,7 @@ PY
 
 install_from_zip() {
   local zip_url="https://codeload.github.com/${REPO}/zip/refs/heads/${BRANCH}"
-  echo "==> Downloading ${zip_url}"
+  echo "==> Downloading ${zip_url}" >&2
   curl -fsSL -o "${WORKDIR}/pigeon.zip" "${zip_url}"
   python3 - <<'PY' "${WORKDIR}/pigeon.zip" "${WORKDIR}/extract"
 import sys, zipfile
@@ -108,8 +108,8 @@ PY
 install_pi_linux() {
   local tarball_url=""
   if tarball_url="$(resolve_release_tarball 2>/dev/null)"; then
-    echo "==> Downloading release tarball"
-    echo "    ${tarball_url}"
+    echo "==> Downloading release tarball" >&2
+    echo "    ${tarball_url}" >&2
     curl -fsSL -o "${WORKDIR}/pigeon.tar.gz" "${tarball_url}"
     tar -xzf "${WORKDIR}/pigeon.tar.gz" -C "${WORKDIR}"
     local app=""
@@ -127,7 +127,7 @@ install_pi_linux() {
     return
   fi
 
-  echo "==> No GitHub Release tarball yet — using main-branch zip (full repo snapshot)."
+  echo "==> No GitHub Release tarball yet — using main-branch zip (full repo snapshot)." >&2
   install_from_zip
 }
 

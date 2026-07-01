@@ -194,8 +194,10 @@ try:
         PATCH_LAYER_RECEIVER_AUDIO,
         PATCH_LAYER_STREAMING_BADGE,
         PlaybackOverlayWidget,
+        compose_playback_volume_widget_line,
         pigeon_wordmark_design_patch,
     )
+    from pigeon.widgets.now_playing_screen import NowPlayingScreenWidget
     from pigeon.widgets.info_cluster import (
         INFO_CLUSTER_CLOCK_ROW_1BASED,
         INFO_CLUSTER_COL_RIGHT,
@@ -251,6 +253,8 @@ except ImportError:
     TmdbLogoWidget = None  # type: ignore[misc, assignment]
     StatusBarWidget = None  # type: ignore[misc, assignment]
     PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
+    NowPlayingScreenWidget = None  # type: ignore[misc, assignment]
+    compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
     PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"  # type: ignore[misc, assignment]
     PATCH_LAYER_STREAMING_BADGE = "streaming_badge"  # type: ignore[misc, assignment]
     build_info_cluster_design_patches = None  # type: ignore[misc, assignment]
@@ -384,7 +388,8 @@ class DisplayView(IntEnum):
 
 class ViewOneLayout(IntEnum):
     """
-    When ``DisplayView.ONE`` is active, key ``1`` cycles the layout toggle.
+    When ``DisplayView.ONE`` is active, Shift+1 cycles the layout toggle; plain ``1`` toggles
+    the new vs. classic now-playing chrome when playback chrome is visible.
 
     Member names are **historical** — they describe the happy-path visual that
     shipped before the v0.6.14 V01 ↔ V02 swap and the v0.6.19 view-naming
@@ -398,7 +403,7 @@ class ViewOneLayout(IntEnum):
     When all TMDb assets are present renders V01 — minimal pigeonTMDB_TT on
     black. With missing assets routes to V03 / V05 / V07 / V08 / V09.
     ``PIGEON_SIMPLE`` (1) → ``viewOne.videoContent_b``: alternate mode.
-    Toggled on by pressing [``1``] while on view 1. When all TMDb assets are
+    Toggled on by pressing Shift+``1`` while on view 1. When all TMDb assets are
     present renders V02 — the full pigeonTMDB_BD + pigeonTMDB_TT + appLogo
     composition. With missing assets routes to V04 / V06.
 
@@ -2007,7 +2012,7 @@ def main() -> int:
         view_four_subview_holder: list[int] = [0]
         # View 5: 0=viewFive_a, 1=viewFive_b, 2=viewFive_c (testing text view).
         view_five_mode_holder: list[int] = [0]
-        # View 1 (key 1): cycle a -> b -> c layouts (see ``ViewOneLayout``).
+        # View 1 (Shift+1): cycle a -> b -> c layouts (see ``ViewOneLayout``).
         view_one_layout_holder: list[int] = [int(ViewOneLayout.PIGEON_FULL)]
         # Last view-1 a/b/c while view 1 was live — developer GRID and view-5 grid overlay composite this.
         last_view_one_layout_snapshot: list[int] = [int(ViewOneLayout.PIGEON_FULL)]
@@ -2417,6 +2422,102 @@ def main() -> int:
                 badge_top_right_col_1based=VIEW_ONE_BADGE_COL_RIGHT,
                 volume_top_right_col_1based=float(VIEW_ONE_CLOCK_COL_RIGHT),
             )
+
+        # New now-playing screen (070126): default on View 1; key ``1`` toggles vs classic chrome.
+        new_now_playing_ui_holder: list[bool] = [True]
+        now_playing_screen_widget = None
+        if _PIGEON_EXT and NowPlayingScreenWidget is not None:
+            now_playing_screen_widget = NowPlayingScreenWidget(
+                assets_dir=Path(_PROJECT_DIR) / "pigeonAssets",
+            )
+
+        def _use_new_now_playing_ui() -> bool:
+            if not new_now_playing_ui_holder[0]:
+                return False
+            if now_playing_screen_widget is None:
+                return False
+            if _effective_display_view() != DisplayView.ONE:
+                return False
+            if status_bar_widget is None or not status_bar_widget.now_playing_chrome_visible:
+                return False
+            return True
+
+        def _sync_now_playing_screen_state() -> None:
+            nonlocal skip_cache
+            if now_playing_screen_widget is None:
+                return
+            prog = _playback_progress_fraction_for_bar()
+            progress = float(prog) if prog is not None else 0.0
+            remaining_text = ""
+            played_text = ""
+            clk = apple_tv_playback_clock
+            if clk.get("live_mode"):
+                played_text = "LIVE"
+            else:
+                pair = _playback_extrapolated_pair()
+                if pair is not None:
+                    played_text = _format_hmmss(int(pair[0]))
+                    remaining_text = _format_hmmss(int(pair[1]))
+            inc = str(receiver_overlay_state.get("incoming") or "").strip()
+            cfg = str(receiver_overlay_state.get("config") or "").strip()
+            vol = str(receiver_overlay_state.get("volume") or "").strip()
+            if not vol and compose_playback_volume_widget_line is not None:
+                vol = compose_playback_volume_widget_line(
+                    stream_row=streaming_slot_holder[0],
+                    apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
+                    if isinstance(apple_tv_auto_state.get("last_metadata"), dict)
+                    else None,
+                    denon_vol_effective=str(denon_vol_cache.get("effective") or ""),
+                    roku_tv_volume_percent="",
+                )
+            badge_bgra = None
+            fn = str(streaming_badge_state.get("filename") or "").strip()
+            if fn:
+                from pigeon.image_ui_protocol import load_image_bgra
+
+                assets_np = Path(_PROJECT_DIR) / "pigeonAssets"
+                try:
+                    badge_bgra = load_image_bgra(assets_np / fn)
+                except Exception:
+                    badge_bgra = None
+            poster_bgra = _active_tmdb_poster_bgra()
+            backdrop_bgr = None
+            if backdrop_master_bgr is not None:
+                backdrop_bgr = np.asarray(backdrop_master_bgr, dtype=np.uint8)
+            elif saved_backdrop_master_bgr is not None:
+                backdrop_bgr = np.asarray(saved_backdrop_master_bgr, dtype=np.uint8)
+            elif poster_bgra is not None and poster_bgra.size > 0:
+                backdrop_bgr = cv2.cvtColor(poster_bgra, cv2.COLOR_BGRA2BGR)
+            tt_bgra = tmdb_logo_patch_bgra.copy() if tmdb_logo_patch_bgra is not None else None
+            md = apple_tv_auto_state.get("last_metadata")
+            has_np = bool(
+                status_bar_widget is not None and status_bar_widget.now_playing_chrome_visible
+            )
+            has_rx = bool(inc or cfg or vol)
+            has_tmdb = tt_bgra is not None or backdrop_bgr is not None
+            if now_playing_screen_widget.update_state(
+                progress=progress,
+                remaining_text=remaining_text,
+                played_text=played_text,
+                incoming_audio=inc,
+                playback_config=cfg,
+                volume_text=vol,
+                has_now_playing=has_np,
+                has_receiver=has_rx,
+                has_tmdb=has_tmdb,
+                audio_analysis=False,
+                service_badge_bgra=badge_bgra,
+                tmdb_tt_bgra=tt_bgra,
+                tmdb_backdrop_bgr=backdrop_bgr,
+                show_paused=_show_paused_row_overlay(),
+                trt_substantive=_trt_substantive_for_status_bar(),
+                theater_dim_suppressed=(
+                    status_bar_widget.theater_dim_suppressed
+                    if status_bar_widget is not None
+                    else False
+                ),
+            ):
+                skip_cache = None
 
         def _playback_is_netflix_stream() -> bool:
             lm = apple_tv_auto_state.get("last_metadata")
@@ -3357,6 +3458,22 @@ def main() -> int:
                 _warm_tmdb_logo_patch()
                 dw, dh = display_dims[0], display_dims[1]
                 cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
+                if _use_new_now_playing_ui():
+                    canvas_np = np.zeros((int(DESIGN_H), int(DESIGN_W), 3), dtype=np.uint8)
+                    canvas_np[:] = (32, 32, 32)
+                    _sync_now_playing_screen_state()
+                    if now_playing_screen_widget is not None:
+                        now_playing_screen_widget.render(canvas_np)
+                    base2 = cv2.resize(
+                        canvas_np,
+                        (cap_w, cap_h),
+                        interpolation=cv_resize_interp(
+                            int(DESIGN_W), int(DESIGN_H), cap_w, cap_h
+                        ),
+                    )
+                    if use_cap:
+                        return _present_frame_to_display(base2, dw, dh)
+                    return base2
                 _vv_full = _current_view_one_variant()
                 _vv_force_black_bd = bool(
                     ViewOneVariant is not None
@@ -3963,6 +4080,7 @@ def main() -> int:
                     and (_logo_w := _active_tmdb_logo_widget()) is not None
                     and active_tmdb_title_key
                     and alpha_blend_bgra_over_bgr is not None
+                    and not _use_new_now_playing_ui()
                 ):
                     if (
                         _effective_display_view() == DisplayView.ONE
@@ -4153,8 +4271,14 @@ def main() -> int:
             # the gradient, then clock saver / clock widget / overlays on
             # top of the visualizer. See the saver branch for the no-gradient
             # variant.
-            _blend_top_gradient_design(canvas)
-            if cs:
+            if not (_use_new_now_playing_ui() and not cs):
+                _blend_top_gradient_design(canvas)
+            if not cs and _use_new_now_playing_ui():
+                canvas[:] = (32, 32, 32)
+                _sync_now_playing_screen_state()
+                if now_playing_screen_widget is not None:
+                    now_playing_screen_widget.render(canvas)
+            elif cs:
                 _maybe_blend_mic_visualizer(canvas)
                 if alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
@@ -4199,7 +4323,7 @@ def main() -> int:
                             src = _clock_saver_dim_overlay_bgra(p.bgra, _cs_dim_d)
                             patch = src[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
                             roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
-            else:
+            elif not _use_new_now_playing_ui():
                 if (
                     playback_lower_gradient_bgra is not None
                     and alpha_blend_bgra_over_bgr is not None
@@ -4283,7 +4407,7 @@ def main() -> int:
                     DisplayView.FOUR,
                     DisplayView.TWO,
                     DisplayView.THREE,
-                ) and not _view_one_is_pigeon_poster():
+                ) and not _view_one_is_pigeon_poster() and not _use_new_now_playing_ui():
                     if tmdb_logo_cover_design_xywh is not None:
                         lx, ly, lw, lh = tmdb_logo_cover_design_xywh
                         _paste_tmdb_logo_uniform_cover_design(
@@ -8295,6 +8419,7 @@ def main() -> int:
             if status_bar_widget.set_now_playing_display(progress=prog):
                 _warm_status_bar_blits()
                 skip_cache = None
+            _sync_now_playing_screen_state()
 
         def _sync_trt_text_to_true_once() -> None:
             """Set TRT text to the latest polled integer second (used to recover from missed metronome ticks)."""
@@ -8573,6 +8698,7 @@ def main() -> int:
                 _warm_status_bar_blits()
                 skip_cache = None
             _sync_status_bar_trt_substantive()
+            _sync_now_playing_screen_state()
 
         def _sync_streaming_badge_from_playback_sources(
             md: dict[str, object] | None,
@@ -9548,25 +9674,35 @@ def main() -> int:
                 return None
             nonlocal skip_cache
             if ch == "1" and display_view_holder[0] == DisplayView.ONE:
-                # viewOne.07/.08/.09 have no alternate layout — ignore the toggle.
-                _vv_now = _current_view_one_variant()
-                if (
-                    _vv_now is not None
-                    and variant_has_alternate is not None
-                    and not variant_has_alternate(_vv_now)
-                ):
+                st_key = int(getattr(event, "state", 0))
+                sh_key = bool(st_key & 0x0001)
+                if sh_key:
+                    # Shift+1: cycle view-one layout (full / simple / poster).
+                    _vv_now = _current_view_one_variant()
+                    if (
+                        _vv_now is not None
+                        and variant_has_alternate is not None
+                        and not variant_has_alternate(_vv_now)
+                    ):
+                        _bump_pigeon_user_activity(event)
+                        return "break"
+                    _cur = int(view_one_layout_holder[0])
+                    if _cur == int(ViewOneLayout.PIGEON_FULL):
+                        view_one_layout_holder[0] = int(ViewOneLayout.PIGEON_SIMPLE)
+                    elif _cur == int(ViewOneLayout.PIGEON_SIMPLE):
+                        view_one_layout_holder[0] = int(ViewOneLayout.PIGEON_POSTER)
+                    else:
+                        view_one_layout_holder[0] = int(ViewOneLayout.PIGEON_FULL)
+                    skip_cache = None
                     _bump_pigeon_user_activity(event)
+                    _capture_last_view_one_layout_from_live_view()
                     return "break"
-                _cur = int(view_one_layout_holder[0])
-                if _cur == int(ViewOneLayout.PIGEON_FULL):
-                    view_one_layout_holder[0] = int(ViewOneLayout.PIGEON_SIMPLE)
-                elif _cur == int(ViewOneLayout.PIGEON_SIMPLE):
-                    view_one_layout_holder[0] = int(ViewOneLayout.PIGEON_POSTER)
-                else:
-                    view_one_layout_holder[0] = int(ViewOneLayout.PIGEON_FULL)
+                # 1: toggle new (070126) vs classic now-playing chrome on View 1.
+                new_now_playing_ui_holder[0] = not bool(new_now_playing_ui_holder[0])
+                if now_playing_screen_widget is not None:
+                    now_playing_screen_widget.clear_cache()
                 skip_cache = None
                 _bump_pigeon_user_activity(event)
-                _capture_last_view_one_layout_from_live_view()
                 return "break"
             if ch == "4" and display_view_holder[0] == DisplayView.FOUR:
                 view_four_subview_holder[0] = (int(view_four_subview_holder[0]) + 1) % 3
