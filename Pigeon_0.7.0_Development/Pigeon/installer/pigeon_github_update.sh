@@ -109,6 +109,12 @@ if [[ -d "${SRC}/pigeonAssets" ]]; then
   rsync -a "${SRC}/pigeonAssets/" "${INSTALL_DIR}/pigeonAssets/"
 fi
 
+# GitHub zip extraction drops Unix +x bits; desktop double-click launchers need them.
+if [[ -d "${INSTALL_DIR}/installer" ]]; then
+  chmod +x "${INSTALL_DIR}/installer/"*.sh 2>/dev/null || true
+  chmod +x "${INSTALL_DIR}/installer/Run-Pigeon" "${INSTALL_DIR}/installer/Install-Pigeon" 2>/dev/null || true
+fi
+
 log "running pip bootstrap"
 bash "${INSTALL_DIR}/installer/run_pigeon_0_7.sh" --bootstrap-only || die "pip bootstrap failed"
 
