@@ -124,15 +124,31 @@ _TC_H = _sy(39.63)
 _BADGE_Y = _sy(60.492)
 _TC_Y = _sy(314.493)
 
-# Clock (layer 02) — right-aligned near x=503 in source art.
+# Clock (layer 02) — left baseline anchor from SVG art.
 _CLOCK_X = _sx(503.5525)
 _CLOCK_Y = _sy(452.3979)
 _CLOCK_SIZE_PX = max(12, _sy(60.0))
+_CLOCK_PATCH_W = max(120, _sx(280.0))
+_CLOCK_PATCH_H = max(40, _sy(68.0))
 
-# Audio config + volume (layer 05).
-_AUDIO_CFG_X = _sx(31.4322)
-_AUDIO_CFG_Y = _sy(215.9585)
-_AUDIO_CFG_SIZE = max(10, _sy(26.0))
+# Audio config — pixel columns 1…50 (1-based design x).
+_AUDIO_CFG_COL_X0 = 1
+_AUDIO_CFG_COL_X1 = 50
+_AUDIO_CFG_BOX_X = _AUDIO_CFG_COL_X0
+_AUDIO_CFG_BOX_W = max(8, _AUDIO_CFG_COL_X1 - _AUDIO_CFG_COL_X0 + 1)
+_AUDIO_CFG_BOX_Y = _sy(192.0)
+_AUDIO_CFG_BOX_H = _sy(48.0)
+
+# TMDb TT — pixel columns 250…780 (horizontal slot inside status bar).
+_TT_COL_X0 = 250
+_TT_COL_X1 = 780
+_TT_SLOT_L = _TT_COL_X0
+_TT_SLOT_W = max(8, _TT_COL_X1 - _TT_COL_X0)
+
+# Progress divider shortens 12px total while staying vertically centered.
+_PROGRESS_VLINE_TRIM = 6
+
+# Volume (layer 05).
 _VOLUME_X = _sx(64.672)
 _VOLUME_Y = _sy(444.8463)
 _VOLUME_SIZE = max(10, _sy(34.0))
@@ -459,6 +475,40 @@ def _draw_left_rounded_rect_bgra(
         roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
 
 
+def _draw_rounded_rect_stroke_bgra(
+    bgra: np.ndarray,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    stroke_bgr: tuple[int, int, int],
+    radius: int = 0,
+    stroke: int = 1,
+) -> None:
+    """Stroke-only rounded rect (transparent fill) composited on top."""
+    if w < 1 or h < 1 or stroke < 1:
+        return
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(int(DESIGN_W), x + w), min(int(DESIGN_H), y + h)
+    if x0 >= x1 or y0 >= y1:
+        return
+    lw, lh = x1 - x0, y1 - y0
+    mask = _rounded_rect_mask(lw, lh, min(radius, lw // 2, lh // 2))
+    edge = cv2.Canny(mask, 50, 150)
+    k = max(1, int(stroke))
+    if k > 1:
+        edge = cv2.dilate(edge, np.ones((k, k), np.uint8))
+    patch = np.zeros((lh, lw, 4), dtype=np.uint8)
+    patch[edge > 0, :3] = stroke_bgr
+    patch[edge > 0, 3] = 255
+    roi = bgra[y0:y1, x0:x1]
+    if roi.shape[2] >= 4:
+        _blend_bgra_onto_bgra(roi, patch)
+    else:
+        roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
+
+
 def _draw_vertical_stroke_bgra(
     bgra: np.ndarray,
     x: int,
@@ -609,8 +659,13 @@ def _trim_visible_bgra(src: np.ndarray, *, alpha_threshold: int = 8) -> np.ndarr
 
 
 def status_bar_slot_wh() -> tuple[int, int]:
-    """Design-pixel (w, h) of the now-playing status bar interior."""
-    return (_BAR_W, _BAR_H)
+    """Design-pixel (w, h) of the TMDb TT slot (pixel columns 250–780)."""
+    return (_TT_SLOT_W, _BAR_H)
+
+
+def tt_slot_design_x() -> int:
+    """Left design-x of the TMDb TT slot."""
+    return _TT_SLOT_L
 
 
 def _fit_status_bar_slot_bgra(src: np.ndarray, slot_w: int, slot_h: int) -> np.ndarray:
@@ -619,9 +674,9 @@ def _fit_status_bar_slot_bgra(src: np.ndarray, slot_w: int, slot_h: int) -> np.n
 
 
 def _fit_tt_in_status_bar_bgra(src: np.ndarray) -> np.ndarray:
-    """Center the title treatment horizontally and vertically in the status-bar shape."""
+    """Center the title treatment in the TT slot (cols 250–780), vertically in the bar."""
     trimmed = _trim_visible_bgra(src)
-    return _image_contain_center_bgra(trimmed, _BAR_W, _BAR_H)
+    return _image_contain_center_bgra(trimmed, _TT_SLOT_W, _BAR_H)
 
 
 def _reveal_crop_bgra_left(full: np.ndarray, reveal_w: int) -> np.ndarray | None:
@@ -992,17 +1047,20 @@ class NowPlayingScreenWidget:
             if played_crop is not None:
                 self._paste_patch(out, played_crop, _BAR_L, _BAR_T)
 
-        # TMDb TT normal: same crop reveal over full-size fit (not horizontal stretch).
+        # TMDb TT normal: crop reveal in pixel-column slot 250–780.
         if self._tt_bgra is not None and self._tt_bgra.size > 0:
             tt_fit = _fit_tt_in_status_bar_bgra(self._tt_bgra)
-            if played_w > 0:
-                color_crop = _reveal_crop_bgra_left(tt_fit, played_w)
-                if color_crop is not None:
-                    self._paste_patch(out, color_crop, _BAR_L, _BAR_T)
-            if played_w < _BAR_W:
+            played_right = _BAR_L + played_w
+            play_crop_l = 0
+            play_crop_r = min(_TT_SLOT_W, max(0, played_right - _TT_SLOT_L))
+            if play_crop_r > play_crop_l:
+                color_crop = tt_fit[:, play_crop_l:play_crop_r]
+                self._paste_patch(out, color_crop, _TT_SLOT_L + play_crop_l, _BAR_T)
+            unplay_l = max(0, played_right - _TT_SLOT_L)
+            if unplay_l < _TT_SLOT_W:
                 tt_black = _tt_to_black_bgra(tt_fit)
-                unplayed_crop = tt_black[:, played_w:, :].copy()
-                self._paste_patch(out, unplayed_crop, _BAR_L + played_w, _BAR_T)
+                unplayed_crop = tt_black[:, unplay_l:, :].copy()
+                self._paste_patch(out, unplayed_crop, _TT_SLOT_L + unplay_l, _BAR_T)
 
         if st.show_paused and played_w > 0:
             paused = _text_patch_bgra(
@@ -1062,38 +1120,44 @@ class NowPlayingScreenWidget:
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
-        # Vertical progress edge: white stroke at played-bar crop X, linking badge → timecode.
+        # Vertical progress edge: 12px shorter, vertically centered between badge and timecode.
         progress_edge_x = _BAR_L + played_w
+        vline_y0 = _BADGE_Y + _PROGRESS_VLINE_TRIM
+        vline_y1 = (_TC_Y + _TC_H) - _PROGRESS_VLINE_TRIM
         _draw_vertical_stroke_bgra(
             out,
             progress_edge_x,
-            _BADGE_Y,
-            _TC_Y + _TC_H,
+            vline_y0,
+            vline_y1,
             stroke_bgr=_COLOR_ACCENT_BGR,
             stroke=_BAR_STROKE,
         )
 
-        # Clock — right aligned at design x anchor.
-        clk = _clock_text()
-        clk_patch, cw, ch = _fit_text_patch(
-            clk,
-            size_px=_CLOCK_SIZE_PX,
-            fill_rgb=(225, 0, 24),
-            bold=True,
-            align="right",
+        # Consistent white stroke around the full now-playing bar shape (on top).
+        _draw_rounded_rect_stroke_bgra(
+            out,
+            _BAR_L,
+            _BAR_T,
+            _BAR_W,
+            _BAR_H,
+            stroke_bgr=_COLOR_ACCENT_BGR,
+            radius=_BAR_RX,
+            stroke=_BAR_STROKE,
         )
-        self._paste_patch(out, clk_patch, _CLOCK_X - cw, _CLOCK_Y - ch // 2)
 
-        # Audio config + volume (placeholder SVG text hidden; live values drawn here).
+        # Audio config — fit + center in pixel columns 1–50.
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
-            cfg_patch, _, _ = _fit_text_patch(
+            cfg_patch = _text_patch_bgra(
                 cfg_line,
-                size_px=_AUDIO_CFG_SIZE,
-                fill_rgb=(225, 0, 24),
-                bold=True,
+                _AUDIO_CFG_BOX_W,
+                _AUDIO_CFG_BOX_H,
+                align="center",
+                fill_rgba=(237, 28, 36, 255),
+                fit_max_h=_AUDIO_CFG_BOX_H - 4,
             )
-            self._paste_patch(out, cfg_patch, _AUDIO_CFG_X, _AUDIO_CFG_Y - _sy(20))
+            self._paste_patch(out, cfg_patch, _AUDIO_CFG_BOX_X, _AUDIO_CFG_BOX_Y)
+
         vol_line = _receiver_volume_display_line(st.volume)
         if vol_line:
             vol_patch, _, _ = _fit_text_patch(
@@ -1103,6 +1167,18 @@ class NowPlayingScreenWidget:
                 bold=True,
             )
             self._paste_patch(out, vol_patch, _VOLUME_X, _VOLUME_Y - _sy(26))
+
+        # Clock — SVG baseline anchor; draw last so nothing covers it.
+        clk_patch = _text_patch_bgra(
+            _clock_text(),
+            _CLOCK_PATCH_W,
+            _CLOCK_PATCH_H,
+            align="left",
+            fill_rgba=(237, 28, 36, 255),
+            fit_max_h=_CLOCK_SIZE_PX,
+        )
+        clk_h = int(clk_patch.shape[0])
+        self._paste_patch(out, clk_patch, _CLOCK_X, _CLOCK_Y - clk_h + max(4, _sy(8)))
 
         return out
 
