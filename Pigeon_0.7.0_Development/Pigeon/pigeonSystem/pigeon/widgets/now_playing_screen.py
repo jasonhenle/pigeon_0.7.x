@@ -131,9 +131,9 @@ _CLOCK_SIZE_PX = max(12, _sy(60.0))
 _CLOCK_PATCH_W = max(120, _sx(280.0))
 _CLOCK_PATCH_H = max(40, _sy(68.0))
 
-# Audio config — pixel columns 1…50 (1-based design x).
+# Audio config — pixel columns 1…210 (1-based design x).
 _AUDIO_CFG_COL_X0 = 1
-_AUDIO_CFG_COL_X1 = 50
+_AUDIO_CFG_COL_X1 = 210
 _AUDIO_CFG_BOX_X = _AUDIO_CFG_COL_X0
 _AUDIO_CFG_BOX_W = max(8, _AUDIO_CFG_COL_X1 - _AUDIO_CFG_COL_X0 + 1)
 _AUDIO_CFG_BOX_Y = _sy(192.0)
@@ -1145,7 +1145,7 @@ class NowPlayingScreenWidget:
             stroke=_BAR_STROKE,
         )
 
-        # Audio config — fit + center in pixel columns 1–50.
+        # Audio config — fit + center in pixel columns 1–210.
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
             cfg_patch = _text_patch_bgra(
