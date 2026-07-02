@@ -125,11 +125,16 @@ fi
 echo "Starting Pigeon…" >&2
 export PYTHONPYCACHEPREFIX="${ROOT}/pigeonCashe"
 FONT_DIR="${ROOT}/pigeonAssets/fonts"
-if [[ -f "${FONT_DIR}/Sharp Sans Extrabold.otf" ]]; then
+if [[ -f "${FONT_DIR}/SharpSansExtrabold.otf" ]]; then
+  export PIGEON_FONT_EXTRABOLD="${FONT_DIR}/SharpSansExtrabold.otf"
+  export PIGEON_FONT="${PIGEON_FONT_EXTRABOLD}"
+elif [[ -f "${FONT_DIR}/Sharp Sans Extrabold.otf" ]]; then
   export PIGEON_FONT_EXTRABOLD="${FONT_DIR}/Sharp Sans Extrabold.otf"
   export PIGEON_FONT="${PIGEON_FONT_EXTRABOLD}"
 fi
-if [[ -f "${FONT_DIR}/Sharp Sans Medium.otf" ]]; then
+if [[ -f "${FONT_DIR}/SharpSansMedium.otf" ]]; then
+  export PIGEON_FONT_MEDIUM="${FONT_DIR}/SharpSansMedium.otf"
+elif [[ -f "${FONT_DIR}/Sharp Sans Medium.otf" ]]; then
   export PIGEON_FONT_MEDIUM="${FONT_DIR}/Sharp Sans Medium.otf"
 fi
 USER_FONT_DIR="${HOME}/.local/share/fonts/pigeon"

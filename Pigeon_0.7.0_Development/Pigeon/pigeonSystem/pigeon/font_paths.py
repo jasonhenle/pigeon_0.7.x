@@ -22,12 +22,13 @@ _REGULAR_FALLBACK_PATHS: tuple[Path, ...] = (
 )
 
 _BUNDLED_EXTRABOLD_NAMES: tuple[str, ...] = (
+    "SharpSansExtrabold.otf",
     "Sharp Sans Extrabold.otf",
     "SharpSans-Extrabold.otf",
-    "SharpSansExtrabold.otf",
 )
 
 _BUNDLED_MEDIUM_NAMES: tuple[str, ...] = (
+    "SharpSansMedium.otf",
     "Sharp Sans Medium.otf",
     "SharpSans-Medium.otf",
 )

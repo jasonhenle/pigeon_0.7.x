@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.compositing import alpha_blend_bgra_over_bgr
 from pigeon.design import DESIGN_H, DESIGN_W
-from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold
+from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold, resolve_ui_font_medium
 from pigeon.image_ui_protocol import load_image_bgra
 from pigeon.widgets.playback_overlay import (
     _image_contain_center_bgra,
@@ -348,10 +348,44 @@ def render_now_playing_svg_base_bgra(
 
 @lru_cache(maxsize=8)
 def _load_font(path: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    try:
-        return ImageFont.truetype(path, max(6, size))
-    except OSError:
-        return ImageFont.load_default()
+    """Load Sharp Sans at ``size``; never fall back to Pillow's tiny bitmap default."""
+    px = max(6, int(size))
+    candidates: list[str] = []
+    if path:
+        candidates.append(str(path))
+    for resolver in (resolve_ui_font_extrabold, resolve_ui_font_bold, resolve_ui_font_medium):
+        try:
+            p = resolver()
+        except Exception:
+            p = None
+        if p and p not in candidates:
+            candidates.append(p)
+    for fallback in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+    ):
+        if fallback not in candidates:
+            candidates.append(fallback)
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(candidate, px)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _blend_bgra_onto_bgra(dst: np.ndarray, src: np.ndarray) -> None:
+    """Alpha-composite ``src`` onto ``dst`` in place (both BGRA)."""
+    if dst is None or src is None or dst.size == 0 or src.size == 0:
+        return
+    if dst.shape[:2] != src.shape[:2]:
+        raise ValueError("blend regions must match")
+    src_bgr = src[:, :, :3].astype(np.float32)
+    dst_bgr = dst[:, :, :3].astype(np.float32)
+    alpha = src[:, :, 3:4].astype(np.float32) / 255.0
+    dst[:, :, :3] = np.clip(src_bgr * alpha + dst_bgr * (1.0 - alpha), 0, 255).astype(np.uint8)
+    dst[:, :, 3] = np.maximum(dst[:, :, 3], src[:, :, 3])
 
 
 def _rounded_rect_mask(w: int, h: int, radius: int) -> np.ndarray:
@@ -507,24 +541,29 @@ def _fit_text_patch(
     size_px: int,
     fill_rgb: tuple[int, int, int],
     bold: bool = True,
-    anchor: str = "ls",
+    align: str = "left",
 ) -> tuple[np.ndarray, int, int]:
     if not text:
         return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
     path = resolve_ui_font_extrabold() or resolve_ui_font_bold()
     font = _load_font(str(path or ""), size_px)
+    pad = 2
     probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
     l, t, r, b = draw.textbbox((0, 0), text, font=font)
     tw, th = max(1, r - l), max(1, b - t)
-    img = Image.new("RGBA", (tw + 4, th + 4), (0, 0, 0, 0))
+    img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    try:
-        draw.text((-l + 2, -t + 2), text, font=font, fill=(*fill_rgb, 255), anchor=anchor)
-    except (TypeError, ValueError):
-        draw.text((-l + 2, -t + 2), text, font=font, fill=(*fill_rgb, 255))
+    if align == "right":
+        tx = tw + pad - 1 - l
+    elif align == "center":
+        tx = (tw + pad * 2) // 2 - (l + r) // 2
+    else:
+        tx = pad - l
+    ty = pad - t
+    draw.text((tx, ty), text, font=font, fill=(*fill_rgb, 255))
     arr = np.asarray(img)
-    return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA), tw, th
+    return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA), tw + pad * 2, th + pad * 2
 
 
 def _clock_text(now: datetime | None = None) -> str:
@@ -880,8 +919,7 @@ class NowPlayingScreenWidget:
         roi = canvas[y0:y1, x0:x1]
         sub = patch[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
         if roi.shape[2] >= 4 and sub.shape[2] >= 4:
-            roi[:, :, :3] = alpha_blend_bgra_over_bgr(roi[:, :, :3], sub)
-            roi[:, :, 3] = np.maximum(roi[:, :, 3], sub[:, :, 3])
+            _blend_bgra_onto_bgra(roi, sub)
         else:
             roi[:] = alpha_blend_bgra_over_bgr(roi, sub)
 
@@ -994,6 +1032,7 @@ class NowPlayingScreenWidget:
                 size_px=max(10, _sy(30.0)),
                 fill_rgb=(0, 0, 0),
                 bold=True,
+                align="center",
             )
             tx = tc_x + max(0, (_TC_W - tw) // 2)
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
@@ -1017,7 +1056,7 @@ class NowPlayingScreenWidget:
             size_px=_CLOCK_SIZE_PX,
             fill_rgb=(225, 0, 24),
             bold=True,
-            anchor="rs",
+            align="right",
         )
         self._paste_patch(out, clk_patch, _CLOCK_X - cw, _CLOCK_Y - ch // 2)
 
