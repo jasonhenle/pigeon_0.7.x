@@ -45,6 +45,30 @@ pigeon_prepare_runtime_dirs() {
     "${root}/pigeonTMDB/pigeonTMDB_TT"
 }
 
+pigeon_install_bundled_fonts() {
+  local root="${1}"
+  local user_home="${2}"
+  local src="${root}/pigeonAssets/fonts"
+  local dst="${user_home}/.local/share/fonts/pigeon"
+  if [[ ! -d "${src}" ]]; then
+    return 0
+  fi
+  mkdir -p "${dst}"
+  shopt -s nullglob
+  local f
+  for f in "${src}"/*.otf "${src}"/*.ttf "${src}"/*.ttc; do
+    [[ -f "${f}" ]] || continue
+    cp -f "${f}" "${dst}/"
+  done
+  shopt -u nullglob
+  if [[ -f "${src}/fonts.conf" ]]; then
+    cp -f "${src}/fonts.conf" "${dst}/fonts.conf"
+  fi
+  if command -v fc-cache >/dev/null 2>&1; then
+    fc-cache -f "${dst}" >/dev/null 2>&1 || true
+  fi
+}
+
 pigeon_print_usage() {
   local root="${1:-}"
   local ver="0.7.5"

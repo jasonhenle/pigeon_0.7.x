@@ -151,7 +151,8 @@ else
 fi
 
 pigeon_prepare_runtime_dirs "${INSTALL_DIR}"
-chown -R "${INSTALL_USER}:${INSTALL_USER}" "${INSTALL_DIR}"
+pigeon_install_bundled_fonts "${INSTALL_DIR}" "${INSTALL_HOME}"
+chown -R "${INSTALL_USER}:${INSTALL_USER}" "${INSTALL_HOME}/.local/share/fonts/pigeon" 2>/dev/null || true
 chmod +x \
   "${INSTALL_DIR}/installer/run_pigeon_0_7.sh" \
   "${INSTALL_DIR}/installer/install_pigeon.sh" \

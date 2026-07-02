@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.compositing import alpha_blend_bgra_over_bgr
 from pigeon.design import DESIGN_H, DESIGN_W
-from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold, resolve_ui_font_medium
+from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold
 from pigeon.image_ui_protocol import load_image_bgra
 from pigeon.widgets.playback_overlay import (
     _image_contain_center_bgra,
@@ -209,10 +209,55 @@ def _apply_indicator_colors(root: ET.Element, state: NowPlayingScreenState) -> N
                 _set_node_fill(node, color)
 
 
+def _remove_element_by_id(root: ET.Element, element_id: str) -> None:
+    """Remove a node from the SVG tree (PyMuPDF ignores display:none)."""
+    for parent in root.iter():
+        for child in list(parent):
+            if child.get("id") == element_id:
+                parent.remove(child)
+                return
+
+
+def _remove_by_logical_id(root: ET.Element, logical_id: str) -> None:
+    _remove_element_by_id(root, _encode_svg_layer_id(logical_id))
+
+
+def _remove_layers_by_id_substrings(root: ET.Element, substrings: tuple[str, ...]) -> None:
+    """Remove Illustrator wrapper groups whose ids still contain demo chrome."""
+    removals: list[tuple[ET.Element, ET.Element]] = []
+    for parent in root.iter():
+        for child in list(parent):
+            eid = child.get("id") or ""
+            if any(token in eid for token in substrings):
+                removals.append((parent, child))
+    for parent, child in removals:
+        try:
+            parent.remove(child)
+        except ValueError:
+            pass
+
+
+# Extra patterns for auto-suffixed Illustrator group ids (e.g. volume text wrappers).
+_EXTRA_HIDE_ID_SUBSTRINGS: tuple[str, ...] = (
+    "_x5F_badge_x5F_container",
+    "_x5F_badge_x5F_service",
+    "_x5F_timecode_x5F_container",
+    "_x5F_timecode_x5F_text",
+    "_x5F_status_x5F_bar_x5F_played",
+    "_x5F_tmdb_x5F_TT_x5F_normal",
+    "_x5F_clock_x5F_text",
+    "_x5F_audio_x5F_config_x5F_text",
+    "_x5F_audio_x5F_config_x5F_volume",
+    "_x5F_backdrop_x5F_tmdb_x5F_backdrop",
+    "_x5F_tmdb_x5F_TT_x5F_black",
+)
+
+
 def apply_now_playing_svg_state(root: ET.Element, state: NowPlayingScreenState) -> None:
-    """Mutate an SVG element tree: hide demo/dynamic layers; recolor status dots."""
+    """Mutate SVG before rasterize: strip demo/dynamic layers; recolor status dots."""
     for logical_id in _HIDE_LAYER_LOGICAL:
-        _set_visible(_find_by_logical_id(root, logical_id), False)
+        _remove_by_logical_id(root, logical_id)
+    _remove_layers_by_id_substrings(root, _EXTRA_HIDE_ID_SUBSTRINGS)
     _apply_indicator_colors(root, state)
 
 
@@ -466,9 +511,7 @@ def _fit_text_patch(
 ) -> tuple[np.ndarray, int, int]:
     if not text:
         return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
-    path = resolve_ui_font_extrabold() if bold else resolve_ui_font_medium()
-    if not path:
-        path = resolve_ui_font_bold()
+    path = resolve_ui_font_extrabold() or resolve_ui_font_bold()
     font = _load_font(str(path or ""), size_px)
     probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)

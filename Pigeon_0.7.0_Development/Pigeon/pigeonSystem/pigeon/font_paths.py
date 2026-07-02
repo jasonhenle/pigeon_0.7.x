@@ -21,6 +21,39 @@ _REGULAR_FALLBACK_PATHS: tuple[Path, ...] = (
     Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
 )
 
+_BUNDLED_EXTRABOLD_NAMES: tuple[str, ...] = (
+    "Sharp Sans Extrabold.otf",
+    "SharpSans-Extrabold.otf",
+    "SharpSansExtrabold.otf",
+)
+
+_BUNDLED_MEDIUM_NAMES: tuple[str, ...] = (
+    "Sharp Sans Medium.otf",
+    "SharpSans-Medium.otf",
+)
+
+_BUNDLED_BOLD_NAMES: tuple[str, ...] = (
+    "Sharp Sans Bold.otf",
+    "SharpSansBold.otf",
+)
+
+
+def _pigeon_assets_fonts_dir() -> Path | None:
+    """``pigeonAssets/fonts`` next to ``pigeonSystem`` (shipped with the app)."""
+    d = Path(__file__).resolve().parents[2] / "pigeonAssets" / "fonts"
+    return d if d.is_dir() else None
+
+
+def _first_bundled_font(names: tuple[str, ...]) -> str | None:
+    fonts_dir = _pigeon_assets_fonts_dir()
+    if fonts_dir is None:
+        return None
+    for name in names:
+        p = fonts_dir / name
+        if p.is_file():
+            return str(p)
+    return None
+
 
 def _font_search_roots() -> list[Path]:
     """macOS user/system dirs plus common Linux font trees (Raspberry Pi, etc.)."""
@@ -94,6 +127,10 @@ def resolve_ui_font_medium() -> str | None:
     if env and Path(env).is_file():
         return env
 
+    bundled = _first_bundled_font(_BUNDLED_MEDIUM_NAMES)
+    if bundled:
+        return bundled
+
     roots = _font_search_roots()
     globs = (
         "*Sharp*Sans*Medium*.ttf",
@@ -125,6 +162,10 @@ def resolve_ui_font_extrabold() -> str | None:
     if env and Path(env).is_file():
         return env
 
+    bundled = _first_bundled_font(_BUNDLED_EXTRABOLD_NAMES)
+    if bundled:
+        return bundled
+
     roots = _font_search_roots()
     globs = (
         "*Sharp*Sans*Extra*Bold*.otf",
@@ -151,6 +192,10 @@ def resolve_ui_font_bold() -> str | None:
     env = os.environ.get("PIGEON_FONT")
     if env and Path(env).is_file():
         return env
+
+    bundled = _first_bundled_font(_BUNDLED_BOLD_NAMES)
+    if bundled:
+        return bundled
 
     roots = _font_search_roots()
     # Typical retail / Adobe naming patterns

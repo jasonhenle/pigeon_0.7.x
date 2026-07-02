@@ -124,6 +124,18 @@ if [[ -n "${VENV_REBUILD_REASON}" ]]; then
 fi
 echo "Starting Pigeon…" >&2
 export PYTHONPYCACHEPREFIX="${ROOT}/pigeonCashe"
+FONT_DIR="${ROOT}/pigeonAssets/fonts"
+if [[ -f "${FONT_DIR}/Sharp Sans Extrabold.otf" ]]; then
+  export PIGEON_FONT_EXTRABOLD="${FONT_DIR}/Sharp Sans Extrabold.otf"
+  export PIGEON_FONT="${PIGEON_FONT_EXTRABOLD}"
+fi
+if [[ -f "${FONT_DIR}/Sharp Sans Medium.otf" ]]; then
+  export PIGEON_FONT_MEDIUM="${FONT_DIR}/Sharp Sans Medium.otf"
+fi
+USER_FONT_DIR="${HOME}/.local/share/fonts/pigeon"
+if [[ -f "${USER_FONT_DIR}/fonts.conf" ]]; then
+  export FONTCONFIG_FILE="${USER_FONT_DIR}/fonts.conf"
+fi
 # Pi / Linux: 800×480 logical target; UI composes at native 800×480. Fullscreen fills the monitor.
 export PIGEON_DISPLAY_W="${PIGEON_DISPLAY_W:-800}"
 export PIGEON_DISPLAY_H="${PIGEON_DISPLAY_H:-480}"

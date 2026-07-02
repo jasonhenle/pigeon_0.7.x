@@ -95,6 +95,10 @@ if [[ -d "${SRC}/pigeonAssets" ]]; then
   rsync -a "${SRC}/pigeonAssets/" "${INSTALL_DIR}/pigeonAssets/"
 fi
 
+# shellcheck source=common.sh
+source "${INSTALL_DIR}/installer/common.sh"
+pigeon_install_bundled_fonts "${INSTALL_DIR}" "${HOME}"
+
 echo "==> Refreshing Python dependencies…"
 bash "${INSTALL_DIR}/installer/run_pigeon_0_7.sh" --bootstrap-only
 
