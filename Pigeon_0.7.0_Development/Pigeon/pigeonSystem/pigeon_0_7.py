@@ -3032,17 +3032,26 @@ def main() -> int:
                 tmdb_logo_patch_bgra = None
                 _refresh_tmdb_tt_gradient_tint()
                 return
+            patch_wh = None
+            if _use_new_now_playing_ui():
+                from pigeon.widgets.now_playing_screen import status_bar_slot_wh
+
+                patch_wh = status_bar_slot_wh()
             if active_tmdb_title_key:
                 tmdb_logo_patch_bgra = logo_w.bgra_patch_for_title(
                     active_tmdb_title_key,
                     display_title=active_tmdb_display_title,
+                    patch_wh=patch_wh,
                 ).copy()
                 _refresh_tmdb_tt_gradient_tint()
                 return
             if tmdb_logo_app_fallback_active:
                 src = _resolve_streaming_app_logo_bgra()
                 if src is not None:
-                    tmdb_logo_patch_bgra = logo_w.bgra_patch_from_source_bgra(src).copy()
+                    tmdb_logo_patch_bgra = logo_w.bgra_patch_from_source_bgra(
+                        src,
+                        patch_wh=patch_wh,
+                    ).copy()
                     _refresh_tmdb_tt_gradient_tint()
                     return
             tmdb_logo_patch_bgra = None

@@ -593,11 +593,35 @@ def _tt_to_black_bgra(src: np.ndarray) -> np.ndarray:
     return out
 
 
+def _trim_visible_bgra(src: np.ndarray, *, alpha_threshold: int = 8) -> np.ndarray:
+    """Crop to non-transparent ink bounds (ignores side padding in cached TT assets)."""
+    if src is None or src.size == 0:
+        return src
+    if src.ndim != 3 or src.shape[2] < 4:
+        return src
+    nz = src[:, :, 3] > alpha_threshold
+    if not np.any(nz):
+        return src
+    ys, xs = np.nonzero(nz)
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    return src[y0:y1, x0:x1]
+
+
+def status_bar_slot_wh() -> tuple[int, int]:
+    """Design-pixel (w, h) of the now-playing status bar interior."""
+    return (_BAR_W, _BAR_H)
+
+
 def _fit_status_bar_slot_bgra(src: np.ndarray, slot_w: int, slot_h: int) -> np.ndarray:
     """Scale ``src`` once into the status-bar slot (uniform); never stretch per progress."""
-    if src.shape[1] == slot_w and src.shape[0] == slot_h:
-        return src.copy()
     return _image_contain_center_bgra(src, slot_w, slot_h)
+
+
+def _fit_tt_in_status_bar_bgra(src: np.ndarray) -> np.ndarray:
+    """Center the title treatment horizontally and vertically in the status-bar shape."""
+    trimmed = _trim_visible_bgra(src)
+    return _image_contain_center_bgra(trimmed, _BAR_W, _BAR_H)
 
 
 def _reveal_crop_bgra_left(full: np.ndarray, reveal_w: int) -> np.ndarray | None:
@@ -970,7 +994,7 @@ class NowPlayingScreenWidget:
 
         # TMDb TT normal: same crop reveal over full-size fit (not horizontal stretch).
         if self._tt_bgra is not None and self._tt_bgra.size > 0:
-            tt_fit = _fit_status_bar_slot_bgra(self._tt_bgra, _BAR_W, _BAR_H)
+            tt_fit = _fit_tt_in_status_bar_bgra(self._tt_bgra)
             if played_w > 0:
                 color_crop = _reveal_crop_bgra_left(tt_fit, played_w)
                 if color_crop is not None:
