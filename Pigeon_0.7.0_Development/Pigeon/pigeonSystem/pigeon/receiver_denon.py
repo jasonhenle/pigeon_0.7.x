@@ -378,6 +378,127 @@ def _denon_field_ci(d: dict[str, str], *names: str) -> str:
     return ""
 
 
+# Incoming signal labels that are HDMI/source selectors, not audio formats.
+_AUDIO_FORMAT_HINTS = (
+    "dolby",
+    "dts",
+    "atmos",
+    "stereo",
+    "multi",
+    "pcm",
+    "auro",
+    "truehd",
+    "digital",
+    "thd",
+    "surround",
+    "dd+",
+    "eac3",
+    "dtsx",
+    "mal",
+    "bitstream",
+)
+_GENERIC_DECODE_MODES = frozenset({"auto", "pcm", "off", "on", "unknown", "no", "no signal"})
+
+# HTTP/XML keys that report incoming codec/signal (never ``SI`` — that is the HDMI input).
+_INCOMING_FORMAT_KEYS = (
+    "signalDisplay",
+    "HDMIAudio",
+    "HDsignalMode",
+    "HDMISig",
+    "SYSDA",
+    "InputSignal",
+    "AudioInputSignal",
+    "DigitalInputSignal",
+    "AudioCodec",
+    "CodecDisp",
+    "SSINFAISFOR",
+    "DC",
+)
+
+
+def _looks_like_speaker_layout_not_format(value: str) -> bool:
+    """True for Denon layout tokens (``3/2/.1``, ``7.1.4``) — not a codec label."""
+    t = str(value or "").strip()
+    if not t:
+        return False
+    compact = t.replace(" ", "")
+    if re.fullmatch(r"[\d./+]+", compact):
+        return True
+    return bool(re.fullmatch(r"\d+\.\d+(?:\.\d+)?", t))
+
+
+def looks_like_hdmi_input_selector(value: str) -> bool:
+    """True when ``value`` names an AVR input (SAT/CBL, HDMI3, …), not an audio format."""
+    s = str(value or "").strip()
+    if not s:
+        return False
+    low = re.sub(r"\s+", " ", s.lower())
+    compact = re.sub(r"\s+", "", low)
+    if any(h in low for h in _AUDIO_FORMAT_HINTS):
+        return False
+    if re.fullmatch(r"hdmi\s*\d*", low):
+        return True
+    if re.fullmatch(r"aux\s*\d*", low):
+        return True
+    if re.fullmatch(r"(?:sat/?cbl|cbl/?sat)", compact):
+        return True
+    if low in {
+        "tv",
+        "dvd",
+        "bd",
+        "bluray",
+        "game",
+        "game2",
+        "mplay",
+        "cd",
+        "tuner",
+        "phono",
+        "net",
+        "heos",
+        "network",
+        "usb",
+        "vcr",
+        "dvr",
+        "tvaudio",
+        "dock",
+        "ipod",
+        "source",
+        "unbal",
+        "sat",
+        "cbl",
+    }:
+        return True
+    return False
+
+
+def _pick_incoming_audio_format(d: dict[str, str]) -> str:
+    for key in _INCOMING_FORMAT_KEYS:
+        v = _denon_field_ci(d, key)
+        if not v:
+            continue
+        v = v.strip()
+        if key == "DC" and v.lower() in _GENERIC_DECODE_MODES:
+            continue
+        if key == "SYSDA" and v.lower() in {"pcm", "auto"}:
+            continue
+        if looks_like_hdmi_input_selector(v):
+            continue
+        if _looks_like_speaker_layout_not_format(v):
+            continue
+        return v
+    for k, v in d.items():
+        if not v or len(v) < 2:
+            continue
+        kl = k.lower()
+        if ("signal" in kl or "codec" in kl) and "power" not in kl and "mute" not in kl:
+            if looks_like_hdmi_input_selector(v):
+                continue
+            if _looks_like_speaker_layout_not_format(v):
+                continue
+            return v.strip()
+    return ""
+
+
 def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollResult:
     """
     Return overlay strings. On transport/parse failure or no signal: ok=False and empty
@@ -437,47 +558,13 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
     else:
         vol_s = ""
 
-    incoming = ""
-    # Prefer Telnet-reported signal/decode/mode when available.
-    for key in ("SI", "DC", "MS"):
-        v = _denon_field_ci(d, key)
-        if v:
-            incoming = v
-            break
-    if not incoming:
-        for key in (
-            "HDMIAudio",
-            "HDsignalMode",
-            "HDMISig",
-            "InputSignal",
-            "AudioInputSignal",
-            "DigitalInputSignal",
-            "signalDisplay",
-            "AudioCodec",
-            "CodecDisp",
-        ):
-            v = d.get(key)
-            if v:
-                incoming = v
-                break
-    if not incoming:
-        for k, v in d.items():
-            if not v or len(v) < 2:
-                continue
-            kl = k.lower()
-            if ("signal" in kl or "codec" in kl) and "power" not in kl and "mute" not in kl:
-                incoming = v
-                break
+    # Incoming = source audio format (codec/signal). Playback = surround/output mode (``MS``).
+    # Never use ``SI`` (HDMI input selector such as SAT/CBL) for the widget line.
+    incoming = _pick_incoming_audio_format(d)
 
     cfg = _denon_field_ci(d, "MS", "selectSurround", "SurrMode", "surroundmode").strip()
-    if not cfg:
-        ps_cfg_bits: list[str] = []
-        for key in ("PS_MULTEQ", "PS_DYNEQ", "PS_DYNVOL", "PS_REFLEV"):
-            v = _denon_field_ci(d, key)
-            if v:
-                ps_cfg_bits.append(f"{key[3:]}={v}")
-        if ps_cfg_bits:
-            cfg = " | ".join(ps_cfg_bits)
+    if cfg and looks_like_hdmi_input_selector(cfg):
+        cfg = ""
     cfg = " ".join(cfg.split())
 
     if incoming:

@@ -54,6 +54,8 @@ _POLL_COMMANDS: tuple[str, ...] = (
     "MS?",       # surround mode
     "SV?",       # video select
     "DC?",       # digital decode mode
+    "SSINFAISFOR ?",    # input channel layout / source format
+    "SYSDA ?",          # input audio format (codec)
     "PSMULTEQ: ?",      # Audyssey MultEQ mode
     "PSDYNEQ ?",        # dynamic EQ
     "PSDYNVOL ?",       # dynamic volume
@@ -190,6 +192,29 @@ def _parse_denon_response_lines(lines: Iterable[str]) -> dict[str, str]:
             val = line[2:].strip().upper()
             if val and "DC" not in out:
                 out["DC"] = val
+            continue
+        if prefix == "SS":
+            rest = line[2:].strip()
+            up = rest.upper()
+            if up.startswith("INFAISFOR"):
+                val = rest[len("INFAISFOR") :].strip()
+                if val:
+                    out["SSINFAISFOR"] = val
+            elif up.startswith("INFAISSIG"):
+                val = rest[len("INFAISSIG") :].strip()
+                if val:
+                    out["SSINFAISSIG"] = val
+            elif rest and "SS" not in out:
+                out["SS"] = rest
+            continue
+        if prefix == "SY":
+            rest = line[2:].strip()
+            if rest.upper().startswith("SDA"):
+                val = rest[3:].strip()
+                if val:
+                    out["SYSDA"] = val
+            elif rest and "SY" not in out:
+                out["SY"] = rest
             continue
         if prefix == "PS":
             # "PSMULTEQ:AUDYSSEY" / "PSDYNEQ OFF" / "PSBAS 50" / "PSTONE CTRL ON"

@@ -15,6 +15,7 @@ from pigeon.design import get_grid_geometry, rect_for_span_at_cell, rect_for_spa
 from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold
 from pigeon.image_ui_protocol import load_image_bgra
 from pigeon.layout_paths import pick_pigeon_logo_png
+from pigeon.receiver_denon import looks_like_hdmi_input_selector
 from pigeon.widgets.status_bar import DesignPatch
 
 # Service badge + audio lines (audioConfig): 10% smaller, centered in grid cells.
@@ -84,6 +85,8 @@ def _receiver_audio_display_line(raw: object) -> str:
     low = s.lower()
     if low in _IDLE_AUDIO_PLACEHOLDERS:
         return ""
+    if looks_like_hdmi_input_selector(s):
+        return ""
     if all(c in _VOLUME_PLACEHOLDER_CHARS or c.isspace() for c in s):
         return ""
     if _PS_CFG_FRAGMENT_RE.match(s) or _PS_CFG_COMBO_RE.match(s):
@@ -91,6 +94,29 @@ def _receiver_audio_display_line(raw: object) -> str:
     if re.fullmatch(r"PS_[A-Z0-9_]+(?:=[^\s|]+)?", s, re.I):
         return ""
     return s
+
+
+def receiver_audio_config_display_line(incoming: str, config: str) -> str:
+    """
+    Source format and playback/surround mode for the audio-config row.
+
+    When both differ (e.g. MULTI-IN → AURO3D), show ``SOURCE > PLAYBACK``.
+    When they match after normalization, show a single label.
+    HDMI input names (SAT/CBL, HDMI1, …) are never shown.
+    """
+    inc = _receiver_audio_display_line(incoming)
+    cfg = _receiver_audio_display_line(config)
+    if inc:
+        inc = inc.upper()
+    if cfg:
+        cfg = cfg.upper()
+    if inc and cfg:
+        inc_key = re.sub(r"[^a-z0-9]+", "", inc.lower())
+        cfg_key = re.sub(r"[^a-z0-9]+", "", cfg.lower())
+        if inc_key and inc_key == cfg_key:
+            return inc
+        return f"{inc} > {cfg}"
+    return inc or cfg
 
 
 # Volume unknown / idle placeholders from receiver poll — do not draw (glyphs read as a slab).

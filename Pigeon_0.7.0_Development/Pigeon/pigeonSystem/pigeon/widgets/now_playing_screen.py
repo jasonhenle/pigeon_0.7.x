@@ -33,6 +33,7 @@ from pigeon.widgets.playback_overlay import (
     _receiver_audio_display_line,
     _receiver_volume_display_line,
     _text_patch_bgra,
+    receiver_audio_config_display_line,
 )
 from pigeon.widgets.status_bar import DesignPatch
 
@@ -731,15 +732,7 @@ def _clock_text(now: datetime | None = None) -> str:
 
 
 def _audio_config_line(incoming: str, config: str) -> str:
-    inc = _receiver_audio_display_line(incoming)
-    cfg = _receiver_audio_display_line(config)
-    if inc:
-        inc = inc.upper()
-    if cfg:
-        cfg = cfg.upper()
-    if inc and cfg:
-        return f"{inc} > {cfg}"
-    return inc or cfg
+    return receiver_audio_config_display_line(incoming, config)
 
 
 def _tt_to_white_bgra(src: np.ndarray, *, tint: float = _TT_TINT_WHITE) -> np.ndarray:
