@@ -148,9 +148,6 @@ _VOLUME_X = 489
 _VOLUME_Y = 455
 _VOLUME_SIZE = 60
 
-# Multichannel meter simulation (key 6) — off until HDMI audio levels are wired.
-_AUDIO_MIX_UI_ENABLED = False
-
 # Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px.
 _AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
     ("SL", 53, 405, 11, 23),
@@ -1180,9 +1177,7 @@ class NowPlayingScreenWidget:
         ):
             changed = True
         _ = service_badge_bgra  # service label text only (``04_widget_now_playing_service_text``)
-        if _AUDIO_MIX_UI_ENABLED and audio_levels_sim is not None and self.set_audio_levels_sim(
-            bool(audio_levels_sim)
-        ):
+        if audio_levels_sim is not None and self.set_audio_levels_sim(bool(audio_levels_sim)):
             changed = True
         _ = played_text  # elapsed shown via progress bar width only in this layout
         return changed
@@ -1208,10 +1203,11 @@ class NowPlayingScreenWidget:
             st.indicator_receiver,
             st.indicator_tmdb,
             st.indicator_audio,
+            st.audio_levels_sim,
             bd_id,
             tt_id,
             int(datetime.now().strftime("%H%M%S")),
-            int(time.monotonic() * 8) if _AUDIO_MIX_UI_ENABLED and st.audio_levels_sim else 0,
+            int(time.monotonic() * 8) if st.audio_levels_sim else 0,
         )
 
     def _paste_patch(self, canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
@@ -1306,10 +1302,12 @@ class NowPlayingScreenWidget:
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
-        if _AUDIO_MIX_UI_ENABLED and st.audio_levels_sim:
+        if st.audio_levels_sim:
             meter_levels = self._audio_sim.levels(t_mono)
-            _draw_audio_levels_bgra(out, meter_levels)
-            _draw_audio_channel_labels_bgra(out)
+        else:
+            meter_levels = {name: 0.0 for name, *_ in _AUDIO_CHANNELS}
+        _draw_audio_levels_bgra(out, meter_levels)
+        _draw_audio_channel_labels_bgra(out)
 
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:

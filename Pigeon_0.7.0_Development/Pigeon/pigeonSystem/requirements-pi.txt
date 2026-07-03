@@ -2,7 +2,6 @@ opencv-python-headless
 pillow
 numpy
 pyatv>=0.14.5
-sounddevice
 pymupdf>=1.24.0
 
 # numbers-parser is optional (Numbers.app reports only). Omitted on Pi — large / slow to build.

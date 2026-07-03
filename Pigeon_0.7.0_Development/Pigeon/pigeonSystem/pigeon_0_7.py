@@ -58,37 +58,6 @@ if not os.path.isdir(os.path.join(_PROJECT_DIR, "pigeonAssets")):
     if os.path.isdir(os.path.join(_parent, "pigeonAssets")):
         _PROJECT_DIR = _parent
 
-# One-time migration: stale installs still import ``mic_wave_visualizer`` (broken on Py 3.14+).
-_boot_script = Path(__file__).resolve()
-_boot_dir = _boot_script.parent
-_legacy_viz = _boot_dir / "pigeon" / "mic_wave_visualizer.py"
-if _legacy_viz.is_file():
-    try:
-        _legacy_viz.unlink()
-    except OSError:
-        pass
-try:
-    _boot_src = _boot_script.read_text(encoding="utf-8")
-except OSError:
-    _boot_src = ""
-# Build old import without embedding it verbatim — otherwise ``_import_old in _boot_src`` matches this file.
-_old_mod = "mic_wave_visualizer"
-_import_old = f"from pigeon.{_old_mod} import blend_mic_visualizer"
-_import_new = "from pigeon.audio_waves import blend_mic_visualizer"
-if _import_old in _boot_src:
-    _waves = _boot_dir / "pigeon" / "audio_waves.py"
-    if not _waves.is_file():
-        sys.stderr.write(
-            "pigeon: missing pigeon/audio_waves.py — copy it from the repo (mic_wave_visualizer was removed).\n"
-        )
-        sys.stderr.flush()
-        sys.exit(1)
-    try:
-        _boot_script.write_text(_boot_src.replace(_import_old, _import_new), encoding="utf-8")
-        os.execv(sys.executable, [sys.executable, str(_boot_script), *sys.argv[1:]])
-    except OSError:
-        pass
-
 from pigeon.app_state import (
     LOCATION_PRESET_ROOM_NAMES,
     add_empty_location_v2,
@@ -222,16 +191,7 @@ try:
         splash_end_fade_factor,
     )
 
-    try:
-        from pigeon.audio_waves import (
-            MIC_VIZ_INTRO_TOTAL_S,
-            MIC_VIZ_LAUNCH_DESCENT_S,
-            blend_mic_visualizer as _blend_mic_visualizer,
-        )
-    except ImportError:
-        MIC_VIZ_INTRO_TOTAL_S = 1.0  # type: ignore[misc, assignment]
-        MIC_VIZ_LAUNCH_DESCENT_S = 0.62  # type: ignore[misc, assignment]
-        _blend_mic_visualizer = None  # type: ignore[misc, assignment]
+    _blend_mic_visualizer = None  # microphone visualizer disabled
 
     _PIGEON_EXT = True
 except ImportError:
@@ -440,10 +400,9 @@ LANDING_DISPLAY_BRIGHTNESS = 1.0
 LANDING_DIM_BRIGHTNESS = 0.78  # Space-bar pulse “off” — still readable vs old 0.3
 # After UI bootstrap, optional auto-restore of saved TMDb backdrop (env-gated) runs after this delay.
 STARTUP_PIGEON_WORDMARK_MAX_S = 5.0
-# After splash: skip mic EQ intro and land on viewOne (no pigeonStartup.mp4 transition).
+# After splash: optional startup transition timing (no mic EQ).
 SKIP_POST_SPLASH_STARTUP_TRANSITION = True
-# If True and a saved TMDb backdrop exists, switch to it when this timer elapses (enables ``use_backdrop_scene``,
-# which turns off the mic EQ). Default False so landing + clock saver + EQ stay on until you use F10 / Space (saved backdrop).
+# If True and a saved TMDb backdrop exists, switch to it when this timer elapses.
 STARTUP_AUTO_RESTORE_SAVED_BACKDROP = os.environ.get("PIGEON_STARTUP_RESTORE_BACKDROP", "").strip().lower() in (
     "1",
     "true",
@@ -484,10 +443,8 @@ CLOCK_SAVER_BACKDROP_DIM = 0.3
 # saver is already open ends it on the next render tick via the same bump.
 CLOCK_SAVER_POSITION_STALL_GRACE_S = 5.0
 
-# Idle (not actively playing) mic visualizer updates do not need 30 FPS.
-# Lowering this cadence significantly reduces cv2/Tk upload churn while the
-# ambient bars remain visually smooth.
-MIC_VIZ_IDLE_COMPOSITE_MS = 83  # ~12 FPS
+# Idle composite cadence when video is paused (lower than live playback).
+PAUSED_COMPOSITE_MS = 83  # ~12 FPS
 
 HOTKEY_BINDTAG = "Pigeon0_5_hotkeys"
 
@@ -810,16 +767,12 @@ def main() -> int:
 
     bootstrap_done: list[bool] = [False]
     splash_anim_done: list[bool] = [False]
-    # Mic EQ intro (bars rising) uses this as t0 so animation starts when splash lifts, not at UI build.
-    mic_viz_intro_start_mono: list[float | None] = [None]
-    # After ``MIC_VIZ_INTRO_TOTAL_S``: ``None`` until latched; ``1`` = backdrop was on → descend EQ; ``0`` = leave EQ up.
-    mic_viz_launch_descend_latched: list[int | None] = [None]
+    # Post-splash UI timing (splash lift); mic visualizer removed.
+    post_splash_mono: list[float | None] = [None]
 
     def _finish_post_splash_startup_transition() -> None:
-        """Skip startUp.transition — mic EQ intro, descent, and startup video."""
-        past = float(MIC_VIZ_INTRO_TOTAL_S) + float(MIC_VIZ_LAUNCH_DESCENT_S) + 0.1
-        mic_viz_intro_start_mono[0] = time.monotonic() - past
-        mic_viz_launch_descend_latched[0] = 0
+        """Post-splash hook (startup video / transition skipped)."""
+        return
 
     def _try_remove_splash_overlay() -> None:
         if not _PIGEON_EXT:
@@ -834,8 +787,8 @@ def main() -> int:
         except tk.TclError:
             pass
         startup_ph[0] = None
-        if mic_viz_intro_start_mono[0] is None:
-            mic_viz_intro_start_mono[0] = time.monotonic()
+        if post_splash_mono[0] is None:
+            post_splash_mono[0] = time.monotonic()
         _finish_post_splash_startup_transition()
 
     _tk_pack_orig = tk.Widget.pack
@@ -1152,7 +1105,7 @@ def main() -> int:
                 pass
 
     # Keep idle/paused composites intentionally slower to reduce Tk PhotoImage upload pressure.
-    paused_interval_ms = max(67, MIC_VIZ_IDLE_COMPOSITE_MS)
+    paused_interval_ms = max(67, PAUSED_COMPOSITE_MS)
 
     def bootstrap() -> None:
         nonlocal cap
@@ -2001,10 +1954,6 @@ def main() -> int:
             return out
 
         frame_interval_ms = max(1, int(round(1000.0 / fps_sched)))
-        # Mic visualizer: 24fps target — 60fps + stacked ``after`` timers overwhelmed Tk on some Macs.
-        # Mic EQ: higher than video when idle so bars feel tight to the input (Tk load permitting).
-        _MIC_VIZ_COMPOSITE_FPS = 48
-        _mic_viz_composite_ms = max(1, int(round(1000.0 / _MIC_VIZ_COMPOSITE_FPS)))
 
         playing = False
         display_view_holder: list[DisplayView] = [DisplayView.ONE]
@@ -2425,6 +2374,7 @@ def main() -> int:
 
         # New now-playing screen (070326): default on View 1; key ``1`` toggles vs classic chrome.
         new_now_playing_ui_holder: list[bool] = [True]
+        audio_levels_sim_holder: list[bool] = [False]
         now_playing_screen_widget = None
         if _PIGEON_EXT and NowPlayingScreenWidget is not None:
             now_playing_screen_widget = NowPlayingScreenWidget(
@@ -2522,6 +2472,7 @@ def main() -> int:
                 badge_show=bool(fn or badge_label),
                 badge_filename=fn,
                 badge_label=badge_label,
+                audio_levels_sim=bool(audio_levels_sim_holder[0]),
             ):
                 skip_cache = None
 
@@ -3367,69 +3318,8 @@ def main() -> int:
         _playback_overlay_fast_sig: list[tuple[bool, bool, bool, bool, bool] | None] = [None]
 
         def _maybe_blend_mic_visualizer(bgr_plane: np.ndarray) -> None:
-            if not _PIGEON_EXT or _blend_mic_visualizer is None:
-                return
-            evm = _effective_display_view()
-            if evm == DisplayView.TWO:
-                mic_on = True
-            elif evm in (DisplayView.THREE, DisplayView.FOUR):
-                mic_on = False
-            else:
-                mic_on = not _backdrop_active_for_view()
-            intro_t0 = mic_viz_intro_start_mono[0]
-            # While the splash overlay is still up, ``intro_t0`` is unset; do **not** use
-            # ``_pigeon_ui_started_mono`` here — that equals “intro already finished” and causes a full-EQ
-            # flash, then a reset to t≈0 when splash lifts (jarring). Hold intro at t=0 until splash is gone.
-            if intro_t0 is not None:
-                landing_elapsed_s = time.monotonic() - intro_t0
-            elif _PIGEON_EXT and startup_ph[0] is not None:
-                landing_elapsed_s = 0.0
-            else:
-                landing_elapsed_s = time.monotonic() - _pigeon_ui_started_mono
-
-            post_intro_descend: bool | None = None
-            mic_effective = mic_on
-            if evm not in (DisplayView.TWO, DisplayView.THREE, DisplayView.FOUR) and intro_t0 is not None:
-                t_rel = float(time.monotonic() - intro_t0)
-                if mic_viz_launch_descend_latched[0] is None and t_rel >= float(MIC_VIZ_INTRO_TOTAL_S):
-                    mic_viz_launch_descend_latched[0] = 1 if _backdrop_active_for_view() else 0
-                in_intro = t_rel < float(MIC_VIZ_INTRO_TOTAL_S)
-                in_descent = (
-                    mic_viz_launch_descend_latched[0] == 1
-                    and t_rel >= float(MIC_VIZ_INTRO_TOTAL_S)
-                    and (t_rel - float(MIC_VIZ_INTRO_TOTAL_S)) < float(MIC_VIZ_LAUNCH_DESCENT_S)
-                )
-                if in_intro or in_descent:
-                    mic_effective = True
-                if mic_viz_launch_descend_latched[0] == 1:
-                    post_intro_descend = bool(
-                        _backdrop_active_for_view()
-                        or (
-                            t_rel >= float(MIC_VIZ_INTRO_TOTAL_S)
-                            and (t_rel - float(MIC_VIZ_INTRO_TOTAL_S))
-                            < float(MIC_VIZ_LAUNCH_DESCENT_S)
-                        )
-                    )
-                elif mic_viz_launch_descend_latched[0] == 0:
-                    post_intro_descend = False
-            if (
-                evm not in (DisplayView.TWO, DisplayView.THREE, DisplayView.FOUR)
-                and intro_t0 is not None
-                and mic_viz_launch_descend_latched[0] == 1
-                and (float(time.monotonic() - intro_t0))
-                >= float(MIC_VIZ_INTRO_TOTAL_S) + float(MIC_VIZ_LAUNCH_DESCENT_S)
-                and _backdrop_active_for_view()
-            ):
-                # Launch descent finished while a backdrop is still shown — hide EQ (incl. view 2) until backdrop clears.
-                mic_effective = False
-
-            _blend_mic_visualizer(
-                bgr_plane,
-                time.monotonic(),
-                active=mic_effective,
-                landing_elapsed_s=landing_elapsed_s,
-                post_intro_backdrop_descend=post_intro_descend,
-            )
+            """Microphone visualizer disabled."""
+            return
 
         def compose_display_fast_no_grid(
             frame_bgr: np.ndarray | None,
@@ -9719,6 +9609,13 @@ def main() -> int:
                 skip_cache = None
                 _bump_pigeon_user_activity(event)
                 return "break"
+            if ch == "6" and _use_new_now_playing_ui():
+                audio_levels_sim_holder[0] = not bool(audio_levels_sim_holder[0])
+                if now_playing_screen_widget is not None:
+                    now_playing_screen_widget.set_audio_levels_sim(audio_levels_sim_holder[0])
+                skip_cache = None
+                _bump_pigeon_user_activity(event)
+                return "break"
             if ch == "4" and display_view_holder[0] == DisplayView.FOUR:
                 view_four_subview_holder[0] = (int(view_four_subview_holder[0]) + 1) % 3
                 skip_cache = None
@@ -10056,21 +9953,7 @@ def main() -> int:
 
             _render_tick_t0 = time.perf_counter()
             now = time.monotonic()
-            _intro_mono = mic_viz_intro_start_mono[0]
-
-            def _mic_launch_needs_fast_composite() -> bool:
-                if not _PIGEON_EXT or _intro_mono is None or _blend_mic_visualizer is None:
-                    return False
-                evlf = _effective_display_view()
-                if evlf in (DisplayView.THREE, DisplayView.FOUR):
-                    return False
-                t_r = now - _intro_mono
-                if t_r < float(MIC_VIZ_INTRO_TOTAL_S):
-                    return True
-                if mic_viz_launch_descend_latched[0] == 1:
-                    if (t_r - float(MIC_VIZ_INTRO_TOTAL_S)) < float(MIC_VIZ_LAUNCH_DESCENT_S):
-                        return True
-                return False
+            _intro_mono = post_splash_mono[0]
 
             def _schedule_next_render() -> None:
                 elapsed_ms = int((time.perf_counter() - _render_tick_t0) * 1000.0)
@@ -10079,21 +9962,9 @@ def main() -> int:
                 _schedule_render_oneshot(delay)
 
             def _next_render_ms() -> int:
-                base = frame_interval_ms if playing else paused_interval_ms
-                if (
-                    _PIGEON_EXT
-                    and _blend_mic_visualizer is not None
-                    and (
-                        not _backdrop_active_for_view()
-                        or _mic_launch_needs_fast_composite()
-                    )
-                ):
-                    if not playing:
-                        return max(base, MIC_VIZ_IDLE_COMPOSITE_MS)
-                    return min(base, _mic_viz_composite_ms)
-                return base
-            # With ext + splash, only count this window **after** splash removal (same t0 as mic intro).
-            # Using ``_pigeon_ui_started_mono`` here could fire mid-splash (e.g. auto-restore backdrop under the overlay).
+                return frame_interval_ms if playing else paused_interval_ms
+
+            # With ext + splash, only count this window **after** splash removal.
             _startup_elapsed = -1.0
             if _PIGEON_EXT:
                 _startup_elapsed = (now - _intro_mono) if _intro_mono is not None else -1.0
@@ -10189,32 +10060,10 @@ def main() -> int:
             clock_saver_peek_cache_key = (
                 1 if (_PIGEON_EXT and now < clock_saver_peek_until_mono[0]) else 0
             )
-            # Mic EQ intro is driven by per-frame ``mic_viz_cache_key``; no separate wordmark phase.
             startup_wm_cache_key = 0
             paused_row_cache_key = 1 if (_PIGEON_EXT and _show_paused_row_overlay()) else 0
-            _ev_mic = _effective_display_view() if _PIGEON_EXT else DisplayView.ONE
-            _mic_launch_fast = _mic_launch_needs_fast_composite() if _PIGEON_EXT else False
-            _mic_past_launch_descent_hide = False
-            if (
-                _PIGEON_EXT
-                and _intro_mono is not None
-                and mic_viz_launch_descend_latched[0] == 1
-                and _ev_mic not in (DisplayView.TWO, DisplayView.THREE, DisplayView.FOUR)
-            ):
-                t_hide = now - _intro_mono
-                if t_hide >= float(MIC_VIZ_INTRO_TOTAL_S) + float(MIC_VIZ_LAUNCH_DESCENT_S):
-                    _mic_past_launch_descent_hide = bool(_backdrop_active)
-            _mic_on = (
-                _PIGEON_EXT
-                and _blend_mic_visualizer is not None
-                and _ev_mic not in (DisplayView.THREE, DisplayView.FOUR)
-                and not _mic_past_launch_descent_hide
-                and (_ev_mic == DisplayView.TWO or not _backdrop_active or _mic_launch_fast)
-            )
-            mic_viz_cache_key = (
-                int(now * _MIC_VIZ_COMPOSITE_FPS) if _mic_on else 0
-            )
-            mic_eq_needs_composite = _mic_on
+            mic_viz_cache_key = 0
+            mic_eq_needs_composite = False
             if _PIGEON_EXT and status_bar_widget is not None:
                 if status_bar_widget.set_theater_dim_suppressed(idle_s_here >= 0.5):
                     _warm_status_bar_blits()
