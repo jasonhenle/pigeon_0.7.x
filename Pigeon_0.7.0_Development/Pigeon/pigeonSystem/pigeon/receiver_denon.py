@@ -408,7 +408,7 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
 
     power = _denon_field_ci(d, "Power", "ZonePower", "PW", "ZM").upper()
     if power in ("OFF", "STANDBY"):
-        return ReceiverPollResult(True, "", "", telnet_state)
+        return ReceiverPollResult(True, "", "", "", telnet_state)
 
     # Mute comes from HTTP ``Mute`` or telnet ``MU``; firmware truthy forms vary.
     mute = _denon_field_ci(d, "Mute", "MU").strip().lower()

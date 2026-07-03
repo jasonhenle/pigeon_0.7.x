@@ -1351,15 +1351,35 @@ class NowPlayingScreenWidget:
             if stroke_crop is not None:
                 self._paste_patch(out, stroke_crop, _BAR_L, _BAR_T)
 
-        if st.show_paused and played_w > 0:
+        if st.show_paused:
+            _, (bd_x, bd_y, bd_w, bd_h), _, _ = _layout_tt_and_backdrop_rects(
+                self._tt_bgra, self._backdrop_bgr
+            )
+            if bd_w >= 48 and bd_h >= 24:
+                pad_x = max(3, int(round(bd_w * 0.07)))
+                pad_y = max(3, int(round(bd_h * 0.18)))
+                pw = max(8, bd_w - 2 * pad_x)
+                ph = max(8, bd_h - 2 * pad_y)
+                px = bd_x + max(0, (bd_w - pw) // 2)
+                py = bd_y + max(0, (bd_h - ph) // 2)
+            else:
+                pad_x = max(3, int(round(_BAR_W * 0.07)))
+                pad_y = max(3, int(round(_BAR_H * 0.18)))
+                pw = max(8, _BAR_W - 2 * pad_x)
+                ph = max(8, _BAR_H - 2 * pad_y)
+                px = _BAR_L + max(0, (_BAR_W - pw) // 2)
+                py = _BAR_T + max(0, (_BAR_H - ph) // 2)
+            _paused_pad = max(4, int(round(min(pw, ph) * 0.09)))
             paused = _text_patch_bgra(
                 "paused",
-                max(8, played_w),
-                max(8, _BAR_H),
+                pw,
+                ph,
                 align="center",
                 fill_rgba=(255, 255, 255, 230),
+                fit_max_h=max(6, int(round(0.94 * float(ph)))),
+                edge_pad_px=int(_paused_pad),
             )
-            self._paste_patch(out, paused, _BAR_L, _BAR_T)
+            self._paste_patch(out, paused, px, py)
 
         container_w = _CONTAINER_W
         tc_x = _follow_container_x(container_w, _BAR_L, _BAR_W, progress)
