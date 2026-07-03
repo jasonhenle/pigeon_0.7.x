@@ -325,6 +325,7 @@ def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
     """Return BGRA uint8 (DESIGN_H × DESIGN_W). Uses PyMuPDF; cairosvg if available."""
     svg_bytes = ET.tostring(root, encoding="utf-8")
     src_w, src_h = int(_SVG_W), int(_SVG_H)
+    last_err: Exception | None = None
 
     try:
         import fitz  # PyMuPDF
@@ -340,8 +341,10 @@ def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
         else:
             bgra = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGRA)
         return _scale_raster_to_design(bgra, src_w, src_h)
-    except ImportError:
-        pass
+    except ImportError as exc:
+        last_err = exc
+    except Exception as exc:
+        last_err = exc
 
     try:
         import cairosvg
@@ -364,12 +367,17 @@ def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
         else:
             bgra = raw
         return _scale_raster_to_design(bgra, src_w, src_h)
+    except ImportError as exc:
+        last_err = exc
     except OSError as exc:
-        raise RuntimeError(
-            "Now-playing screen needs PyMuPDF (pip install pymupdf) or cairosvg with system cairo."
-        ) from exc
+        last_err = exc
+    except Exception as exc:
+        last_err = exc
 
-    raise RuntimeError("Install pymupdf or cairosvg to rasterize the now-playing SVG.")
+    msg = "Now-playing screen needs PyMuPDF (pip install pymupdf) or cairosvg with system cairo."
+    if last_err is not None:
+        raise RuntimeError(msg) from last_err
+    raise RuntimeError(msg)
 
 
 def render_now_playing_svg_base_bgra(
@@ -1211,7 +1219,7 @@ class NowPlayingScreenWidget:
     def _render_svg_base(self) -> np.ndarray:
         try:
             return render_now_playing_svg_base_bgra(self._state, assets_dir=self._assets_dir)
-        except (FileNotFoundError, RuntimeError):
+        except (FileNotFoundError, RuntimeError, ImportError):
             return _fallback_base_bgra()
 
     def _render_frame_bgra(self) -> np.ndarray:
