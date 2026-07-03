@@ -87,6 +87,13 @@ _HIDE_LAYER_LOGICAL: tuple[str, ...] = (
     "06_widget_audio_levels_c_scale",
     "06_widget_audio_levels_r_scale",
     "06_widget_audio_levels_sr_scale",
+    "06_widget_audio_levels_sl_text",
+    "06_widget_audio_levels_l_text",
+    "06_widget_audio_levels_c_text",
+    "06_widget_audio_levels_r_text",
+    "06_widget_audio_levels_sr_text",
+    "06_widget_audio_levels_lfe_text",
+    "06_widget_audio_levels_LFE_text",
 )
 
 _INDICATOR_LAYER_LOGICAL: tuple[tuple[str, str], ...] = (
@@ -140,7 +147,7 @@ _CLOCK_PATCH_W = 280
 _CLOCK_PATCH_H = 68
 
 _SERVICE_TEXT_X = 522
-_SERVICE_TEXT_Y = 437
+_SERVICE_TEXT_Y = 452
 _SERVICE_TEXT_SIZE_PX = 30
 
 # Audio config line (SVG ``05_widget_audio_config_text``).
@@ -308,6 +315,15 @@ _EXTRA_HIDE_ID_SUBSTRINGS: tuple[str, ...] = (
     "_x5F_clock_x5F_text",
     "_x5F_audio_x5F_config_x5F_text",
     "_x5F_audio_x5F_config_x5F_volume",
+    "audio_config_text",
+    "audio_config_volume",
+    "audio_levels_lfe_text",
+    "audio_levels_LFE_text",
+    "audio_levels_sl_text",
+    "audio_levels_l_text",
+    "audio_levels_c_text",
+    "audio_levels_r_text",
+    "audio_levels_sr_text",
     "_x5F_backdrop_x5F_tmdb_x5F_backdrop",
     "_x5F_backdrop_x5F_tmdb_x5F_color",
     "_x5F_now_x5F_playing_x5F_color_x5F_two",
@@ -562,6 +578,42 @@ def _draw_left_rounded_rect_bgra(
         roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
 
 
+def _stroke_patch_from_mask(
+    mask: np.ndarray,
+    *,
+    stroke_bgr: tuple[int, int, int],
+    stroke_px: int,
+) -> np.ndarray:
+    """Closed outline ring from a filled shape mask (replaces Canny edge strokes)."""
+    h, w = mask.shape[:2]
+    patch = np.zeros((h, w, 4), dtype=np.uint8)
+    if w < 1 or h < 1 or stroke_px < 1:
+        return patch
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return patch
+    cv2.drawContours(
+        patch,
+        contours,
+        -1,
+        (*stroke_bgr, 255),
+        thickness=max(1, int(stroke_px)),
+        lineType=cv2.LINE_AA,
+    )
+    return patch
+
+
+def _composite_stroke_patch_bgra(
+    bgra: np.ndarray,
+    x: int,
+    y: int,
+    patch: np.ndarray,
+) -> None:
+    if patch is None or patch.size == 0:
+        return
+    _paste_patch_bgra(bgra, patch, x, y)
+
+
 def _draw_rounded_rect_stroke_bgra(
     bgra: np.ndarray,
     x: int,
@@ -572,8 +624,9 @@ def _draw_rounded_rect_stroke_bgra(
     stroke_bgr: tuple[int, int, int],
     radius: int = 0,
     stroke: int = 1,
+    left_rounded_only: bool = False,
 ) -> None:
-    """Stroke-only rounded rect (transparent fill) composited on top."""
+    """Stroke-only rounded rect composited on top."""
     if w < 1 or h < 1 or stroke < 1:
         return
     x0, y0 = max(0, x), max(0, y)
@@ -581,19 +634,13 @@ def _draw_rounded_rect_stroke_bgra(
     if x0 >= x1 or y0 >= y1:
         return
     lw, lh = x1 - x0, y1 - y0
-    mask = _rounded_rect_mask(lw, lh, min(radius, lw // 2, lh // 2))
-    edge = cv2.Canny(mask, 50, 150)
-    k = max(1, int(stroke))
-    if k > 1:
-        edge = cv2.dilate(edge, np.ones((k, k), np.uint8))
-    patch = np.zeros((lh, lw, 4), dtype=np.uint8)
-    patch[edge > 0, :3] = stroke_bgr
-    patch[edge > 0, 3] = 255
-    roi = bgra[y0:y1, x0:x1]
-    if roi.shape[2] >= 4:
-        _blend_bgra_onto_bgra(roi, patch)
+    r = min(radius, lw // 2, lh // 2)
+    if left_rounded_only:
+        mask = _rounded_rect_mask_left_only(lw, lh, r)
     else:
-        roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
+        mask = _rounded_rect_mask(lw, lh, r)
+    patch = _stroke_patch_from_mask(mask, stroke_bgr=stroke_bgr, stroke_px=stroke)
+    _composite_stroke_patch_bgra(bgra, x0, y0, patch)
 
 
 def _draw_vertical_stroke_bgra(
@@ -882,21 +929,17 @@ def _compose_bar_group_bgra(
 
 
 def _compose_played_stroke_bgra(played_w: int) -> np.ndarray | None:
-    """White bar outline cropped to the played width (``03_widget_now_playing_stroke``)."""
+    """White outline around the played bar pill (left-rounded, width = progress)."""
     if played_w <= 0:
         return None
-    canvas = np.zeros((_BAR_H, _BAR_W, 4), dtype=np.uint8)
-    _draw_rounded_rect_stroke_bgra(
-        canvas,
-        0,
-        0,
-        _BAR_W,
-        _BAR_H,
+    pw = max(1, min(int(played_w), _BAR_W))
+    r = min(_BAR_RX, pw // 2, _BAR_H // 2)
+    mask = _rounded_rect_mask_left_only(pw, _BAR_H, r)
+    return _stroke_patch_from_mask(
+        mask,
         stroke_bgr=_COLOR_ACCENT_BGR,
-        radius=_BAR_RX,
-        stroke=_PLAYED_STROKE_PX,
+        stroke_px=_PLAYED_STROKE_PX,
     )
-    return _reveal_crop_bgra_left(canvas, played_w)
 
 
 class _AudioLevelsSimulator:
