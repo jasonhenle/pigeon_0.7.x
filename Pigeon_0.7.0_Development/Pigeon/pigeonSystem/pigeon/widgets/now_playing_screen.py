@@ -1,18 +1,21 @@
 """
-Pigeon 0.7 now-playing screen — SVG layer chrome from ``now_playing_test_070126`` (800×480).
+Pigeon 0.7 now-playing screen — SVG chrome from ``now_playing_test_070326`` (800×480).
 
-Static chrome is rasterized from ``pigeonAssets/now_playing_test_070126.svg`` (see
-:func:`render_now_playing_svg_base_bgra`). Dynamic layers (TMDb backdrop/TT, streaming badge,
-timecodes, progress, live text) are drawn programmatically on top.
+Static chrome is rasterized from ``pigeonAssets/now_playing_test_070326.svg``. Dynamic
+layers (played/unplayed bar groups, TMDb TT + backdrop, badge, timecode, audio meters,
+clock, and animated background) are drawn programmatically on top.
 """
 
 from __future__ import annotations
 
 import io
+import math
 import os
+import random
 import re
+import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -21,7 +24,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.compositing import alpha_blend_bgra_over_bgr
+from pigeon.compositing import alpha_blend_bgra_over_bgr, lerp_bgr_red_monochrome
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold, resolve_ui_font_medium
 from pigeon.image_ui_protocol import load_image_bgra
@@ -37,14 +40,15 @@ SVG_NS = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG_NS)
 
 # --- Colors (Numbers spec) ---
-_COLOR_UI_HEX = "#E10018"
+_COLOR_UI_HEX = "#D3001A"
 _COLOR_ACCENT_HEX = "#FFFFFF"
 _COLOR_BG_HEX = "#000000"
 _COLOR_SUCCESS_HEX = "#01D800"
 _COLOR_FAIL_HEX = "#E10018"
 _COLOR_UNPLAYED_HEX = "#282828"
 
-_COLOR_UI_BGR = (24, 0, 225)
+_COLOR_UI_BGR = (26, 0, 211)  # #D3001A
+_COLOR_PLAYED_BGR = _COLOR_UI_BGR
 _COLOR_ACCENT_BGR = (255, 255, 255)
 _COLOR_BG_BGR = (0, 0, 0)
 _COLOR_SUCCESS_BGR = (0, 216, 1)
@@ -57,17 +61,33 @@ _Y_SCALE = float(DESIGN_H) / _SVG_H
 
 # Logical Illustrator layer ids (encoded in SVG via _encode_svg_layer_id).
 _HIDE_LAYER_LOGICAL: tuple[str, ...] = (
-    "04_widget_backdrop_tmdb_backdrop",
-    "03_widget_now_playing_tmdb_TT_black",
-    "03_widget_now_playing_tmdb_TT_normal",
+    "07_background",
+    "04_widget_now_playing_status_bar_played",
+    "04_widget_now_playing_status_bar_unplayed",
     "03_widget_now_playing_status_bar_played",
+    "03_widget_now_playing_status_bar_unplayed",
+    "04_widget_now_playing_tmdb_TT_normal",
+    "03_widget_now_playing_tmdb_TT_normal",
+    "03_widget_now_playing_tmdb_TT_black",
+    "03_widget_now_playing_tmdb_TT_unplayed",
+    "04_widget_backdrop_tmdb_backdrop",
+    "04_widget_backdrop_tmdb_color",
+    "04_now_playing_color_two",
     "03_widget_now_playing_badge_service",
     "03_widget_now_playing_badge_container",
+    "04_widget_now_playing_service_text",
     "03_widget_now_playing_timecode_container",
     "03_widget_now_playing_timecode_text",
+    "03_widget_now_playing_content_time",
     "02_widget_clock_text",
     "05_widget_audio_config_text",
     "05_widget_audio_config_volume_text",
+    "06_widget_audio_levels_lfe_scale",
+    "06_widget_audio_levels_sl_scale",
+    "06_widget_audio_levels_l_scale",
+    "06_widget_audio_levels_c_scale",
+    "06_widget_audio_levels_r_scale",
+    "06_widget_audio_levels_sr_scale",
 )
 
 _INDICATOR_LAYER_LOGICAL: tuple[tuple[str, str], ...] = (
@@ -94,64 +114,63 @@ def _sx(x_svg: float) -> int:
     return int(round(x_svg))
 
 
-# Backdrop inset (layer 04).
-_BACKDROP_X = _sx(21.522)
-_BACKDROP_Y = _sy(61.469)
-_BACKDROP_W = _sx(212.293)
-_BACKDROP_H = _sy(108.307)
-_BACKDROP_RX = max(2, _sx(11.108))
+# Now-playing bar (layer 04) — from ``now_playing_test_070326`` path bounds.
+_BAR_L = 37
+_BAR_T = 39
+_BAR_W = 732
+_BAR_H = 219
+_BAR_RX = 15
+_BAR_STROKE = 3
+_CONTENT_PAD = 80
+_IMAGE_CORNER_RX = 12
+_TT_TINT_BLACK = 0.80
+_BACKDROP_RED_MONO = 0.82
+_BACKDROP_RED_OVERLAY_ALPHA = 0.45
 
-# Status bar group (layer 03).
-_BAR_L = _sx(255.337)
-_BAR_T = _sy(98.997)
-_BAR_W = _sx(487.96)
-_BAR_H = _sy(216.295)
-_BAR_RX = max(4, _sx(23.455))
-_BAR_STROKE = max(1, _sx(3.0))
+# Badge + timecode containers (equal width).
+_CONTAINER_W = 164
+_CONTAINER_H = 20
+_BADGE_Y = 24
+_TC_W = _CONTAINER_W
+_TC_H = 50
+_TC_Y = 247
 
-# Full-image played status bar assets (user replaces SVG demo slice with these).
-_STATUS_BAR_PLAYED_ASSET_NAMES: tuple[str, ...] = (
-    "03_widget_now_playing_status_bar_played.png",
-    "03_widget_now_playing_status_bar_played.webp",
-    "status_bar_played.png",
-)
+# Clock + audio chrome (layer 02/05).
+_CLOCK_X = 520
+_CLOCK_Y = 405
+_CLOCK_SIZE_PX = 60
+_CLOCK_PATCH_W = 280
+_CLOCK_PATCH_H = 68
 
-# Badge + timecode containers (layer 03).
-_BADGE_W = _sx(182.571)
-_BADGE_H = _sy(39.63)
-_TC_W = _sx(96.418)
-_TC_H = _sy(39.63)
-_BADGE_Y = _sy(60.492)
-_TC_Y = _sy(314.493)
+_AUDIO_CFG_BOX_X = 1
+_AUDIO_CFG_BOX_W = 210
+_AUDIO_CFG_BOX_Y = 430
+_AUDIO_CFG_BOX_H = 48
 
-# Clock (layer 02) — left baseline anchor from SVG art.
-_CLOCK_X = _sx(503.5525)
-_CLOCK_Y = _sy(452.3979)
-_CLOCK_SIZE_PX = max(12, _sy(60.0))
-_CLOCK_PATCH_W = max(120, _sx(280.0))
-_CLOCK_PATCH_H = max(40, _sy(68.0))
+_VOLUME_X = 489
+_VOLUME_Y = 455
+_VOLUME_SIZE = 60
 
-# Audio config — pixel columns 1…210 (1-based design x).
-_AUDIO_CFG_COL_X0 = 1
-_AUDIO_CFG_COL_X1 = 210
-_AUDIO_CFG_BOX_X = _AUDIO_CFG_COL_X0
-_AUDIO_CFG_BOX_W = max(8, _AUDIO_CFG_COL_X1 - _AUDIO_CFG_COL_X0 + 1)
-_AUDIO_CFG_BOX_Y = _sy(192.0)
-_AUDIO_CFG_BOX_H = _sy(48.0)
-
-# TMDb TT — pixel columns 250…780 (horizontal slot inside status bar).
-_TT_COL_X0 = 250
-_TT_COL_X1 = 780
-_TT_SLOT_L = _TT_COL_X0
-_TT_SLOT_W = max(8, _TT_COL_X1 - _TT_COL_X0)
-
-# Progress divider shortens 12px total while staying vertically centered.
 _PROGRESS_VLINE_TRIM = 6
 
-# Volume (layer 05).
-_VOLUME_X = _sx(64.672)
-_VOLUME_Y = _sy(444.8463)
-_VOLUME_SIZE = max(10, _sy(34.0))
+# Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px.
+_AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
+    ("SL", 53, 405, 11, 23),
+    ("L", 76, 405, 11, 44),
+    ("C", 99, 405, 11, 87),
+    ("R", 124, 405, 11, 44),
+    ("SR", 150, 405, 11, 23),
+    ("LFE", 211, 405, 11, 9),
+)
+_AUDIO_LABELS: tuple[tuple[str, int, int], ...] = (
+    ("SL", 46, 408),
+    ("L", 76, 408),
+    ("C", 99, 408),
+    ("R", 124, 408),
+    ("SR", 142, 408),
+    ("LFE", 200, 408),
+)
+_CONTAINER_RX = 12
 
 @dataclass
 class NowPlayingScreenState:
@@ -173,6 +192,7 @@ class NowPlayingScreenState:
     indicator_receiver: bool = False
     indicator_tmdb: bool = False
     indicator_audio: bool = False
+    audio_levels_sim: bool = False
 
 
 def default_now_playing_svg_path(assets_dir: Path | str | None = None) -> Path:
@@ -181,9 +201,9 @@ def default_now_playing_svg_path(assets_dir: Path | str | None = None) -> Path:
     if env:
         return Path(env).expanduser().resolve()
     if assets_dir is not None:
-        return Path(assets_dir) / "now_playing_test_070126.svg"
+        return Path(assets_dir) / "now_playing_test_070326.svg"
     pigeon_root = Path(__file__).resolve().parents[3]
-    return pigeon_root / "pigeonAssets" / "now_playing_test_070126.svg"
+    return pigeon_root / "pigeonAssets" / "now_playing_test_070326.svg"
 
 
 def _find_by_id(root: ET.Element, layer_id: str) -> ET.Element | None:
@@ -257,15 +277,24 @@ def _remove_layers_by_id_substrings(root: ET.Element, substrings: tuple[str, ...
 _EXTRA_HIDE_ID_SUBSTRINGS: tuple[str, ...] = (
     "_x5F_badge_x5F_container",
     "_x5F_badge_x5F_service",
+    "_x5F_service_x5F_text",
     "_x5F_timecode_x5F_container",
     "_x5F_timecode_x5F_text",
+    "_x5F_content_x5F_time",
     "_x5F_status_x5F_bar_x5F_played",
+    "_x5F_status_x5F_bar_x5F_unplayed",
     "_x5F_tmdb_x5F_TT_x5F_normal",
+    "_x5F_tmdb_x5F_TT_x5F_black",
+    "_x5F_tmdb_x5F_TT_x5F_unplayed",
     "_x5F_clock_x5F_text",
     "_x5F_audio_x5F_config_x5F_text",
     "_x5F_audio_x5F_config_x5F_volume",
     "_x5F_backdrop_x5F_tmdb_x5F_backdrop",
-    "_x5F_tmdb_x5F_TT_x5F_black",
+    "_x5F_backdrop_x5F_tmdb_x5F_color",
+    "_x5F_now_x5F_playing_x5F_color_x5F_two",
+    "_x5F_background_",
+    "_x5F_audio_x5F_levels_x5F",
+    "_x5F_scale",
 )
 
 
@@ -632,15 +661,237 @@ def _audio_config_line(incoming: str, config: str) -> str:
     return inc or cfg
 
 
-def _tt_to_black_bgra(src: np.ndarray) -> np.ndarray:
+def _tt_to_black_bgra(src: np.ndarray, *, tint: float = _TT_TINT_BLACK) -> np.ndarray:
+    """Tint visible TT pixels toward black (``tint``=0.8 → 80% black)."""
     if src is None or src.size == 0:
         return src
     out = src.copy()
+    keep = max(0.0, min(1.0, 1.0 - float(tint)))
     alpha = out[:, :, 3] > 0
-    out[alpha, 0] = 0
-    out[alpha, 1] = 0
-    out[alpha, 2] = 0
+    if np.any(alpha):
+        out[alpha, 0] = (out[alpha, 0].astype(np.float32) * keep).astype(np.uint8)
+        out[alpha, 1] = (out[alpha, 1].astype(np.float32) * keep).astype(np.uint8)
+        out[alpha, 2] = (out[alpha, 2].astype(np.float32) * keep).astype(np.uint8)
     return out
+
+
+def _bgr_to_bgra(bgr: np.ndarray) -> np.ndarray:
+    if bgr is None or bgr.size == 0:
+        return bgr
+    if bgr.ndim == 3 and bgr.shape[2] == 4:
+        return bgr
+    if bgr.ndim == 2:
+        bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGR)
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+
+
+def _paste_rounded_bgra(
+    canvas: np.ndarray,
+    patch: np.ndarray,
+    x: int,
+    y: int,
+    *,
+    radius: int = _IMAGE_CORNER_RX,
+) -> None:
+    if patch is None or patch.size == 0:
+        return
+    ph, pw = patch.shape[:2]
+    mask = _rounded_rect_mask(pw, ph, radius)
+    masked = patch.copy()
+    masked[:, :, 3] = cv2.bitwise_and(masked[:, :, 3], mask)
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(int(DESIGN_W), x + pw), min(int(DESIGN_H), y + ph)
+    if x0 >= x1 or y0 >= y1:
+        return
+    sx0, sy0 = x0 - x, y0 - y
+    roi = canvas[y0:y1, x0:x1]
+    sub = masked[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
+    if roi.shape[2] >= 4 and sub.shape[2] >= 4:
+        _blend_bgra_onto_bgra(roi, sub)
+    else:
+        roi[:] = alpha_blend_bgra_over_bgr(roi, sub)
+
+
+def _layout_tt_and_backdrop_rects(
+    tt_bgra: np.ndarray | None,
+    backdrop_bgr: np.ndarray | None,
+) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int], np.ndarray | None, np.ndarray | None]:
+    """Return (tt_xywh, bd_xywh) in design coords plus fitted patches."""
+    pad = _CONTENT_PAD
+    inner_x = _BAR_L + pad
+    inner_y = _BAR_T + pad
+    inner_w = max(8, _BAR_W - 2 * pad)
+    inner_h = max(8, _BAR_H - 2 * pad)
+    gap = pad
+    min_bd_w = max(48, inner_w // 3)
+    tt_fit = None
+    tt_w, tt_h = 0, 0
+    if tt_bgra is not None and tt_bgra.size > 0:
+        trimmed = _trim_visible_bgra(tt_bgra)
+        max_tt_w = max(8, inner_w - gap - min_bd_w)
+        tt_fit = _image_contain_center_bgra(trimmed, max_tt_w, inner_h)
+        nz = tt_fit[:, :, 3] > 0
+        if np.any(nz):
+            ys, xs = np.nonzero(nz)
+            tt_w = int(xs.max()) - int(xs.min()) + 1
+            tt_h = int(ys.max()) - int(ys.min()) + 1
+        else:
+            tt_w, tt_h = tt_fit.shape[1], tt_fit.shape[0]
+    tt_x = inner_x
+    tt_y = inner_y + max(0, (inner_h - tt_h) // 2)
+    bd_x = tt_x + tt_w + gap
+    bd_y = inner_y
+    bd_w = max(8, inner_x + inner_w - bd_x)
+    bd_h = inner_h
+    bd_fit = None
+    if backdrop_bgr is not None and backdrop_bgr.size > 0:
+        bd_fit = _image_contain_center_bgra(_bgr_to_bgra(backdrop_bgr), bd_w, bd_h)
+    return (tt_x, tt_y, max(tt_w, 0), max(tt_h, 0)), (bd_x, bd_y, bd_w, bd_h), tt_fit, bd_fit
+
+
+def _prepare_backdrop_unplayed_bgra(bd_fit: np.ndarray) -> np.ndarray:
+    """Rounded backdrop with red monochrome treatment for the unplayed group."""
+    if bd_fit is None or bd_fit.size == 0:
+        return bd_fit
+    out = bd_fit.copy()
+    bgr = out[:, :, :3]
+    mono = lerp_bgr_red_monochrome(bgr, _BACKDROP_RED_MONO)
+    out[:, :, :3] = mono
+    alpha = float(_BACKDROP_RED_OVERLAY_ALPHA)
+    overlay_bgr = np.array(_COLOR_PLAYED_BGR, dtype=np.float32)
+    mask = out[:, :, 3:4].astype(np.float32) / 255.0
+    blended = out[:, :, :3].astype(np.float32) * (1.0 - alpha * mask) + overlay_bgr * (alpha * mask)
+    out[:, :, :3] = np.clip(blended, 0, 255).astype(np.uint8)
+    return out
+
+
+def _compose_bar_group_bgra(
+    *,
+    played: bool,
+    tt_bgra: np.ndarray | None,
+    backdrop_bgr: np.ndarray | None,
+) -> np.ndarray:
+    """Full-width played or unplayed now-playing group (``_BAR_W`` × ``_BAR_H``)."""
+    canvas = np.zeros((_BAR_H, _BAR_W, 4), dtype=np.uint8)
+    fill = _COLOR_PLAYED_BGR if played else _COLOR_UNPLAYED_BGR
+    if played:
+        _draw_left_rounded_rect_bgra(
+            canvas, 0, 0, _BAR_W, _BAR_H, fill_bgr=fill, radius=_BAR_RX,
+        )
+    else:
+        _draw_rounded_rect_bgra(
+            canvas, 0, 0, _BAR_W, _BAR_H, fill_bgr=fill, radius=_BAR_RX,
+        )
+    (tt_x, tt_y, _, _), (bd_x, bd_y, _, _), tt_fit, bd_fit = _layout_tt_and_backdrop_rects(
+        tt_bgra, backdrop_bgr
+    )
+    rel_tt_x = tt_x - _BAR_L
+    rel_tt_y = tt_y - _BAR_T
+    rel_bd_x = bd_x - _BAR_L
+    rel_bd_y = bd_y - _BAR_T
+    if tt_fit is not None and tt_fit.size > 0:
+        tt_layer = tt_fit if played else _tt_to_black_bgra(tt_fit)
+        _paste_rounded_bgra(canvas, tt_layer, rel_tt_x, rel_tt_y, radius=_IMAGE_CORNER_RX)
+    if bd_fit is not None and bd_fit.size > 0:
+        bd_layer = bd_fit if played else _prepare_backdrop_unplayed_bgra(bd_fit)
+        _paste_rounded_bgra(canvas, bd_layer, rel_bd_x, rel_bd_y, radius=_IMAGE_CORNER_RX)
+    return canvas
+
+
+def _animated_background_bgra(t: float) -> np.ndarray:
+    """Dark four-corner gradient with subtle motion (replaces static 07_background)."""
+    w, h = int(DESIGN_W), int(DESIGN_H)
+    ys = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, np.newaxis]
+    xs = np.linspace(0.0, 1.0, w, dtype=np.float32)[np.newaxis, :]
+    def _corner(base: tuple[int, int, int], phase: float) -> tuple[float, float, float]:
+        amp = 10.0
+        return (
+            base[0] + amp * math.sin(t * 0.11 + phase),
+            base[1] + amp * math.sin(t * 0.13 + phase * 1.7),
+            base[2] + amp * math.sin(t * 0.09 + phase * 2.3),
+        )
+
+    c00 = _corner((6, 8, 14), 0.0)
+    c10 = _corner((10, 6, 12), 1.2)
+    c01 = _corner((4, 12, 10), 2.1)
+    c11 = _corner((8, 5, 16), 3.0)
+    top = c00[0] * (1 - xs) + c10[0] * xs, c00[1] * (1 - xs) + c10[1] * xs, c00[2] * (1 - xs) + c10[2] * xs
+    bot = c01[0] * (1 - xs) + c11[0] * xs, c01[1] * (1 - xs) + c11[1] * xs, c01[2] * (1 - xs) + c11[2] * xs
+    b = np.clip(top[0] * (1 - ys) + bot[0] * ys, 0, 255)
+    g = np.clip(top[1] * (1 - ys) + bot[1] * ys, 0, 255)
+    r = np.clip(top[2] * (1 - ys) + bot[2] * ys, 0, 255)
+    out = np.zeros((h, w, 4), dtype=np.uint8)
+    out[:, :, 0] = b.astype(np.uint8)
+    out[:, :, 1] = g.astype(np.uint8)
+    out[:, :, 2] = r.astype(np.uint8)
+    out[:, :, 3] = 255
+    return out
+
+
+class _AudioLevelsSimulator:
+    """Snappy non-repeating vertical meter simulation for development."""
+
+    def __init__(self) -> None:
+        self._targets: dict[str, float] = {name: 0.2 for name, *_ in _AUDIO_CHANNELS}
+        self._current: dict[str, float] = dict(self._targets)
+        self._next_jump = 0.0
+        self._rng = random.Random()
+
+    def levels(self, t: float) -> dict[str, float]:
+        if t >= self._next_jump:
+            for name, *_ in _AUDIO_CHANNELS:
+                self._targets[name] = self._rng.uniform(0.04, 1.0)
+            self._next_jump = t + self._rng.uniform(0.07, 0.32)
+        for name, *_ in _AUDIO_CHANNELS:
+            cur = self._current[name]
+            tgt = self._targets[name]
+            self._current[name] = cur + (tgt - cur) * 0.42
+        return dict(self._current)
+
+
+def _paste_patch_bgra(canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
+    if patch is None or patch.size == 0:
+        return
+    ph, pw = patch.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(int(DESIGN_W), x + pw), min(int(DESIGN_H), y + ph)
+    if x0 >= x1 or y0 >= y1:
+        return
+    sx0, sy0 = x0 - x, y0 - y
+    roi = canvas[y0:y1, x0:x1]
+    sub = patch[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
+    if roi.shape[2] >= 4 and sub.shape[2] >= 4:
+        _blend_bgra_onto_bgra(roi, sub)
+    else:
+        roi[:] = alpha_blend_bgra_over_bgr(roi, sub)
+
+
+def _draw_audio_channel_labels_bgra(canvas: np.ndarray) -> None:
+    """Draw Sharp Sans Extrabold channel labels (SVG ``*_text`` layers are stripped)."""
+    size_px = max(10, _sy(20.0))
+    fill_rgb = (237, 28, 36)
+    for label, x, y in _AUDIO_LABELS:
+        patch, _, _ = _fit_text_patch(label, size_px=size_px, fill_rgb=fill_rgb, bold=True)
+        self_h = int(patch.shape[0])
+        _paste_patch_bgra(canvas, patch, x, y - self_h + max(2, _sy(18)))
+
+
+def _draw_audio_levels_bgra(
+    canvas: np.ndarray,
+    levels: dict[str, float],
+) -> None:
+    for name, x, baseline, bar_w, max_h in _AUDIO_CHANNELS:
+        lv = max(0.0, min(1.0, float(levels.get(name, 0.0))))
+        if lv <= 0.0:
+            continue
+        h = max(1, int(round(max_h * lv)))
+        y0 = baseline - h
+        if y0 < 0:
+            continue
+        patch = np.zeros((h, bar_w, 4), dtype=np.uint8)
+        patch[:, :, :3] = _COLOR_UI_BGR
+        patch[:, :, 3] = 255
+        _paste_rounded_bgra(canvas, patch, x, y0, radius=2)
 
 
 def _trim_visible_bgra(src: np.ndarray, *, alpha_threshold: int = 8) -> np.ndarray:
@@ -659,24 +910,12 @@ def _trim_visible_bgra(src: np.ndarray, *, alpha_threshold: int = 8) -> np.ndarr
 
 
 def status_bar_slot_wh() -> tuple[int, int]:
-    """Design-pixel (w, h) of the TMDb TT slot (pixel columns 250–780)."""
-    return (_TT_SLOT_W, _BAR_H)
+    """Design-pixel (w, h) of the now-playing bar."""
+    return (_BAR_W, _BAR_H)
 
 
 def tt_slot_design_x() -> int:
-    """Left design-x of the TMDb TT slot."""
-    return _TT_SLOT_L
-
-
-def _fit_status_bar_slot_bgra(src: np.ndarray, slot_w: int, slot_h: int) -> np.ndarray:
-    """Scale ``src`` once into the status-bar slot (uniform); never stretch per progress."""
-    return _image_contain_center_bgra(src, slot_w, slot_h)
-
-
-def _fit_tt_in_status_bar_bgra(src: np.ndarray) -> np.ndarray:
-    """Center the title treatment in the TT slot (cols 250–780), vertically in the bar."""
-    trimmed = _trim_visible_bgra(src)
-    return _image_contain_center_bgra(trimmed, _TT_SLOT_W, _BAR_H)
+    return _BAR_L
 
 
 def _reveal_crop_bgra_left(full: np.ndarray, reveal_w: int) -> np.ndarray | None:
@@ -687,40 +926,6 @@ def _reveal_crop_bgra_left(full: np.ndarray, reveal_w: int) -> np.ndarray | None
     if rw <= 0:
         return None
     return full[:, :rw].copy()
-
-
-def _build_status_bar_played_full_bgra_vector() -> np.ndarray:
-    """Full-width played bar raster used for left→right crop when no PNG asset is present."""
-    canvas = np.zeros((int(DESIGN_H), int(DESIGN_W), 4), dtype=np.uint8)
-    _draw_left_rounded_rect_bgra(
-        canvas,
-        _BAR_L,
-        _BAR_T,
-        _BAR_W,
-        _BAR_H,
-        fill_bgr=_COLOR_UI_BGR,
-        stroke_bgr=_COLOR_ACCENT_BGR,
-        radius=_BAR_RX,
-        stroke=_BAR_STROKE,
-    )
-    return canvas[_BAR_T : _BAR_T + _BAR_H, _BAR_L : _BAR_L + _BAR_W].copy()
-
-
-@lru_cache(maxsize=4)
-def _load_status_bar_played_full_bgra(assets_dir_str: str) -> np.ndarray:
-    """Load/cache the full played status bar at bar dimensions (crop source, not progress width)."""
-    assets_dir = Path(assets_dir_str)
-    for name in _STATUS_BAR_PLAYED_ASSET_NAMES:
-        p = assets_dir / name
-        if not p.is_file():
-            continue
-        try:
-            img = load_image_bgra(p)
-        except Exception:
-            continue
-        if img is not None and img.size > 0:
-            return _fit_status_bar_slot_bgra(img, _BAR_W, _BAR_H)
-    return _build_status_bar_played_full_bgra_vector()
 
 
 def _fallback_base_bgra() -> np.ndarray:
@@ -740,7 +945,7 @@ class NowPlayingScreenWidget:
         self._backdrop_bgr: np.ndarray | None = None
         self._tt_bgra: np.ndarray | None = None
         self._badge_bgra: np.ndarray | None = None
-        self._status_bar_played_full_cache: np.ndarray | None = None
+        self._audio_sim = _AudioLevelsSimulator()
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
 
@@ -813,6 +1018,14 @@ class NowPlayingScreenWidget:
         if changed:
             self.clear_cache()
         return changed
+
+    def set_audio_levels_sim(self, enabled: bool) -> bool:
+        v = bool(enabled)
+        if v == self._state.audio_levels_sim:
+            return False
+        self._state.audio_levels_sim = v
+        self.clear_cache()
+        return True
 
     def set_streaming_badge(self, *, show: bool, filename: str, label: str) -> bool:
         sig = (bool(show), str(filename or ""), str(label or ""))
@@ -901,6 +1114,7 @@ class NowPlayingScreenWidget:
         badge_show: bool = False,
         badge_filename: str = "",
         badge_label: str = "",
+        audio_levels_sim: bool | None = None,
     ) -> bool:
         """Batch update from ``pigeon_0_7`` holders; returns True when the cached frame is stale."""
         changed = False
@@ -956,6 +1170,8 @@ class NowPlayingScreenWidget:
         elif badge_arr is None and self._badge_bgra is not None:
             self._badge_bgra = None
             changed = True
+        if audio_levels_sim is not None and self.set_audio_levels_sim(bool(audio_levels_sim)):
+            changed = True
         _ = played_text  # elapsed shown via progress bar width only in this layout
         return changed
 
@@ -963,6 +1179,7 @@ class NowPlayingScreenWidget:
         st = self._state
         bd_id = id(self._backdrop_bgr) if self._backdrop_bgr is not None else None
         tt_id = id(self._tt_bgra) if self._tt_bgra is not None else None
+        anim_bucket = int(time.monotonic() * 8)
         return (
             round(st.progress, 6),
             st.remaining_text,
@@ -980,27 +1197,16 @@ class NowPlayingScreenWidget:
             st.indicator_receiver,
             st.indicator_tmdb,
             st.indicator_audio,
+            st.audio_levels_sim,
             bd_id,
             tt_id,
             id(self._badge_bgra) if self._badge_bgra is not None else None,
-            int(datetime.now().strftime("%H%M")),  # clock minute bucket
+            int(datetime.now().strftime("%H%M%S")),
+            anim_bucket,
         )
 
     def _paste_patch(self, canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
-        if patch is None or patch.size == 0:
-            return
-        ph, pw = patch.shape[:2]
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(int(DESIGN_W), x + pw), min(int(DESIGN_H), y + ph)
-        if x0 >= x1 or y0 >= y1:
-            return
-        sx0, sy0 = x0 - x, y0 - y
-        roi = canvas[y0:y1, x0:x1]
-        sub = patch[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
-        if roi.shape[2] >= 4 and sub.shape[2] >= 4:
-            _blend_bgra_onto_bgra(roi, sub)
-        else:
-            roi[:] = alpha_blend_bgra_over_bgr(roi, sub)
+        _paste_patch_bgra(canvas, patch, x, y)
 
     def _render_svg_base(self) -> np.ndarray:
         try:
@@ -1008,59 +1214,32 @@ class NowPlayingScreenWidget:
         except (FileNotFoundError, RuntimeError):
             return _fallback_base_bgra()
 
-    def _get_status_bar_played_full_bgra(self) -> np.ndarray:
-        if self._status_bar_played_full_cache is None:
-            self._status_bar_played_full_cache = _load_status_bar_played_full_bgra(
-                str(self._assets_dir.resolve())
-            )
-        return self._status_bar_played_full_cache
-
     def _render_frame_bgra(self) -> np.ndarray:
         st = self._state
-        out = self._render_svg_base()
-
-        # Live TMDb backdrop inside SVG container bounds.
-        if self._backdrop_bgr is not None and self._backdrop_bgr.size > 0:
-            bd_patch = cv2.resize(
-                self._backdrop_bgr,
-                (_BACKDROP_W, _BACKDROP_H),
-                interpolation=cv2.INTER_AREA,
-            )
-            if bd_patch.ndim == 2:
-                bd_patch = cv2.cvtColor(bd_patch, cv2.COLOR_GRAY2BGR)
-            if bd_patch.shape[2] == 4:
-                bd_bgra = bd_patch
-            else:
-                bd_bgra = cv2.cvtColor(bd_patch, cv2.COLOR_BGR2BGRA)
-            mask = _rounded_rect_mask(_BACKDROP_W, _BACKDROP_H, _BACKDROP_RX)
-            bd_bgra = bd_bgra.copy()
-            bd_bgra[:, :, 3] = cv2.bitwise_and(bd_bgra[:, :, 3], mask)
-            self._paste_patch(out, bd_bgra, _BACKDROP_X, _BACKDROP_Y)
+        t_mono = time.monotonic()
+        out = _animated_background_bgra(t_mono)
+        chrome = self._render_svg_base()
+        self._paste_patch(out, chrome, 0, 0)
 
         progress = st.progress if st.trt_substantive else 0.0
-        played_w = int(round(progress * float(_BAR_W)))
-        played_w = max(0, min(_BAR_W, played_w))
+        played_w = max(0, min(_BAR_W, int(round(progress * float(_BAR_W)))))
 
-        # Played status bar — full asset cropped left→right (never width-resized per progress).
+        unplayed_group = _compose_bar_group_bgra(
+            played=False,
+            tt_bgra=self._tt_bgra,
+            backdrop_bgr=self._backdrop_bgr,
+        )
+        self._paste_patch(out, unplayed_group, _BAR_L, _BAR_T)
+
         if played_w > 0:
-            played_crop = _reveal_crop_bgra_left(self._get_status_bar_played_full_bgra(), played_w)
+            played_group = _compose_bar_group_bgra(
+                played=True,
+                tt_bgra=self._tt_bgra,
+                backdrop_bgr=self._backdrop_bgr,
+            )
+            played_crop = _reveal_crop_bgra_left(played_group, played_w)
             if played_crop is not None:
                 self._paste_patch(out, played_crop, _BAR_L, _BAR_T)
-
-        # TMDb TT normal: crop reveal in pixel-column slot 250–780.
-        if self._tt_bgra is not None and self._tt_bgra.size > 0:
-            tt_fit = _fit_tt_in_status_bar_bgra(self._tt_bgra)
-            played_right = _BAR_L + played_w
-            play_crop_l = 0
-            play_crop_r = min(_TT_SLOT_W, max(0, played_right - _TT_SLOT_L))
-            if play_crop_r > play_crop_l:
-                color_crop = tt_fit[:, play_crop_l:play_crop_r]
-                self._paste_patch(out, color_crop, _TT_SLOT_L + play_crop_l, _BAR_T)
-            unplay_l = max(0, played_right - _TT_SLOT_L)
-            if unplay_l < _TT_SLOT_W:
-                tt_black = _tt_to_black_bgra(tt_fit)
-                unplayed_crop = tt_black[:, unplay_l:, :].copy()
-                self._paste_patch(out, unplayed_crop, _TT_SLOT_L + unplay_l, _BAR_T)
 
         if st.show_paused and played_w > 0:
             paused = _text_patch_bgra(
@@ -1072,31 +1251,32 @@ class NowPlayingScreenWidget:
             )
             self._paste_patch(out, paused, _BAR_L, _BAR_T)
 
-        # Badge container + logo.
-        badge_x = _follow_container_x(_BADGE_W, _BAR_L, _BAR_W, progress)
+        container_w = _CONTAINER_W
+        badge_x = _follow_container_x(container_w, _BAR_L, _BAR_W, progress)
         _draw_rounded_rect_bgra(
             out,
             badge_x,
             _BADGE_Y,
-            _BADGE_W,
-            _BADGE_H,
-            fill_bgr=_COLOR_ACCENT_BGR,
-            radius=max(2, _sy(8)),
+            container_w,
+            _CONTAINER_H,
+            fill_bgr=_COLOR_PLAYED_BGR,
+            radius=_CONTAINER_RX,
         )
         if self._badge_bgra is not None:
-            badge_inner = _image_contain_center_bgra(self._badge_bgra, _BADGE_W - 8, _BADGE_H - 8)
-            self._paste_patch(out, badge_inner, badge_x + 4, _BADGE_Y + 4)
+            badge_inner = _image_contain_center_bgra(
+                self._badge_bgra, container_w - 8, _CONTAINER_H - 4,
+            )
+            self._paste_patch(out, badge_inner, badge_x + 4, _BADGE_Y + 2)
         elif st.badge_show and str(st.badge_label or "").strip():
             badge_inner = _text_patch_bgra(
                 str(st.badge_label),
-                _BADGE_W,
-                _BADGE_H,
+                container_w,
+                _CONTAINER_H,
                 align="center",
-                fill_rgba=(32, 32, 32, 255),
+                fill_rgba=(255, 255, 255, 255),
             )
             self._paste_patch(out, badge_inner, badge_x, _BADGE_Y)
 
-        # Timecode container + remaining text.
         tc_x = _follow_container_x(_TC_W, _BAR_L, _BAR_W, progress)
         _draw_rounded_rect_bgra(
             out,
@@ -1104,15 +1284,15 @@ class NowPlayingScreenWidget:
             _TC_Y,
             _TC_W,
             _TC_H,
-            fill_bgr=_COLOR_ACCENT_BGR,
-            radius=max(2, _sy(8)),
+            fill_bgr=_COLOR_PLAYED_BGR,
+            radius=_CONTAINER_RX,
         )
         tc_text = str(st.remaining_text or "").strip()
         if tc_text:
             tc_patch, tw, th = _fit_text_patch(
                 tc_text,
                 size_px=max(10, _sy(30.0)),
-                fill_rgb=(0, 0, 0),
+                fill_rgb=(255, 255, 255),
                 bold=True,
                 align="center",
             )
@@ -1120,7 +1300,6 @@ class NowPlayingScreenWidget:
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
-        # Vertical progress edge: 12px shorter, vertically centered between badge and timecode.
         progress_edge_x = _BAR_L + played_w
         vline_y0 = _BADGE_Y + _PROGRESS_VLINE_TRIM
         vline_y1 = (_TC_Y + _TC_H) - _PROGRESS_VLINE_TRIM
@@ -1133,7 +1312,6 @@ class NowPlayingScreenWidget:
             stroke=_BAR_STROKE,
         )
 
-        # Consistent white stroke around the full now-playing bar shape (on top).
         _draw_rounded_rect_stroke_bgra(
             out,
             _BAR_L,
@@ -1145,7 +1323,13 @@ class NowPlayingScreenWidget:
             stroke=_BAR_STROKE,
         )
 
-        # Audio config — fit + center in pixel columns 1–210.
+        if st.audio_levels_sim:
+            meter_levels = self._audio_sim.levels(t_mono)
+        else:
+            meter_levels = {name: 0.0 for name, *_ in _AUDIO_CHANNELS}
+        _draw_audio_levels_bgra(out, meter_levels)
+        _draw_audio_channel_labels_bgra(out)
+
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
             cfg_patch = _text_patch_bgra(
@@ -1168,7 +1352,6 @@ class NowPlayingScreenWidget:
             )
             self._paste_patch(out, vol_patch, _VOLUME_X, _VOLUME_Y - _sy(26))
 
-        # Clock — SVG baseline anchor; draw last so nothing covers it.
         clk_patch = _text_patch_bgra(
             _clock_text(),
             _CLOCK_PATCH_W,

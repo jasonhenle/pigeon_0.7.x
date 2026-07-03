@@ -22,6 +22,7 @@ APP_ASSET_DIRS: tuple[str, ...] = ("pigeonAssets",)
 
 # Minimum files needed for status bar, poster widget, and splash on Pi.
 REQUIRED_ASSET_PATHS: tuple[str, ...] = (
+    "pigeonAssets/now_playing_test_070326.svg",
     "pigeonAssets/now_playing_test_070126.svg",
     "pigeonAssets/now_playing_test_070126.png",
     "pigeonAssets/pigeonNowPlaying_Bar.png",

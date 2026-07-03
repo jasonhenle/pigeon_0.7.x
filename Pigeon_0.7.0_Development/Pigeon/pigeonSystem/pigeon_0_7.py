@@ -2423,8 +2423,9 @@ def main() -> int:
                 volume_top_right_col_1based=float(VIEW_ONE_CLOCK_COL_RIGHT),
             )
 
-        # New now-playing screen (070126): default on View 1; key ``1`` toggles vs classic chrome.
+        # New now-playing screen (070326): default on View 1; key ``1`` toggles vs classic chrome.
         new_now_playing_ui_holder: list[bool] = [True]
+        audio_levels_sim_holder: list[bool] = [False]
         now_playing_screen_widget = None
         if _PIGEON_EXT and NowPlayingScreenWidget is not None:
             now_playing_screen_widget = NowPlayingScreenWidget(
@@ -2522,6 +2523,7 @@ def main() -> int:
                 badge_show=bool(badge_bgra is not None or fn or badge_label),
                 badge_filename=fn,
                 badge_label=badge_label,
+                audio_levels_sim=bool(audio_levels_sim_holder[0]),
             ):
                 skip_cache = None
 
@@ -9712,10 +9714,17 @@ def main() -> int:
                     _bump_pigeon_user_activity(event)
                     _capture_last_view_one_layout_from_live_view()
                     return "break"
-                # 1: toggle new (070126) vs classic now-playing chrome on View 1.
+                # 1: toggle new (070326) vs classic now-playing chrome on View 1.
                 new_now_playing_ui_holder[0] = not bool(new_now_playing_ui_holder[0])
                 if now_playing_screen_widget is not None:
                     now_playing_screen_widget.clear_cache()
+                skip_cache = None
+                _bump_pigeon_user_activity(event)
+                return "break"
+            if ch == "6" and _use_new_now_playing_ui():
+                audio_levels_sim_holder[0] = not bool(audio_levels_sim_holder[0])
+                if now_playing_screen_widget is not None:
+                    now_playing_screen_widget.set_audio_levels_sim(audio_levels_sim_holder[0])
                 skip_cache = None
                 _bump_pigeon_user_activity(event)
                 return "break"
