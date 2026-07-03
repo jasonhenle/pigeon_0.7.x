@@ -769,10 +769,13 @@ def main() -> int:
     splash_anim_done: list[bool] = [False]
     # Post-splash UI timing (splash lift); mic visualizer removed.
     post_splash_mono: list[float | None] = [None]
+    _post_splash_startup_hook: list[object] = [None]
 
     def _finish_post_splash_startup_transition() -> None:
-        """Post-splash hook (startup video / transition skipped)."""
-        return
+        """Post-splash hook (registered from ``bootstrap``)."""
+        hook = _post_splash_startup_hook[0]
+        if callable(hook):
+            hook()
 
     def _try_remove_splash_overlay() -> None:
         if not _PIGEON_EXT:
@@ -2411,8 +2414,8 @@ def main() -> int:
                     remaining_text = _format_hmmss(int(pair[1]))
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
-            vol = str(receiver_overlay_state.get("volume") or "").strip()
-            if not vol and compose_playback_volume_widget_line is not None:
+            vol = ""
+            if compose_playback_volume_widget_line is not None:
                 vol = compose_playback_volume_widget_line(
                     stream_row=streaming_slot_holder[0],
                     apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
@@ -2421,6 +2424,17 @@ def main() -> int:
                     denon_vol_effective=str(denon_vol_cache.get("effective") or ""),
                     roku_tv_volume_percent="",
                 )
+            if not vol:
+                raw_vol = str(receiver_overlay_state.get("volume") or "").strip()
+                # Bare 0–100 with no dB/% is usually stale Apple TV percent, not AVR readout.
+                if raw_vol and not (
+                    raw_vol.isdigit() and 0 <= int(raw_vol) <= 100
+                ):
+                    vol = raw_vol
+                elif raw_vol and (
+                    "db" in raw_vol.lower() or raw_vol.endswith("%") or raw_vol.lower() == "mute"
+                ):
+                    vol = raw_vol
             badge_bgra = None
             fn = str(streaming_badge_state.get("filename") or "").strip()
             if fn:
@@ -2475,6 +2489,26 @@ def main() -> int:
                 audio_levels_sim=bool(audio_levels_sim_holder[0]),
             ):
                 skip_cache = None
+
+        def _activate_now_playing_after_splash() -> None:
+            """Splash → now-playing screen immediately (skip landing toast / idle chrome wait)."""
+            nonlocal skip_cache, last_frame, scene_enabled, brightness_current, brightness_from, brightness_target
+            if not _PIGEON_EXT or now_playing_screen_widget is None:
+                return
+            if not new_now_playing_ui_holder[0]:
+                return
+            display_view_holder[0] = DisplayView.ONE
+            _startup_splash_complete[0] = True
+            scene_enabled = True
+            last_frame = landing_scene_design_bgr
+            brightness_current = brightness_from = brightness_target = LANDING_DISPLAY_BRIGHTNESS
+            if status_bar_widget is not None:
+                if status_bar_widget.set_now_playing_chrome_visible(True):
+                    _warm_status_bar_blits()
+            _sync_now_playing_screen_state()
+            skip_cache = None
+
+        _post_splash_startup_hook[0] = _activate_now_playing_after_splash
 
         def _playback_is_netflix_stream() -> bool:
             lm = apple_tv_auto_state.get("last_metadata")
@@ -8592,7 +8626,12 @@ def main() -> int:
             nonlocal skip_cache
             if status_bar_widget is None:
                 return
-            if not current_apple_tv.get("identifier"):
+            if (
+                new_now_playing_ui_holder[0]
+                and _effective_display_view() == DisplayView.ONE
+            ):
+                show = True
+            elif not current_apple_tv.get("identifier"):
                 show = False
             elif metadata is not None:
                 show = not _atv_metadata_is_content_idle(metadata)
@@ -9937,8 +9976,6 @@ def main() -> int:
             _apply_shell_size(w, h)
 
         sync_developer_chrome()
-        if _PIGEON_EXT and dev_phase == DevPhase.OFF:
-            _start_location_toast(startup=True)
 
         def render_once() -> None:
             nonlocal last_frame, brightness_current, scaled_display, scaled_version, skip_cache, black_photo
@@ -10234,12 +10271,16 @@ def main() -> int:
                 receiver_overlay_state["config"] = config
                 receiver_overlay_state["volume"] = volume
                 if overlay_unchanged:
+                    if _use_new_now_playing_ui():
+                        _sync_now_playing_screen_state()
                     return
                 last_device_interaction_mono = time.monotonic()
                 if old_vol_raw != new_vol:
                     _bump_clock_saver_significant_device()
                 _warm_playback_overlay_blits()
                 skip_cache = None
+                if _use_new_now_playing_ui():
+                    _sync_now_playing_screen_state()
                 render_once()
 
             receiver_poll_busy["active"] = True

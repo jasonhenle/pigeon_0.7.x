@@ -68,15 +68,16 @@ _HIDE_LAYER_LOGICAL: tuple[str, ...] = (
     "03_widget_now_playing_tmdb_TT_normal",
     "03_widget_now_playing_tmdb_TT_black",
     "03_widget_now_playing_tmdb_TT_unplayed",
+    "03_widget_now_playing_tmdb_TT_played",
     "04_widget_backdrop_tmdb_backdrop",
     "04_widget_backdrop_tmdb_color",
     "04_now_playing_color_two",
-    "03_widget_now_playing_badge_service",
-    "03_widget_now_playing_badge_container",
-    "04_widget_now_playing_service_text",
+    "03_widget_now_playing_stroke",
+    "03_widget_now_playing_timecode_stroke",
     "03_widget_now_playing_timecode_container",
     "03_widget_now_playing_timecode_text",
     "03_widget_now_playing_content_time",
+    "05_now_playing_service_text",
     "02_widget_clock_text",
     "05_widget_audio_config_text",
     "05_widget_audio_config_volume_text",
@@ -112,40 +113,43 @@ def _sx(x_svg: float) -> int:
     return int(round(x_svg))
 
 
-# Now-playing bar (layer 04) — from ``now_playing_test_070326`` path bounds.
-_BAR_L = 37
+# Now-playing bar (layer 03) — from ``now_playing_070326`` bounds.
+_BAR_L = 36
 _BAR_T = 39
-_BAR_W = 732
+_BAR_W = 731
 _BAR_H = 219
-_BAR_RX = 15
+_BAR_RX = 28
 _CONTENT_PAD = 50
 _IMAGE_CORNER_RX = 12
-_TT_TINT_BLACK = 0.80
+_TT_TINT_WHITE = 0.50
+_PLAYED_STROKE_PX = 3
 _BACKDROP_RED_MONO = 0.82
 _BACKDROP_RED_OVERLAY_ALPHA = 0.45
 
-# Badge + timecode containers (equal width).
+# Timecode container (tracks played edge).
 _CONTAINER_W = 164
-_CONTAINER_H = 20
-_BADGE_Y = 24
 _TC_W = _CONTAINER_W
 _TC_H = 50
 _TC_Y = 247
 
-# Clock + audio chrome (layer 02/05).
+# Clock + service + audio chrome (layers 02/05).
 _CLOCK_X = 520
 _CLOCK_Y = 405
 _CLOCK_SIZE_PX = 60
 _CLOCK_PATCH_W = 280
 _CLOCK_PATCH_H = 68
 
-_AUDIO_CFG_BOX_X = 1
-_AUDIO_CFG_BOX_W = 210
-_AUDIO_CFG_BOX_Y = 430
-_AUDIO_CFG_BOX_H = 48
+_SERVICE_TEXT_X = 522
+_SERVICE_TEXT_Y = 437
+_SERVICE_TEXT_SIZE_PX = 30
 
-_VOLUME_X = 489
-_VOLUME_Y = 455
+# Audio config line (SVG ``05_widget_audio_config_text``).
+_AUDIO_CFG_TEXT_X = 46
+_AUDIO_CFG_TEXT_Y = 453
+_AUDIO_CFG_TEXT_SIZE = 25
+
+_VOLUME_X = 295
+_VOLUME_Y = 426
 _VOLUME_SIZE = 60
 
 # Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px.
@@ -158,12 +162,12 @@ _AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
     ("LFE", 211, 405, 11, 9),
 )
 _AUDIO_LABELS: tuple[tuple[str, int, int], ...] = (
-    ("SL", 46, 408),
-    ("L", 76, 408),
-    ("C", 99, 408),
-    ("R", 124, 408),
-    ("SR", 142, 408),
-    ("LFE", 200, 408),
+    ("SL", 46, 426),
+    ("L", 76, 426),
+    ("C", 99, 426),
+    ("R", 124, 426),
+    ("SR", 142, 426),
+    ("LFE", 200, 426),
 )
 _CONTAINER_RX = 12
 _SERVICE_TEXT_SIZE_PX = 30
@@ -210,7 +214,15 @@ def _find_by_id(root: ET.Element, layer_id: str) -> ET.Element | None:
 
 
 def _find_by_logical_id(root: ET.Element, logical_id: str) -> ET.Element | None:
-    return _find_by_id(root, _encode_svg_layer_id(logical_id))
+    for candidate in (
+        _encode_svg_layer_id(logical_id),
+        f"_{logical_id}",
+        logical_id,
+    ):
+        hit = _find_by_id(root, candidate)
+        if hit is not None:
+            return hit
+    return None
 
 
 def _set_visible(el: ET.Element | None, visible: bool) -> None:
@@ -251,7 +263,14 @@ def _remove_element_by_id(root: ET.Element, element_id: str) -> None:
 
 
 def _remove_by_logical_id(root: ET.Element, logical_id: str) -> None:
-    _remove_element_by_id(root, _encode_svg_layer_id(logical_id))
+    for candidate in (
+        _encode_svg_layer_id(logical_id),
+        f"_{logical_id}",
+        logical_id,
+    ):
+        if _find_by_id(root, candidate) is not None:
+            _remove_element_by_id(root, candidate)
+            return
 
 
 def _remove_layers_by_id_substrings(root: ET.Element, substrings: tuple[str, ...]) -> None:
@@ -273,15 +292,19 @@ def _remove_layers_by_id_substrings(root: ET.Element, substrings: tuple[str, ...
 _EXTRA_HIDE_ID_SUBSTRINGS: tuple[str, ...] = (
     "_x5F_badge_x5F_container",
     "_x5F_badge_x5F_service",
+    "now_playing_service_text",
     "_x5F_service_x5F_text",
     "_x5F_timecode_x5F_container",
     "_x5F_timecode_x5F_text",
+    "timecode_stroke",
+    "widget_now_playing_stroke",
     "_x5F_content_x5F_time",
     "_x5F_status_x5F_bar_x5F_played",
     "_x5F_status_x5F_bar_x5F_unplayed",
     "_x5F_tmdb_x5F_TT_x5F_normal",
     "_x5F_tmdb_x5F_TT_x5F_black",
     "_x5F_tmdb_x5F_TT_x5F_unplayed",
+    "tmdb_TT_played",
     "_x5F_clock_x5F_text",
     "_x5F_audio_x5F_config_x5F_text",
     "_x5F_audio_x5F_config_x5F_volume",
@@ -295,10 +318,10 @@ _EXTRA_HIDE_ID_SUBSTRINGS: tuple[str, ...] = (
 
 def _replace_background_with_black(root: ET.Element) -> None:
     """Swap ``07_background`` JPEG art for a flat black fill."""
-    marker = "_x30_7_x5F_background"
+    markers = ("_x30_7_x5F_background", "_07_background", "07_background")
     for el in root.iter():
         eid = el.get("id") or ""
-        if marker not in eid:
+        if not any(m in eid for m in markers):
             continue
         for child in list(el):
             el.remove(child)
@@ -691,22 +714,28 @@ def _clock_text(now: datetime | None = None) -> str:
 def _audio_config_line(incoming: str, config: str) -> str:
     inc = _receiver_audio_display_line(incoming)
     cfg = _receiver_audio_display_line(config)
+    if inc:
+        inc = inc.upper()
+    if cfg:
+        cfg = cfg.upper()
     if inc and cfg:
         return f"{inc} > {cfg}"
     return inc or cfg
 
 
-def _tt_to_black_bgra(src: np.ndarray, *, tint: float = _TT_TINT_BLACK) -> np.ndarray:
-    """Tint visible TT pixels toward black (``tint``=0.8 → 80% black)."""
+def _tt_to_white_bgra(src: np.ndarray, *, tint: float = _TT_TINT_WHITE) -> np.ndarray:
+    """Tint visible TT pixels toward white (``tint``=0.5 → 50% white)."""
     if src is None or src.size == 0:
         return src
     out = src.copy()
-    keep = max(0.0, min(1.0, 1.0 - float(tint)))
+    t = max(0.0, min(1.0, float(tint)))
+    keep = 1.0 - t
     alpha = out[:, :, 3] > 0
     if np.any(alpha):
-        out[alpha, 0] = (out[alpha, 0].astype(np.float32) * keep).astype(np.uint8)
-        out[alpha, 1] = (out[alpha, 1].astype(np.float32) * keep).astype(np.uint8)
-        out[alpha, 2] = (out[alpha, 2].astype(np.float32) * keep).astype(np.uint8)
+        for ch in range(3):
+            plane = out[:, :, ch].astype(np.float32)
+            plane[alpha] = plane[alpha] * keep + 255.0 * t
+            out[:, :, ch] = plane.astype(np.uint8)
     return out
 
 
@@ -844,12 +873,30 @@ def _compose_bar_group_bgra(
     rel_bd_x = bd_x - _BAR_L
     rel_bd_y = bd_y - _BAR_T
     if tt_fit is not None and tt_fit.size > 0:
-        tt_layer = tt_fit if played else _tt_to_black_bgra(tt_fit)
+        tt_layer = tt_fit if played else _tt_to_white_bgra(tt_fit)
         _paste_rounded_bgra(canvas, tt_layer, rel_tt_x, rel_tt_y, radius=_IMAGE_CORNER_RX)
     if bd_fit is not None and bd_fit.size > 0:
         bd_layer = bd_fit if played else _prepare_backdrop_unplayed_bgra(bd_fit)
         _paste_rounded_bgra(canvas, bd_layer, rel_bd_x, rel_bd_y, radius=_IMAGE_CORNER_RX)
     return canvas
+
+
+def _compose_played_stroke_bgra(played_w: int) -> np.ndarray | None:
+    """White bar outline cropped to the played width (``03_widget_now_playing_stroke``)."""
+    if played_w <= 0:
+        return None
+    canvas = np.zeros((_BAR_H, _BAR_W, 4), dtype=np.uint8)
+    _draw_rounded_rect_stroke_bgra(
+        canvas,
+        0,
+        0,
+        _BAR_W,
+        _BAR_H,
+        stroke_bgr=_COLOR_ACCENT_BGR,
+        radius=_BAR_RX,
+        stroke=_PLAYED_STROKE_PX,
+    )
+    return _reveal_crop_bgra_left(canvas, played_w)
 
 
 class _AudioLevelsSimulator:
@@ -1176,7 +1223,7 @@ class NowPlayingScreenWidget:
             label=str(badge_label or ""),
         ):
             changed = True
-        _ = service_badge_bgra  # service label text only (``04_widget_now_playing_service_text``)
+        _ = service_badge_bgra  # service label at ``05_now_playing_service_text`` (below clock)
         if audio_levels_sim is not None and self.set_audio_levels_sim(bool(audio_levels_sim)):
             changed = True
         _ = played_text  # elapsed shown via progress bar width only in this layout
@@ -1245,6 +1292,9 @@ class NowPlayingScreenWidget:
             played_crop = _reveal_crop_bgra_left(played_group, played_w)
             if played_crop is not None:
                 self._paste_patch(out, played_crop, _BAR_L, _BAR_T)
+            stroke_crop = _compose_played_stroke_bgra(played_w)
+            if stroke_crop is not None:
+                self._paste_patch(out, stroke_crop, _BAR_L, _BAR_T)
 
         if st.show_paused and played_w > 0:
             paused = _text_patch_bgra(
@@ -1257,29 +1307,7 @@ class NowPlayingScreenWidget:
             self._paste_patch(out, paused, _BAR_L, _BAR_T)
 
         container_w = _CONTAINER_W
-        badge_x = _follow_container_x(container_w, _BAR_L, _BAR_W, progress)
-        _draw_rounded_rect_bgra(
-            out,
-            badge_x,
-            _BADGE_Y,
-            container_w,
-            _CONTAINER_H,
-            fill_bgr=_COLOR_PLAYED_BGR,
-            radius=_CONTAINER_RX,
-        )
-        service_text = str(st.badge_label or "").strip()
-        if service_text:
-            badge_inner = _text_patch_bgra(
-                service_text,
-                container_w,
-                _CONTAINER_H,
-                align="center",
-                fill_rgba=(255, 255, 255, 255),
-                fit_max_h=max(8, _sy(float(_SERVICE_TEXT_SIZE_PX))),
-            )
-            self._paste_patch(out, badge_inner, badge_x, _BADGE_Y)
-
-        tc_x = _follow_container_x(_TC_W, _BAR_L, _BAR_W, progress)
+        tc_x = _follow_container_x(container_w, _BAR_L, _BAR_W, progress)
         _draw_rounded_rect_bgra(
             out,
             tc_x,
@@ -1288,6 +1316,16 @@ class NowPlayingScreenWidget:
             _TC_H,
             fill_bgr=_COLOR_PLAYED_BGR,
             radius=_CONTAINER_RX,
+        )
+        _draw_rounded_rect_stroke_bgra(
+            out,
+            tc_x,
+            _TC_Y,
+            _TC_W,
+            _TC_H,
+            stroke_bgr=_COLOR_ACCENT_BGR,
+            radius=_CONTAINER_RX,
+            stroke=_PLAYED_STROKE_PX,
         )
         tc_text = str(st.remaining_text or "").strip()
         if tc_text:
@@ -1311,15 +1349,18 @@ class NowPlayingScreenWidget:
 
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
-            cfg_patch = _text_patch_bgra(
+            cfg_patch, _, th = _fit_text_patch(
                 cfg_line,
-                _AUDIO_CFG_BOX_W,
-                _AUDIO_CFG_BOX_H,
-                align="center",
-                fill_rgba=(237, 28, 36, 255),
-                fit_max_h=_AUDIO_CFG_BOX_H - 4,
+                size_px=max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE))),
+                fill_rgb=(237, 28, 36),
+                bold=True,
             )
-            self._paste_patch(out, cfg_patch, _AUDIO_CFG_BOX_X, _AUDIO_CFG_BOX_Y)
+            self._paste_patch(
+                out,
+                cfg_patch,
+                _AUDIO_CFG_TEXT_X,
+                _AUDIO_CFG_TEXT_Y - th,
+            )
 
         vol_line = _receiver_volume_display_line(st.volume)
         if vol_line:
@@ -1341,6 +1382,16 @@ class NowPlayingScreenWidget:
         )
         clk_h = int(clk_patch.shape[0])
         self._paste_patch(out, clk_patch, _CLOCK_X, _CLOCK_Y - clk_h + max(4, _sy(8)))
+
+        service_text = str(st.badge_label or "").strip()
+        if service_text:
+            svc_patch, _, th = _fit_text_patch(
+                service_text.lower(),
+                size_px=max(10, _sy(float(_SERVICE_TEXT_SIZE_PX))),
+                fill_rgb=(237, 28, 36),
+                bold=True,
+            )
+            self._paste_patch(out, svc_patch, _SERVICE_TEXT_X, _SERVICE_TEXT_Y - th)
 
         return out
 

@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from pigeon.receiver_denon_telnet import poll_denon_telnet
+from pigeon.receiver_denon_telnet import _denon_mv_to_db, poll_denon_telnet
 
 # Same endpoints the Denon 2016+ web UI and denonavr use for main zone snapshot.
 _STATUS_PATHS = (
@@ -363,12 +363,17 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
     mute = _denon_field_ci(d, "Mute").lower()
     mv = _denon_field_ci(
         d,
+        "MV_DB",
         "MasterVolume",
         "MasterVolumeDisplay",
         "VolumeDisplay",
         "DispVolume",
         "MainZoneVolume",
     )
+    if not mv:
+        mv_step = _denon_field_ci(d, "MV")
+        if mv_step and re.fullmatch(r"\d{2,3}", mv_step.strip()):
+            mv = _denon_mv_to_db(mv_step.strip())
     if mute == "on":
         vol_s = "mute"
     elif mv:

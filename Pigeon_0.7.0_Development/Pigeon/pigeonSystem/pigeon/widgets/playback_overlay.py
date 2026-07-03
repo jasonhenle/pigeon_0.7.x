@@ -81,6 +81,9 @@ def volume_percent_to_widget_line(value: object) -> str:
     if f != f:  # NaN
         return ""
     p = int(max(0, min(100, round(f))))
+    # Apple TV reports 0 when a physical AV receiver owns the volume line.
+    if p == 0:
+        return ""
     return str(p)
 
 
