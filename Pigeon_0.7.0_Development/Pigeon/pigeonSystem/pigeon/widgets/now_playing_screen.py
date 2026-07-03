@@ -3,13 +3,12 @@ Pigeon 0.7 now-playing screen — SVG chrome from ``now_playing_test_070326`` (8
 
 Static chrome is rasterized from ``pigeonAssets/now_playing_test_070326.svg``. Dynamic
 layers (played/unplayed bar groups, TMDb TT + backdrop, badge, timecode, audio meters,
-clock, and animated background) are drawn programmatically on top.
+clock, and programmatic overlays) are drawn programmatically on top.
 """
 
 from __future__ import annotations
 
 import io
-import math
 import os
 import random
 import re
@@ -120,8 +119,7 @@ _BAR_T = 39
 _BAR_W = 732
 _BAR_H = 219
 _BAR_RX = 15
-_BAR_STROKE = 3
-_CONTENT_PAD = 80
+_CONTENT_PAD = 50
 _IMAGE_CORNER_RX = 12
 _TT_TINT_BLACK = 0.80
 _BACKDROP_RED_MONO = 0.82
@@ -150,8 +148,6 @@ _AUDIO_CFG_BOX_H = 48
 _VOLUME_X = 489
 _VOLUME_Y = 455
 _VOLUME_SIZE = 60
-
-_PROGRESS_VLINE_TRIM = 6
 
 # Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px.
 _AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
@@ -553,7 +549,7 @@ def _draw_vertical_stroke_bgra(
     y1: int,
     *,
     stroke_bgr: tuple[int, int, int] = _COLOR_ACCENT_BGR,
-    stroke: int = _BAR_STROKE,
+    stroke: int = 3,
 ) -> None:
     """Vertical progress edge line (matches status-bar stroke weight)."""
     if y0 > y1:
@@ -804,36 +800,6 @@ def _compose_bar_group_bgra(
         bd_layer = bd_fit if played else _prepare_backdrop_unplayed_bgra(bd_fit)
         _paste_rounded_bgra(canvas, bd_layer, rel_bd_x, rel_bd_y, radius=_IMAGE_CORNER_RX)
     return canvas
-
-
-def _animated_background_bgra(t: float) -> np.ndarray:
-    """Dark four-corner gradient with subtle motion (replaces static 07_background)."""
-    w, h = int(DESIGN_W), int(DESIGN_H)
-    ys = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, np.newaxis]
-    xs = np.linspace(0.0, 1.0, w, dtype=np.float32)[np.newaxis, :]
-    def _corner(base: tuple[int, int, int], phase: float) -> tuple[float, float, float]:
-        amp = 10.0
-        return (
-            base[0] + amp * math.sin(t * 0.11 + phase),
-            base[1] + amp * math.sin(t * 0.13 + phase * 1.7),
-            base[2] + amp * math.sin(t * 0.09 + phase * 2.3),
-        )
-
-    c00 = _corner((6, 8, 14), 0.0)
-    c10 = _corner((10, 6, 12), 1.2)
-    c01 = _corner((4, 12, 10), 2.1)
-    c11 = _corner((8, 5, 16), 3.0)
-    top = c00[0] * (1 - xs) + c10[0] * xs, c00[1] * (1 - xs) + c10[1] * xs, c00[2] * (1 - xs) + c10[2] * xs
-    bot = c01[0] * (1 - xs) + c11[0] * xs, c01[1] * (1 - xs) + c11[1] * xs, c01[2] * (1 - xs) + c11[2] * xs
-    b = np.clip(top[0] * (1 - ys) + bot[0] * ys, 0, 255)
-    g = np.clip(top[1] * (1 - ys) + bot[1] * ys, 0, 255)
-    r = np.clip(top[2] * (1 - ys) + bot[2] * ys, 0, 255)
-    out = np.zeros((h, w, 4), dtype=np.uint8)
-    out[:, :, 0] = b.astype(np.uint8)
-    out[:, :, 1] = g.astype(np.uint8)
-    out[:, :, 2] = r.astype(np.uint8)
-    out[:, :, 3] = 255
-    return out
 
 
 class _AudioLevelsSimulator:
@@ -1225,7 +1191,7 @@ class NowPlayingScreenWidget:
     def _render_frame_bgra(self) -> np.ndarray:
         st = self._state
         t_mono = time.monotonic()
-        out = _animated_background_bgra(t_mono)
+        out = _fallback_base_bgra()
         chrome = self._render_svg_base()
         self._paste_patch(out, chrome, 0, 0)
 
@@ -1307,29 +1273,6 @@ class NowPlayingScreenWidget:
             tx = tc_x + max(0, (_TC_W - tw) // 2)
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
-
-        progress_edge_x = _BAR_L + played_w
-        vline_y0 = _BADGE_Y + _PROGRESS_VLINE_TRIM
-        vline_y1 = (_TC_Y + _TC_H) - _PROGRESS_VLINE_TRIM
-        _draw_vertical_stroke_bgra(
-            out,
-            progress_edge_x,
-            vline_y0,
-            vline_y1,
-            stroke_bgr=_COLOR_ACCENT_BGR,
-            stroke=_BAR_STROKE,
-        )
-
-        _draw_rounded_rect_stroke_bgra(
-            out,
-            _BAR_L,
-            _BAR_T,
-            _BAR_W,
-            _BAR_H,
-            stroke_bgr=_COLOR_ACCENT_BGR,
-            radius=_BAR_RX,
-            stroke=_BAR_STROKE,
-        )
 
         if st.audio_levels_sim:
             meter_levels = self._audio_sim.levels(t_mono)
