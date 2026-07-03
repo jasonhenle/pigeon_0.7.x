@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.compositing import alpha_blend_bgra_over_bgr, lerp_bgr_red_monochrome
+from pigeon.compositing import alpha_blend_bgra_over_bgr, cv_resize_interp, lerp_bgr_red_monochrome
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold, resolve_ui_font_medium
 from pigeon.image_ui_protocol import load_image_bgra
@@ -147,6 +147,9 @@ _AUDIO_CFG_BOX_H = 48
 _VOLUME_X = 489
 _VOLUME_Y = 455
 _VOLUME_SIZE = 60
+
+# Multichannel meter simulation (key 6) — off until HDMI audio levels are wired.
+_AUDIO_MIX_UI_ENABLED = False
 
 # Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px.
 _AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
@@ -747,6 +750,32 @@ def _paste_rounded_bgra(
         roi[:] = alpha_blend_bgra_over_bgr(roi, sub)
 
 
+def _fit_tt_in_bar_bgra(src_bgra: np.ndarray, max_w: int, inner_h: int) -> tuple[np.ndarray, int, int]:
+    """Scale TT to fit; left-aligned in ``max_w``, vertically centered in ``inner_h``."""
+    if src_bgra is None or src_bgra.size == 0 or max_w < 1 or inner_h < 1:
+        return np.zeros((max(1, inner_h), max(1, max_w), 4), dtype=np.uint8), 0, 0
+    sh, sw = src_bgra.shape[:2]
+    if sh < 1 or sw < 1:
+        return np.zeros((inner_h, max_w, 4), dtype=np.uint8), 0, 0
+    scale = min(max_w / float(sw), inner_h / float(sh))
+    tw = max(1, int(round(sw * scale)))
+    th = max(1, int(round(sh * scale)))
+    resized = cv2.resize(
+        src_bgra, (tw, th), interpolation=cv_resize_interp(sw, sh, tw, th)
+    )
+    out = np.zeros((inner_h, max_w, 4), dtype=np.uint8)
+    y0 = max(0, (inner_h - th) // 2)
+    out[y0 : y0 + th, :tw] = resized
+    nz = out[:, :, 3] > 0
+    if np.any(nz):
+        ys, xs = np.nonzero(nz)
+        ink_w = int(xs.max()) - int(xs.min()) + 1
+        ink_h = int(ys.max()) - int(ys.min()) + 1
+    else:
+        ink_w, ink_h = tw, th
+    return out, ink_w, ink_h
+
+
 def _layout_tt_and_backdrop_rects(
     tt_bgra: np.ndarray | None,
     backdrop_bgr: np.ndarray | None,
@@ -764,16 +793,9 @@ def _layout_tt_and_backdrop_rects(
     if tt_bgra is not None and tt_bgra.size > 0:
         trimmed = _trim_visible_bgra(tt_bgra)
         max_tt_w = max(8, inner_w - gap - min_bd_w)
-        tt_fit = _image_contain_center_bgra(trimmed, max_tt_w, inner_h)
-        nz = tt_fit[:, :, 3] > 0
-        if np.any(nz):
-            ys, xs = np.nonzero(nz)
-            tt_w = int(xs.max()) - int(xs.min()) + 1
-            tt_h = int(ys.max()) - int(ys.min()) + 1
-        else:
-            tt_w, tt_h = tt_fit.shape[1], tt_fit.shape[0]
+        tt_fit, tt_w, tt_h = _fit_tt_in_bar_bgra(trimmed, max_tt_w, inner_h)
     tt_x = inner_x
-    tt_y = inner_y + max(0, (inner_h - tt_h) // 2)
+    tt_y = inner_y
     bd_x = tt_x + tt_w + gap
     bd_y = inner_y
     bd_w = max(8, inner_x + inner_w - bd_x)
@@ -1158,7 +1180,9 @@ class NowPlayingScreenWidget:
         ):
             changed = True
         _ = service_badge_bgra  # service label text only (``04_widget_now_playing_service_text``)
-        if audio_levels_sim is not None and self.set_audio_levels_sim(bool(audio_levels_sim)):
+        if _AUDIO_MIX_UI_ENABLED and audio_levels_sim is not None and self.set_audio_levels_sim(
+            bool(audio_levels_sim)
+        ):
             changed = True
         _ = played_text  # elapsed shown via progress bar width only in this layout
         return changed
@@ -1167,7 +1191,6 @@ class NowPlayingScreenWidget:
         st = self._state
         bd_id = id(self._backdrop_bgr) if self._backdrop_bgr is not None else None
         tt_id = id(self._tt_bgra) if self._tt_bgra is not None else None
-        anim_bucket = int(time.monotonic() * 8)
         return (
             round(st.progress, 6),
             st.remaining_text,
@@ -1185,11 +1208,10 @@ class NowPlayingScreenWidget:
             st.indicator_receiver,
             st.indicator_tmdb,
             st.indicator_audio,
-            st.audio_levels_sim,
             bd_id,
             tt_id,
             int(datetime.now().strftime("%H%M%S")),
-            anim_bucket,
+            int(time.monotonic() * 8) if _AUDIO_MIX_UI_ENABLED and st.audio_levels_sim else 0,
         )
 
     def _paste_patch(self, canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
@@ -1284,12 +1306,10 @@ class NowPlayingScreenWidget:
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
-        if st.audio_levels_sim:
+        if _AUDIO_MIX_UI_ENABLED and st.audio_levels_sim:
             meter_levels = self._audio_sim.levels(t_mono)
-        else:
-            meter_levels = {name: 0.0 for name, *_ in _AUDIO_CHANNELS}
-        _draw_audio_levels_bgra(out, meter_levels)
-        _draw_audio_channel_labels_bgra(out)
+            _draw_audio_levels_bgra(out, meter_levels)
+            _draw_audio_channel_labels_bgra(out)
 
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
