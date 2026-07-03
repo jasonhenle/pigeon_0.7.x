@@ -104,6 +104,12 @@ _INDICATOR_LAYER_LOGICAL: tuple[tuple[str, str], ...] = (
     ("01_icon_indicator_tmdb", "indicator_tmdb"),
 )
 
+# Illustrator ``id`` attrs as authored in ``now_playing_test_070326.svg`` (leading ``_0``).
+_DIRECT_STRIP_SVG_IDS: tuple[str, ...] = (
+    "_05_widget_audio_config_text",
+    "_05_widget_audio_config_volume_text",
+)
+
 
 def _encode_svg_layer_id(logical_id: str) -> str:
     """Map ``07_background`` → ``_x30_7_x5F_background`` (Illustrator XML id encoding)."""
@@ -369,6 +375,8 @@ def apply_now_playing_svg_state(root: ET.Element, state: NowPlayingScreenState) 
     _replace_background_with_black(root)
     for logical_id in _HIDE_LAYER_LOGICAL:
         _remove_by_logical_id(root, logical_id)
+    for element_id in _DIRECT_STRIP_SVG_IDS:
+        _remove_element_by_id(root, element_id)
     _remove_layers_by_id_substrings(root, _EXTRA_HIDE_ID_SUBSTRINGS)
     _apply_indicator_colors(root, state)
 
@@ -1391,11 +1399,24 @@ class NowPlayingScreenWidget:
 
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
-            cfg_patch, _, th = _fit_text_patch(
+            cfg_patch, pw, th = _fit_text_patch(
                 cfg_line,
                 size_px=max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE))),
                 fill_rgb=(237, 28, 36),
                 bold=True,
+            )
+            # Alpha-compositing live text over baked SVG demo ink leaves both visible
+            # when a strip pass misses; wipe the band first (chrome bg is black here).
+            wipe_h = max(int(th) + 6, max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE))) + 8)
+            wipe_w = min(int(DESIGN_W) - _AUDIO_CFG_TEXT_X, max(int(pw) + 8, 320))
+            _draw_rounded_rect_bgra(
+                out,
+                _AUDIO_CFG_TEXT_X - 2,
+                _AUDIO_CFG_TEXT_Y - wipe_h,
+                wipe_w,
+                wipe_h,
+                fill_bgr=_COLOR_BG_BGR,
+                radius=0,
             )
             self._paste_patch(
                 out,
