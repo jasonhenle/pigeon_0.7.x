@@ -9,6 +9,7 @@ clock, and programmatic overlays) are drawn programmatically on top.
 from __future__ import annotations
 
 import io
+import math
 import os
 import random
 import re
@@ -943,23 +944,31 @@ def _compose_played_stroke_bgra(played_w: int) -> np.ndarray | None:
 
 
 class _AudioLevelsSimulator:
-    """Snappy non-repeating vertical meter simulation for development."""
+    """Smooth non-repeating vertical meter simulation for development."""
+
+    # Time constant for exponential easing toward the target (seconds).
+    _TAU_S = 0.09
 
     def __init__(self) -> None:
         self._targets: dict[str, float] = {name: 0.2 for name, *_ in _AUDIO_CHANNELS}
         self._current: dict[str, float] = dict(self._targets)
         self._next_jump = 0.0
+        self._last_t: float | None = None
         self._rng = random.Random()
 
     def levels(self, t: float) -> dict[str, float]:
         if t >= self._next_jump:
             for name, *_ in _AUDIO_CHANNELS:
                 self._targets[name] = self._rng.uniform(0.04, 1.0)
-            self._next_jump = t + self._rng.uniform(0.07, 0.32)
+            self._next_jump = t + self._rng.uniform(0.14, 0.45)
+        dt = 1.0 / 30.0 if self._last_t is None else max(0.0, min(0.25, t - self._last_t))
+        self._last_t = t
+        # Frame-rate independent smoothing: same visual speed at any composite cadence.
+        k = 1.0 - math.exp(-dt / self._TAU_S)
         for name, *_ in _AUDIO_CHANNELS:
             cur = self._current[name]
             tgt = self._targets[name]
-            self._current[name] = cur + (tgt - cur) * 0.42
+            self._current[name] = cur + (tgt - cur) * k
         return dict(self._current)
 
 
@@ -1297,7 +1306,7 @@ class NowPlayingScreenWidget:
             bd_id,
             tt_id,
             int(datetime.now().strftime("%H%M%S")),
-            int(time.monotonic() * 8) if st.audio_levels_sim else 0,
+            int(time.monotonic() * 30) if st.audio_levels_sim else 0,
         )
 
     def _paste_patch(self, canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:

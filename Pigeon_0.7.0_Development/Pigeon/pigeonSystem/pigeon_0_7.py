@@ -9999,7 +9999,12 @@ def main() -> int:
                 _schedule_render_oneshot(delay)
 
             def _next_render_ms() -> int:
-                return frame_interval_ms if playing else paused_interval_ms
+                if playing:
+                    return frame_interval_ms
+                # Audio meter sim animates continuously; keep ~30 FPS while active.
+                if audio_levels_sim_holder[0] and _use_new_now_playing_ui():
+                    return 33
+                return paused_interval_ms
 
             # With ext + splash, only count this window **after** splash removal.
             _startup_elapsed = -1.0
@@ -10135,9 +10140,11 @@ def main() -> int:
             tmdb_flag_badge_on = bool(tmdb_quality_error_flag[0])
             tmdb_flag_badge_cache_key = 1 if tmdb_flag_badge_on else 0
 
+            audio_sim_animating = bool(audio_levels_sim_holder[0]) and _use_new_now_playing_ui()
             if (
                 not playing
                 and not mic_eq_needs_composite
+                and not audio_sim_animating
                 and not brightness_animating
                 and not idle_dim_animating
                 and not location_toast_animating
