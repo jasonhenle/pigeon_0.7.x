@@ -148,15 +148,17 @@ _TC_H = 50
 _TC_Y = 247
 
 # Clock + service + audio chrome (layers 02/05).
-_CLOCK_X = 520
+# Clock right edge aligns to the rightmost status dot (``01_icon_indicator_tmdb`` in SVG).
+_STATUS_INDICATOR_TMDB_CX = 753
+_STATUS_INDICATOR_DOT_R = 8
+_CLOCK_RIGHT_X = _STATUS_INDICATOR_TMDB_CX + _STATUS_INDICATOR_DOT_R
 _CLOCK_Y = 405
 _CLOCK_SIZE_PX = 60
-_CLOCK_PATCH_W = 280
-_CLOCK_PATCH_H = 68
 
 _SERVICE_TEXT_X = 522
 _SERVICE_TEXT_Y = 452
 _SERVICE_TEXT_SIZE_PX = 30
+_SERVICE_MIN_GAP_AFTER_VOLUME = 24
 
 # Audio config line (SVG ``05_widget_audio_config_text``).
 _AUDIO_CFG_TEXT_X = 46
@@ -1349,23 +1351,10 @@ class NowPlayingScreenWidget:
                 self._paste_patch(out, stroke_crop, _BAR_L, _BAR_T)
 
         if st.show_paused:
-            _, (bd_x, bd_y, bd_w, bd_h), _, _ = _layout_tt_and_backdrop_rects(
-                self._tt_bgra, self._backdrop_bgr
-            )
-            if bd_w >= 48 and bd_h >= 24:
-                pad_x = max(3, int(round(bd_w * 0.07)))
-                pad_y = max(3, int(round(bd_h * 0.18)))
-                pw = max(8, bd_w - 2 * pad_x)
-                ph = max(8, bd_h - 2 * pad_y)
-                px = bd_x + max(0, (bd_w - pw) // 2)
-                py = bd_y + max(0, (bd_h - ph) // 2)
-            else:
-                pad_x = max(3, int(round(_BAR_W * 0.07)))
-                pad_y = max(3, int(round(_BAR_H * 0.18)))
-                pw = max(8, _BAR_W - 2 * pad_x)
-                ph = max(8, _BAR_H - 2 * pad_y)
-                px = _BAR_L + max(0, (_BAR_W - pw) // 2)
-                py = _BAR_T + max(0, (_BAR_H - ph) // 2)
+            pw = _BAR_W
+            ph = _BAR_H
+            px = _BAR_L
+            py = _BAR_T
             _paused_pad = max(4, int(round(min(pw, ph) * 0.09)))
             paused = _text_patch_bgra(
                 "paused",
@@ -1443,6 +1432,7 @@ class NowPlayingScreenWidget:
             )
 
         vol_line = _receiver_volume_display_line(st.volume)
+        vol_right_x = _VOLUME_X
         if vol_line:
             vol_patch, _, _ = _fit_text_patch(
                 vol_line,
@@ -1451,17 +1441,17 @@ class NowPlayingScreenWidget:
                 bold=True,
             )
             self._paste_patch(out, vol_patch, _VOLUME_X, _VOLUME_Y - _sy(26))
+            vol_right_x = _VOLUME_X + int(vol_patch.shape[1])
 
-        clk_patch = _text_patch_bgra(
+        clk_patch, clk_tw, clk_th = _fit_text_patch(
             _clock_text(),
-            _CLOCK_PATCH_W,
-            _CLOCK_PATCH_H,
-            align="left",
-            fill_rgba=(237, 28, 36, 255),
-            fit_max_h=_CLOCK_SIZE_PX,
+            size_px=_CLOCK_SIZE_PX,
+            fill_rgb=(237, 28, 36),
+            bold=True,
+            align="right",
         )
-        clk_h = int(clk_patch.shape[0])
-        self._paste_patch(out, clk_patch, _CLOCK_X, _CLOCK_Y - clk_h + max(4, _sy(8)))
+        clk_x = _CLOCK_RIGHT_X - clk_tw
+        self._paste_patch(out, clk_patch, clk_x, _CLOCK_Y - clk_th + max(4, _sy(8)))
 
         service_text = str(st.badge_label or "").strip()
         if service_text:
@@ -1471,7 +1461,8 @@ class NowPlayingScreenWidget:
                 fill_rgb=(237, 28, 36),
                 bold=True,
             )
-            self._paste_patch(out, svc_patch, _SERVICE_TEXT_X, _SERVICE_TEXT_Y - th)
+            svc_x = max(_SERVICE_TEXT_X, vol_right_x + _SERVICE_MIN_GAP_AFTER_VOLUME)
+            self._paste_patch(out, svc_patch, svc_x, _SERVICE_TEXT_Y - th)
 
         return out
 
