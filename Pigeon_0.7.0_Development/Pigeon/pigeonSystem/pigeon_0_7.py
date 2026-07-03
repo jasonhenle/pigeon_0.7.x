@@ -1709,31 +1709,42 @@ def main() -> int:
                 def finish_apply() -> None:
                     update_check_state["applying"] = False
                     update_btn.configure(state=tk.NORMAL)
-                    try:
-                        progress.grab_release()
-                        progress.destroy()
-                    except tk.TclError:
-                        pass
                     if result.ok:
-                        messagebox.showinfo("Update complete", result.message, parent=root)
+                        status_var.set("Update complete — restarting Pigeon…")
                         update_check_state["update_available"] = False
                         if result.remote_version:
                             update_check_state["remote_version"] = result.remote_version
                         else:
                             update_check_state["remote_version"] = remote
                         _sync_update_button_style()
-                        if messagebox.askyesno(
-                            "Restart Pigeon",
-                            "Quit now so you can relaunch the updated version?",
-                            parent=root,
-                        ):
+
+                        def _restart_and_exit() -> None:
+                            try:
+                                progress.grab_release()
+                                progress.destroy()
+                            except tk.TclError:
+                                pass
+                            try:
+                                from pigeon.github_update import restart_pigeon_after_update
+
+                                restart_pigeon_after_update(install_root)
+                            except Exception:
+                                pass
                             root.quit()
-                    else:
-                        messagebox.showerror(
-                            "Update failed",
-                            result.message,
-                            parent=root,
-                        )
+
+                        root.after(400, _restart_and_exit)
+                        return
+
+                    try:
+                        progress.grab_release()
+                        progress.destroy()
+                    except tk.TclError:
+                        pass
+                    messagebox.showerror(
+                        "Update failed",
+                        result.message,
+                        parent=root,
+                    )
 
                 root.after(0, finish_apply)
 
@@ -1746,11 +1757,12 @@ def main() -> int:
             local = version_string()
             if not messagebox.askyesno(
                 "Updates",
-                f"Download and install the latest Pigeon from GitHub?\n\n"
+                f"Download, install, and restart Pigeon from GitHub?\n\n"
                 f"Installed: {local}\n\n"
                 f"• Uses curl only (public repo — no GitHub token)\n"
                 f"• App code and pigeonAssets are updated\n"
-                f"• Settings in ~/.pigeon_0_6 are kept\n\n"
+                f"• Settings in ~/.pigeon_0_6 are kept\n"
+                f"• Pigeon will restart automatically when finished — no further steps\n\n"
                 f"Continue?",
                 parent=root,
             ):
@@ -1764,11 +1776,11 @@ def main() -> int:
                 f"A newer Pigeon is on GitHub.\n\n"
                 f"Installed: {local}\n"
                 f"Latest:    {remote}\n\n"
-                f"Install now?\n\n"
+                f"Download, install, and restart Pigeon now?\n\n"
                 f"• App code and UI assets (pigeonAssets) will be updated from GitHub\n"
                 f"• Settings stay in ~/.pigeon_0_6 (devices, TMDb key, pairing)\n"
-                f"• Cached TMDb downloads in the app folder are kept\n\n"
-                f"You will need to quit and relaunch Pigeon when finished.",
+                f"• Cached TMDb downloads in the app folder are kept\n"
+                f"• Pigeon will restart automatically when finished — no further steps",
                 parent=root,
             ):
                 return

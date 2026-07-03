@@ -42,6 +42,88 @@ class ApplyUpdateResult:
     remote_version: str | None = None
 
 
+def _find_launcher_script(install_root: Path) -> Path | None:
+    installer = install_root / _INSTALLER_DIR
+    for name in _LAUNCHER_NAMES:
+        for base in (installer, install_root):
+            p = base / name
+            if p.is_file():
+                return p
+    return None
+
+
+def restart_pigeon_after_update(install_root: Path) -> tuple[bool, str]:
+    """
+    Schedule a post-update restart (systemd on Pi/Linux, else relaunch installer script).
+
+    Safe to call from the Tk thread while the current process is still running; the new
+    instance starts after this one exits (or systemd replaces the service).
+    """
+    install_root = Path(safe_subprocess_path(install_root.resolve()))
+
+    if sys.platform.startswith("linux"):
+        systemctl = shutil.which("systemctl")
+        if systemctl:
+            for unit in ("pigeon.service", "pigeon"):
+                for cmd in (
+                    [systemctl, "--user", "restart", unit],
+                    [systemctl, "restart", unit],
+                ):
+                    try:
+                        subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                            env=_minimal_subprocess_env(),
+                        )
+                        return True, f"systemd restart ({unit})"
+                    except OSError:
+                        continue
+                sudo = shutil.which("sudo")
+                if sudo:
+                    try:
+                        subprocess.Popen(
+                            [sudo, "-n", systemctl, "restart", unit],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                            env=_minimal_subprocess_env(),
+                        )
+                        return True, f"sudo systemctl restart ({unit})"
+                    except OSError:
+                        continue
+
+    launcher = _find_launcher_script(install_root)
+    if launcher is None:
+        return False, "no launcher script found"
+
+    try:
+        if sys.platform == "darwin" and launcher.suffix == ".command":
+            open_bin = shutil.which("open") or "/usr/bin/open"
+            subprocess.Popen(
+                [open_bin, safe_subprocess_path(launcher)],
+                cwd=safe_subprocess_path(install_root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=_minimal_subprocess_env(),
+            )
+        else:
+            bash = shutil.which("bash") or "/bin/bash"
+            subprocess.Popen(
+                [bash, safe_subprocess_path(launcher)],
+                cwd=safe_subprocess_path(install_root),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=_minimal_subprocess_env(),
+            )
+    except OSError as e:
+        return False, str(e)
+    return True, f"launcher ({launcher.name})"
+
+
 def _has_launcher(root: Path) -> bool:
     """True if ``root`` has a known launcher in ``installer/`` (or legacy at root)."""
     installer = root / _INSTALLER_DIR
@@ -275,7 +357,7 @@ def _apply_linux_shell_update(install_root: Path) -> ApplyUpdateResult:
         "Updated from GitHub (curl shell).\n\n"
         f"Your settings in {PIGEON_STATE_DIR_TILDE} ({_display_path(state_dir)}) were not changed.\n\n"
         + (combined.split("\n")[-2:] and "\n".join(combined.split("\n")[-2:]) or "Update finished.")
-        + "\n\nQuit and relaunch Pigeon to run the new version.",
+        + "\n\nPigeon will restart automatically.",
         remote_version=ver or None,
     )
 
@@ -361,7 +443,7 @@ def apply_github_update(
             f"Your settings in {PIGEON_STATE_DIR_TILDE} ({_display_path(state_dir)}) were not changed.\n"
             f"Cached TMDb art in the app folder was kept.\n\n"
             f"{msg_a}\n"
-            f"{msg_b}\n\nQuit and relaunch Pigeon to run the new version.",
+            f"{msg_b}\n\nPigeon will restart automatically.",
         )
     except UnicodeEncodeError as e:
         return ApplyUpdateResult(

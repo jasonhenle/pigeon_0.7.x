@@ -121,4 +121,4 @@ bash "${INSTALL_DIR}/installer/run_pigeon_0_7.sh" --bootstrap-only || die "pip b
 VER="$(python3 -c "import importlib.util; p='${INSTALL_DIR}/pigeonSystem/pigeon/version.py'; s=importlib.util.spec_from_file_location('pv', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.version_string())")"
 log "finished — Pigeon ${VER}"
 echo ""
-echo "Pigeon ${VER} installed. Quit and relaunch Pigeon to run the new version."
+echo "Pigeon ${VER} installed. Restarting Pigeon…"
