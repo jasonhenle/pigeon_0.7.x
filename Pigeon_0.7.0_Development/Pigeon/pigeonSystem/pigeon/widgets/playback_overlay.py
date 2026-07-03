@@ -45,10 +45,50 @@ _PAUSED_ROW_OFFSET_Y_PX = 0
 _PAUSED_ROW_RGBA = (238, 240, 245, 242)
 
 
+# Denon ``PS_*`` parameter-set fragments (``MULTEQ=AUDYSSEY``, etc.) — not input/config labels.
+_PS_CFG_FRAGMENT_RE = re.compile(
+    r"^(?:MULTEQ|DYNEQ|DYNVOL|REFLEV)=[^\s|]+$",
+    re.I,
+)
+_PS_CFG_COMBO_RE = re.compile(
+    r"^(?:[A-Z_]+=[^\s|]+\s*\|\s*)+[A-Z_]+=[^\s|]+$",
+    re.I,
+)
+
+_IDLE_AUDIO_PLACEHOLDERS = frozenset(
+    {
+        "no audio",
+        "no signal",
+        "no sig",
+        "unknown",
+        "n/a",
+        "na",
+        "none",
+        "--",
+        "not available",
+        "no input",
+        "unsupported",
+        "lock",
+        "unlock",
+        "hdmi no signal",
+        "no data",
+    }
+)
+
+
 def _receiver_audio_display_line(raw: object) -> str:
     """Strip placeholder / empty receiver strings so the overlay can omit those rows."""
     s = str(raw or "").strip()
-    if not s or s.lower() == "no audio":
+    if not s:
+        return ""
+    low = s.lower()
+    if low in _IDLE_AUDIO_PLACEHOLDERS:
+        return ""
+    if all(c in _VOLUME_PLACEHOLDER_CHARS or c.isspace() for c in s):
+        return ""
+    if _PS_CFG_FRAGMENT_RE.match(s) or _PS_CFG_COMBO_RE.match(s):
+        return ""
+    if re.fullmatch(r"PS_[A-Z0-9_]+(?:=[^\s|]+)?", s, re.I):
         return ""
     return s
 

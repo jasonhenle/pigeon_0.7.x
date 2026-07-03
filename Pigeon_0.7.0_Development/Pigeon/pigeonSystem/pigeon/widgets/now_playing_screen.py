@@ -1331,18 +1331,22 @@ class NowPlayingScreenWidget:
         progress = st.progress if st.trt_substantive else 0.0
         played_w = max(0, min(_BAR_W, int(round(progress * float(_BAR_W)))))
 
+        # During pause, keep played/unplayed chrome but omit TMDb TT + backdrop layers.
+        bar_tt = None if st.show_paused else self._tt_bgra
+        bar_backdrop = None if st.show_paused else self._backdrop_bgr
+
         unplayed_group = _compose_bar_group_bgra(
             played=False,
-            tt_bgra=self._tt_bgra,
-            backdrop_bgr=self._backdrop_bgr,
+            tt_bgra=bar_tt,
+            backdrop_bgr=bar_backdrop,
         )
         self._paste_patch(out, unplayed_group, _BAR_L, _BAR_T)
 
         if played_w > 0:
             played_group = _compose_bar_group_bgra(
                 played=True,
-                tt_bgra=self._tt_bgra,
-                backdrop_bgr=self._backdrop_bgr,
+                tt_bgra=bar_tt,
+                backdrop_bgr=bar_backdrop,
             )
             played_crop = _reveal_crop_bgra_left(played_group, played_w)
             if played_crop is not None:
@@ -1417,26 +1421,26 @@ class NowPlayingScreenWidget:
 
         _draw_audio_channel_labels_bgra(out)
 
+        # Always wipe the audio-config band so SVG demo ink or stale pixels never show
+        # when the receiver line is empty (idle / standby / filtered placeholders).
+        _audio_cfg_wipe_h = max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE)) + 8)
+        _audio_cfg_wipe_w = min(int(DESIGN_W) - _AUDIO_CFG_TEXT_X, 420)
+        _draw_rounded_rect_bgra(
+            out,
+            _AUDIO_CFG_TEXT_X - 2,
+            _AUDIO_CFG_TEXT_Y - _audio_cfg_wipe_h,
+            _audio_cfg_wipe_w,
+            _audio_cfg_wipe_h,
+            fill_bgr=_COLOR_BG_BGR,
+            radius=0,
+        )
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
-            cfg_patch, pw, th = _fit_text_patch(
+            cfg_patch, _, th = _fit_text_patch(
                 cfg_line,
                 size_px=max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE))),
                 fill_rgb=(237, 28, 36),
                 bold=True,
-            )
-            # Alpha-compositing live text over baked SVG demo ink leaves both visible
-            # when a strip pass misses; wipe the band first (chrome bg is black here).
-            wipe_h = max(int(th) + 6, max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE))) + 8)
-            wipe_w = min(int(DESIGN_W) - _AUDIO_CFG_TEXT_X, max(int(pw) + 8, 320))
-            _draw_rounded_rect_bgra(
-                out,
-                _AUDIO_CFG_TEXT_X - 2,
-                _AUDIO_CFG_TEXT_Y - wipe_h,
-                wipe_w,
-                wipe_h,
-                fill_bgr=_COLOR_BG_BGR,
-                radius=0,
             )
             self._paste_patch(
                 out,

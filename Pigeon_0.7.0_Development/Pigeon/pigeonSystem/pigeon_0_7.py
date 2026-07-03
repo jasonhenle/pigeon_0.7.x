@@ -1571,6 +1571,26 @@ def main() -> int:
                 return False
             return "Paused" in ds or "Pause" in ds
 
+        def _receiver_audio_lines_eligible() -> bool:
+            """True when substantive playback (playing, paused, or live) warrants AVR audio lines."""
+            lm_raw = apple_tv_auto_state.get("last_metadata")
+            lm = lm_raw if isinstance(lm_raw, dict) else None
+            if lm is None:
+                return False
+            if _atv_metadata_is_content_idle(lm):
+                return False
+            clk = apple_tv_playback_clock
+            if clk.get("live_mode"):
+                return True
+            ds = str(lm.get("device_state") or "")
+            if "Playing" in ds:
+                return True
+            if _show_paused_row_overlay():
+                return True
+            if clk.get("has_sync") and clk.get("playing"):
+                return True
+            return False
+
         apple_tv_dashboard_track: dict[str, object] = {"last_poll_ok": None, "consecutive_fail": 0}
         content_indicator_cv_holder: list[tk.Canvas | None] = [None]
         _LISTBOX_BG = "#1a1a1e"
@@ -2425,6 +2445,9 @@ def main() -> int:
                     remaining_text = _format_hmmss(int(pair[1]))
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
+            if not _receiver_audio_lines_eligible():
+                inc = ""
+                cfg = ""
             vol = ""
             if compose_playback_volume_widget_line is not None:
                 vol = compose_playback_volume_widget_line(
