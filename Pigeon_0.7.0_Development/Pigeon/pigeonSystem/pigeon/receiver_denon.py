@@ -253,11 +253,30 @@ def _schemes_for_host(host: str) -> tuple[str, ...]:
     return ("https", "http")
 
 
+# Last working (host_variant, scheme) per normalized input host — probed cold only
+# on first poll or after the cached endpoint stops answering.
+_LAST_GOOD_ENDPOINT: dict[str, tuple[str, str]] = {}
+
+# Cap any single HTTP request so cold probes can't each consume the whole poll budget.
+_PER_REQUEST_TIMEOUT_CAP_S = 2.5
+_MIN_REQUEST_TIMEOUT_S = 0.25
+
+
+def _budget_timeout(timeout: float, deadline: float | None) -> float:
+    """Per-request timeout bounded by the remaining poll deadline (<=0 means skip)."""
+    t = min(float(timeout), _PER_REQUEST_TIMEOUT_CAP_S)
+    if deadline is not None:
+        t = min(t, deadline - time.monotonic())
+    return t
+
+
 def _merge_zone_status(
     host: str,
     timeout: float,
     *,
     scheme_order: tuple[str, ...] | None = None,
+    deadline: float | None = None,
+    cache_key: str | None = None,
 ) -> dict[str, str] | None:
     schemes = scheme_order if scheme_order is not None else _schemes_for_host(host)
     for scheme in schemes:
@@ -265,7 +284,10 @@ def _merge_zone_status(
         ok_any = False
         last_body: str | None = None
         for path in _STATUS_PATHS:
-            body = _fetch(host, path, timeout, scheme=scheme)
+            t = _budget_timeout(timeout, deadline)
+            if t < _MIN_REQUEST_TIMEOUT_S:
+                return None
+            body = _fetch(host, path, t, scheme=scheme)
             if not body:
                 continue
             ok_any = True
@@ -274,12 +296,16 @@ def _merge_zone_status(
         if ok_any and not merged and last_body and _body_looks_like_denon_zone_xml(last_body):
             merged = {"Power": "ON"}
         # Many models block MainZone GET on :80 but still answer AppCommand POST on :8080 — merge both.
-        ac = _merge_appcommand_status(host, timeout, scheme=scheme)
-        if ac:
-            combo = dict(merged)
-            combo.update(ac)
-            merged = combo
+        t = _budget_timeout(timeout, deadline)
+        if t >= _MIN_REQUEST_TIMEOUT_S:
+            ac = _merge_appcommand_status(host, t, scheme=scheme)
+            if ac:
+                combo = dict(merged)
+                combo.update(ac)
+                merged = combo
         if merged:
+            if cache_key:
+                _LAST_GOOD_ENDPOINT[cache_key] = (host, scheme)
             return merged
     return None
 
@@ -297,11 +323,32 @@ def _receiver_probe_host_variants(host: str) -> list[str]:
     return variants
 
 
-def _merge_zone_status_with_fallback(host: str, timeout: float) -> dict[str, str] | None:
-    for h in _receiver_probe_host_variants(host):
-        d = _merge_zone_status(h, timeout)
+def _merge_zone_status_with_fallback(
+    host: str,
+    timeout: float,
+    *,
+    deadline: float | None = None,
+) -> dict[str, str] | None:
+    hn = _normalize_host(host)
+    variants = _receiver_probe_host_variants(host)
+    cached = _LAST_GOOD_ENDPOINT.get(hn)
+    if cached is not None:
+        ch, cs = cached
+        # Try the endpoint that answered last time first, with its known scheme.
+        d = _merge_zone_status(
+            ch, timeout, scheme_order=(cs,), deadline=deadline, cache_key=hn
+        )
         if d:
             return d
+        variants = [v for v in variants if v != ch]
+    for h in variants:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        d = _merge_zone_status(h, timeout, deadline=deadline, cache_key=hn)
+        if d:
+            return d
+    # Nothing answered: forget the cached endpoint so the next poll re-probes fully.
+    _LAST_GOOD_ENDPOINT.pop(hn, None)
     return None
 
 
@@ -340,7 +387,10 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
     if not h:
         return ReceiverPollResult(False, "", "", "")
 
-    d = _merge_zone_status_with_fallback(h, timeout)
+    # One shared deadline bounds the whole HTTP probe phase; without it, a dead
+    # receiver walks 3 host variants x 2 schemes x 3 endpoints at full timeout each.
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    d = _merge_zone_status_with_fallback(h, timeout, deadline=deadline)
     if not d:
         return ReceiverPollResult(False, "", "", "")
     # AVR-X3800H and other newer HEOS-era Denon models often expose richer
@@ -356,11 +406,13 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
                 continue
             d[k] = v
 
-    power = _denon_field_ci(d, "Power", "ZonePower").upper()
+    power = _denon_field_ci(d, "Power", "ZonePower", "PW", "ZM").upper()
     if power in ("OFF", "STANDBY"):
         return ReceiverPollResult(True, "", "", telnet_state)
 
-    mute = _denon_field_ci(d, "Mute").lower()
+    # Mute comes from HTTP ``Mute`` or telnet ``MU``; firmware truthy forms vary.
+    mute = _denon_field_ci(d, "Mute", "MU").strip().lower()
+    muted = mute in ("on", "1", "true", "yes")
     mv = _denon_field_ci(
         d,
         "MV_DB",
@@ -370,11 +422,14 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
         "DispVolume",
         "MainZoneVolume",
     )
+    if mv and re.fullmatch(r"\d{2,3}", mv.strip()):
+        # Bare 2-3 digit values are Denon volume steps, not dB (e.g. "575" = -22.5dB).
+        mv = _denon_mv_to_db(mv.strip()) or mv
     if not mv:
         mv_step = _denon_field_ci(d, "MV")
         if mv_step and re.fullmatch(r"\d{2,3}", mv_step.strip()):
             mv = _denon_mv_to_db(mv_step.strip())
-    if mute == "on":
+    if muted:
         vol_s = "mute"
     elif mv:
         low_mv = mv.lower()
@@ -389,21 +444,22 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
         if v:
             incoming = v
             break
-    for key in (
-        "HDMIAudio",
-        "HDsignalMode",
-        "HDMISig",
-        "InputSignal",
-        "AudioInputSignal",
-        "DigitalInputSignal",
-        "signalDisplay",
-        "AudioCodec",
-        "CodecDisp",
-    ):
-        v = d.get(key)
-        if v:
-            incoming = v
-            break
+    if not incoming:
+        for key in (
+            "HDMIAudio",
+            "HDsignalMode",
+            "HDMISig",
+            "InputSignal",
+            "AudioInputSignal",
+            "DigitalInputSignal",
+            "signalDisplay",
+            "AudioCodec",
+            "CodecDisp",
+        ):
+            v = d.get(key)
+            if v:
+                incoming = v
+                break
     if not incoming:
         for k, v in d.items():
             if not v or len(v) < 2:

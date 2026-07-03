@@ -549,9 +549,7 @@ def _draw_left_rounded_rect_bgra(
     h: int,
     *,
     fill_bgr: tuple[int, int, int],
-    stroke_bgr: tuple[int, int, int] | None = None,
     radius: int = 0,
-    stroke: int = 0,
 ) -> None:
     if w < 1 or h < 1:
         return
@@ -564,13 +562,6 @@ def _draw_left_rounded_rect_bgra(
     patch = np.zeros((lh, lw, 4), dtype=np.uint8)
     patch[:, :, :3] = fill_bgr
     patch[:, :, 3] = mask
-    if stroke_bgr is not None and stroke > 0:
-        edge = cv2.Canny(mask, 50, 150)
-        if stroke > 1:
-            k = max(1, stroke)
-            edge = cv2.dilate(edge, np.ones((k, k), np.uint8))
-        patch[edge > 0, :3] = stroke_bgr
-        patch[edge > 0, 3] = 255
     roi = bgra[y0:y1, x0:x1]
     if roi.shape[2] >= 4:
         roi[:, :, :3] = alpha_blend_bgra_over_bgr(roi[:, :, :3], patch)
@@ -642,34 +633,6 @@ def _draw_rounded_rect_stroke_bgra(
         mask = _rounded_rect_mask(lw, lh, r)
     patch = _stroke_patch_from_mask(mask, stroke_bgr=stroke_bgr, stroke_px=stroke)
     _composite_stroke_patch_bgra(bgra, x0, y0, patch)
-
-
-def _draw_vertical_stroke_bgra(
-    bgra: np.ndarray,
-    x: int,
-    y0: int,
-    y1: int,
-    *,
-    stroke_bgr: tuple[int, int, int] = _COLOR_ACCENT_BGR,
-    stroke: int = 3,
-) -> None:
-    """Vertical progress edge line (matches status-bar stroke weight)."""
-    if y0 > y1:
-        y0, y1 = y1, y0
-    xi = max(0, min(int(DESIGN_W) - 1, int(x)))
-    yt = max(0, int(y0))
-    yb = min(int(DESIGN_H) - 1, int(y1))
-    if yb <= yt:
-        return
-    thickness = max(1, int(stroke))
-    cv2.line(
-        bgra,
-        (xi, yt),
-        (xi, yb),
-        (*stroke_bgr, 255),
-        thickness=thickness,
-        lineType=cv2.LINE_AA,
-    )
 
 
 def _draw_rounded_rect_bgra(
@@ -1070,6 +1033,9 @@ class NowPlayingScreenWidget:
         self._audio_sim = _AudioLevelsSimulator()
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
+        # Rasterized + de-whitened SVG chrome; only indicators / the file itself change it.
+        self._svg_chrome_bgra: np.ndarray | None = None
+        self._svg_chrome_sig: tuple[object, ...] | None = None
 
     @property
     def chrome_visible(self) -> bool:
@@ -1305,25 +1271,48 @@ class NowPlayingScreenWidget:
             st.audio_levels_sim,
             bd_id,
             tt_id,
-            int(datetime.now().strftime("%H%M%S")),
+            # Clock shows h:mm only — invalidate per minute, not per second.
+            int(datetime.now().strftime("%H%M")),
             int(time.monotonic() * 30) if st.audio_levels_sim else 0,
         )
 
     def _paste_patch(self, canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
         _paste_patch_bgra(canvas, patch, x, y)
 
-    def _render_svg_base(self) -> np.ndarray:
+    def _svg_chrome_cache_sig(self) -> tuple[object, ...]:
+        st = self._state
+        path = default_now_playing_svg_path(self._assets_dir)
         try:
-            return render_now_playing_svg_base_bgra(self._state, assets_dir=self._assets_dir)
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            mtime = -1
+        return (
+            str(path),
+            mtime,
+            st.indicator_now_playing,
+            st.indicator_receiver,
+            st.indicator_tmdb,
+            st.indicator_audio,
+        )
+
+    def _render_svg_base(self) -> np.ndarray:
+        """Rasterized + de-whitened SVG chrome, cached until indicators or the file change."""
+        sig = self._svg_chrome_cache_sig()
+        if self._svg_chrome_bgra is not None and self._svg_chrome_sig == sig:
+            return self._svg_chrome_bgra
+        try:
+            base = render_now_playing_svg_base_bgra(self._state, assets_dir=self._assets_dir)
         except (FileNotFoundError, RuntimeError, ImportError):
-            return _fallback_base_bgra()
+            base = _fallback_base_bgra()
+        self._svg_chrome_bgra = _decanvas_white_bgra(base)
+        self._svg_chrome_sig = sig
+        return self._svg_chrome_bgra
 
     def _render_frame_bgra(self) -> np.ndarray:
         st = self._state
         t_mono = time.monotonic()
         out = _fallback_base_bgra()
-        chrome = _decanvas_white_bgra(self._render_svg_base())
-        self._paste_patch(out, chrome, 0, 0)
+        self._paste_patch(out, self._render_svg_base(), 0, 0)
 
         progress = st.progress if st.trt_substantive else 0.0
         played_w = max(0, min(_BAR_W, int(round(progress * float(_BAR_W)))))

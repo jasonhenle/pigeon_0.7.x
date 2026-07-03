@@ -790,6 +790,15 @@ def main() -> int:
         except tk.TclError:
             pass
         startup_ph[0] = None
+        # Splash frames can hold tens of MB (full-window RGB/BGRA per frame);
+        # release them now that the overlay is gone. NameError guard: the caches
+        # only exist when the ext splash path ran.
+        try:
+            _splash_rgb_cache.clear()
+            _splash_bgra_cache.clear()
+            splash_photo[0] = None
+        except NameError:
+            pass
         if post_splash_mono[0] is None:
             post_splash_mono[0] = time.monotonic()
         _finish_post_splash_startup_transition()
@@ -2378,6 +2387,8 @@ def main() -> int:
         # New now-playing screen (070326): default on View 1; key ``1`` toggles vs classic chrome.
         new_now_playing_ui_holder: list[bool] = [True]
         audio_levels_sim_holder: list[bool] = [False]
+        # [filename, decoded BGRA] — avoids re-reading the badge PNG on every composite.
+        _np_badge_bgra_cache: list = ["", None]
         now_playing_screen_widget = None
         if _PIGEON_EXT and NowPlayingScreenWidget is not None:
             now_playing_screen_widget = NowPlayingScreenWidget(
@@ -2438,13 +2449,16 @@ def main() -> int:
             badge_bgra = None
             fn = str(streaming_badge_state.get("filename") or "").strip()
             if fn:
-                from pigeon.image_ui_protocol import load_image_bgra
+                if _np_badge_bgra_cache[0] != fn:
+                    from pigeon.image_ui_protocol import load_image_bgra
 
-                assets_np = Path(_PROJECT_DIR) / "pigeonAssets"
-                try:
-                    badge_bgra = load_image_bgra(assets_np / fn)
-                except Exception:
-                    badge_bgra = None
+                    assets_np = Path(_PROJECT_DIR) / "pigeonAssets"
+                    try:
+                        _np_badge_bgra_cache[1] = load_image_bgra(assets_np / fn)
+                    except Exception:
+                        _np_badge_bgra_cache[1] = None
+                    _np_badge_bgra_cache[0] = fn
+                badge_bgra = _np_badge_bgra_cache[1]
             poster_bgra = _active_tmdb_poster_bgra()
             backdrop_bgr = None
             if backdrop_master_bgr is not None:
@@ -10356,62 +10370,75 @@ def main() -> int:
                 def apply() -> None:
                     rpl = receiver_panel_led_holder[0]
                     try:
-                        denon_ok = r is not None and r.ok
-                        if denon_ok and denon_vol_effective:
-                            denon_vol_cache["effective"] = denon_vol_effective
-                            denon_vol_cache["mono_usable"] = time.monotonic()
-                        try:
-                            from pigeon.app_state import (
-                                read_current_location_id,
-                                read_saved_av_receiver,
-                            )
-                            from pigeon.observed_capability import (
-                                update_observed_capabilities_from_receiver_poll,
-                            )
-
-                            update_observed_capabilities_from_receiver_poll(
-                                str(read_current_location_id() or ""),
-                                read_saved_av_receiver(),
-                                denon_reachable=denon_ok,
-                                denon_volume_usable=bool(denon_vol_effective),
-                                denon_has_incoming=bool(
-                                    r is not None and str(r.incoming or "").strip()
-                                ),
-                                denon_has_config=bool(
-                                    r is not None and str(r.config or "").strip()
-                                ),
-                            )
-                        except Exception:
-                            pass
-                        _refresh_observed_pairing_led_rows()
-                        if r is not None and r.ok:
-                            receiver_telnet_debug_holder[0] = dict(
-                                getattr(r, "telnet_debug", {}) or {}
-                            )
-                            apply_overlay(r.incoming, r.config, merged_volume)
-                            if rpl is not None:
-                                _paint_boolean_led(rpl, True)
-                        elif merged_volume:
-                            receiver_telnet_debug_holder[0] = {}
-                            apply_overlay("", "", merged_volume)
-                            if rpl is not None:
-                                _paint_boolean_led(rpl, False)
-                        else:
-                            receiver_telnet_debug_holder[0] = {}
-                            apply_overlay("", "", "")
-                            if rpl is not None:
-                                _paint_boolean_led(rpl, False)
-                        if roku_app_name:
-                            _sync_streaming_badge_from_playback_sources(
-                                None,
-                                roku_app_name=roku_app_name,
-                            )
+                        _apply_body(rpl)
                     except tk.TclError:
                         pass
+                    finally:
+                        # Never leave the poll loop stuck if anything above threw.
+                        receiver_poll_busy["active"] = False
+
+                def _apply_body(rpl: object) -> None:
+                    denon_ok = r is not None and r.ok
+                    if denon_ok and denon_vol_effective:
+                        denon_vol_cache["effective"] = denon_vol_effective
+                        denon_vol_cache["mono_usable"] = time.monotonic()
+                    try:
+                        from pigeon.app_state import (
+                            read_current_location_id,
+                            read_saved_av_receiver,
+                        )
+                        from pigeon.observed_capability import (
+                            update_observed_capabilities_from_receiver_poll,
+                        )
+
+                        update_observed_capabilities_from_receiver_poll(
+                            str(read_current_location_id() or ""),
+                            read_saved_av_receiver(),
+                            denon_reachable=denon_ok,
+                            denon_volume_usable=bool(denon_vol_effective),
+                            denon_has_incoming=bool(
+                                r is not None and str(r.incoming or "").strip()
+                            ),
+                            denon_has_config=bool(
+                                r is not None and str(r.config or "").strip()
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    _refresh_observed_pairing_led_rows()
+                    if r is not None and r.ok:
+                        receiver_telnet_debug_holder[0] = dict(
+                            getattr(r, "telnet_debug", {}) or {}
+                        )
+                        apply_overlay(r.incoming, r.config, merged_volume)
+                        if rpl is not None:
+                            _paint_boolean_led(rpl, True)
+                    elif merged_volume:
+                        receiver_telnet_debug_holder[0] = {}
+                        apply_overlay("", "", merged_volume)
+                        if rpl is not None:
+                            _paint_boolean_led(rpl, False)
+                    else:
+                        receiver_telnet_debug_holder[0] = {}
+                        apply_overlay("", "", "")
+                        if rpl is not None:
+                            _paint_boolean_led(rpl, False)
+                    if roku_app_name:
+                        _sync_streaming_badge_from_playback_sources(
+                            None,
+                            roku_app_name=roku_app_name,
+                        )
 
                 root.after(0, apply)
 
-            threading.Thread(target=work, daemon=True).start()
+            def work_safe() -> None:
+                try:
+                    work()
+                except Exception:
+                    # Worker died before scheduling apply(); unblock future polls.
+                    receiver_poll_busy["active"] = False
+
+            threading.Thread(target=work_safe, daemon=True).start()
 
         shell.bind("<Configure>", _on_shell_configure)
 

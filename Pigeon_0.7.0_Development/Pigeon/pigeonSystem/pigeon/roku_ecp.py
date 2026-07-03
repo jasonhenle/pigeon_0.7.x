@@ -9,6 +9,7 @@ to the overlay line when found.
 from __future__ import annotations
 
 import re
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -588,18 +589,36 @@ def fetch_roku_playback_line(base_url: str, timeout: float = 3.0) -> tuple[str, 
     return _append_volume_suffix(" · ".join(parts), vol_hint), vol_hint
 
 
+# Probe results per normalized address: (result_base_or_empty, mono_when_probed).
+# The receiver poll calls this every ~750ms for generic Player rows; without a cache
+# each poll re-spends up to 2x the probe timeout on the same non-Roku address.
+_PROBE_CACHE: dict[str, tuple[str, float]] = {}
+_PROBE_OK_TTL_S = 600.0
+_PROBE_FAIL_TTL_S = 60.0
+
+
 def probe_roku_ecp_at_address(address: str, timeout: float = 2.5) -> str:
     """
     If ``http://address:8060`` responds like Roku External Control Protocol, return the normalized
-    base URL; otherwise ``""``.
+    base URL; otherwise ``""``. Results are cached (10 min hit / 60 s miss).
     """
     base = normalize_roku_ecp_base(address)
+    cached = _PROBE_CACHE.get(base)
+    if cached is not None:
+        result, when = cached
+        ttl = _PROBE_OK_TTL_S if result else _PROBE_FAIL_TTL_S
+        if time.monotonic() - when < ttl:
+            return result
+
+    result = ""
     raw = _fetch(f"{base}/query/active-app", timeout=timeout)
     head = (raw or "")[:240].lower()
     if raw and "<?xml" in head and "app" in raw.lower():
-        return base
-    raw2 = _fetch(f"{base}/query/media-player", timeout=timeout)
-    head2 = (raw2 or "")[:240].lower()
-    if raw2 and "<?xml" in head2 and "player" in raw2.lower():
-        return base
-    return ""
+        result = base
+    else:
+        raw2 = _fetch(f"{base}/query/media-player", timeout=timeout)
+        head2 = (raw2 or "")[:240].lower()
+        if raw2 and "<?xml" in head2 and "player" in raw2.lower():
+            result = base
+    _PROBE_CACHE[base] = (result, time.monotonic())
+    return result
