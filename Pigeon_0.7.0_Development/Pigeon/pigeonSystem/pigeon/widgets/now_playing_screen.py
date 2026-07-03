@@ -60,7 +60,6 @@ _Y_SCALE = float(DESIGN_H) / _SVG_H
 
 # Logical Illustrator layer ids (encoded in SVG via _encode_svg_layer_id).
 _HIDE_LAYER_LOGICAL: tuple[str, ...] = (
-    "07_background",
     "04_widget_now_playing_status_bar_played",
     "04_widget_now_playing_status_bar_unplayed",
     "03_widget_now_playing_status_bar_played",
@@ -167,6 +166,7 @@ _AUDIO_LABELS: tuple[tuple[str, int, int], ...] = (
     ("LFE", 200, 408),
 )
 _CONTAINER_RX = 12
+_SERVICE_TEXT_SIZE_PX = 30
 
 @dataclass
 class NowPlayingScreenState:
@@ -288,14 +288,45 @@ _EXTRA_HIDE_ID_SUBSTRINGS: tuple[str, ...] = (
     "_x5F_backdrop_x5F_tmdb_x5F_backdrop",
     "_x5F_backdrop_x5F_tmdb_x5F_color",
     "_x5F_now_x5F_playing_x5F_color_x5F_two",
-    "_x5F_background_",
     "_x5F_audio_x5F_levels_x5F",
     "_x5F_scale",
 )
 
 
+def _replace_background_with_black(root: ET.Element) -> None:
+    """Swap ``07_background`` JPEG art for a flat black fill."""
+    marker = "_x30_7_x5F_background"
+    for el in root.iter():
+        eid = el.get("id") or ""
+        if marker not in eid:
+            continue
+        for child in list(el):
+            el.remove(child)
+        rect = ET.Element(f"{{{SVG_NS}}}rect")
+        rect.set("x", "0")
+        rect.set("y", "0")
+        rect.set("width", str(int(_SVG_W)))
+        rect.set("height", str(int(_SVG_H)))
+        rect.set("fill", _COLOR_BG_HEX)
+        el.insert(0, rect)
+        return
+
+
+def _decanvas_white_bgra(src: np.ndarray, *, threshold: int = 252) -> np.ndarray:
+    """Make PyMuPDF/cairosvg white canvas pixels transparent before compositing."""
+    if src is None or src.size == 0 or src.ndim != 3 or src.shape[2] < 4:
+        return src
+    out = src.copy()
+    rgb = out[:, :, :3]
+    white = (rgb[:, :, 0] >= threshold) & (rgb[:, :, 1] >= threshold) & (rgb[:, :, 2] >= threshold)
+    out[white, 3] = 0
+    return out
+
+
 def apply_now_playing_svg_state(root: ET.Element, state: NowPlayingScreenState) -> None:
     """Mutate SVG before rasterize: strip demo/dynamic layers; recolor status dots."""
+    root.set("style", f"background:{_COLOR_BG_HEX}")
+    _replace_background_with_black(root)
     for logical_id in _HIDE_LAYER_LOGICAL:
         _remove_by_logical_id(root, logical_id)
     _remove_layers_by_id_substrings(root, _EXTRA_HIDE_ID_SUBSTRINGS)
@@ -918,7 +949,6 @@ class NowPlayingScreenWidget:
         self._state = NowPlayingScreenState()
         self._backdrop_bgr: np.ndarray | None = None
         self._tt_bgra: np.ndarray | None = None
-        self._badge_bgra: np.ndarray | None = None
         self._audio_sim = _AudioLevelsSimulator()
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
@@ -1127,23 +1157,7 @@ class NowPlayingScreenWidget:
             label=str(badge_label or ""),
         ):
             changed = True
-        badge_arr = (
-            np.asarray(service_badge_bgra, dtype=np.uint8).copy()
-            if service_badge_bgra is not None and service_badge_bgra.size > 0
-            else None
-        )
-        badge_id = id(badge_arr) if badge_arr is not None else None
-        prev_id = id(self._badge_bgra) if self._badge_bgra is not None else None
-        if badge_id != prev_id:
-            self._badge_bgra = badge_arr
-            changed = True
-        elif badge_arr is not None and self._badge_bgra is not None:
-            if not np.array_equal(badge_arr, self._badge_bgra):
-                self._badge_bgra = badge_arr
-                changed = True
-        elif badge_arr is None and self._badge_bgra is not None:
-            self._badge_bgra = None
-            changed = True
+        _ = service_badge_bgra  # service label text only (``04_widget_now_playing_service_text``)
         if audio_levels_sim is not None and self.set_audio_levels_sim(bool(audio_levels_sim)):
             changed = True
         _ = played_text  # elapsed shown via progress bar width only in this layout
@@ -1174,7 +1188,6 @@ class NowPlayingScreenWidget:
             st.audio_levels_sim,
             bd_id,
             tt_id,
-            id(self._badge_bgra) if self._badge_bgra is not None else None,
             int(datetime.now().strftime("%H%M%S")),
             anim_bucket,
         )
@@ -1192,7 +1205,7 @@ class NowPlayingScreenWidget:
         st = self._state
         t_mono = time.monotonic()
         out = _fallback_base_bgra()
-        chrome = self._render_svg_base()
+        chrome = _decanvas_white_bgra(self._render_svg_base())
         self._paste_patch(out, chrome, 0, 0)
 
         progress = st.progress if st.trt_substantive else 0.0
@@ -1236,18 +1249,15 @@ class NowPlayingScreenWidget:
             fill_bgr=_COLOR_PLAYED_BGR,
             radius=_CONTAINER_RX,
         )
-        if self._badge_bgra is not None:
-            badge_inner = _image_contain_center_bgra(
-                self._badge_bgra, container_w - 8, _CONTAINER_H - 4,
-            )
-            self._paste_patch(out, badge_inner, badge_x + 4, _BADGE_Y + 2)
-        elif st.badge_show and str(st.badge_label or "").strip():
+        service_text = str(st.badge_label or "").strip()
+        if service_text:
             badge_inner = _text_patch_bgra(
-                str(st.badge_label),
+                service_text,
                 container_w,
                 _CONTAINER_H,
                 align="center",
                 fill_rgba=(255, 255, 255, 255),
+                fit_max_h=max(8, _sy(float(_SERVICE_TEXT_SIZE_PX))),
             )
             self._paste_patch(out, badge_inner, badge_x, _BADGE_Y)
 

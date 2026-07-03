@@ -2520,7 +2520,7 @@ def main() -> int:
                     if status_bar_widget is not None
                     else False
                 ),
-                badge_show=bool(badge_bgra is not None or fn or badge_label),
+                badge_show=bool(fn or badge_label),
                 badge_filename=fn,
                 badge_label=badge_label,
                 audio_levels_sim=bool(audio_levels_sim_holder[0]),
