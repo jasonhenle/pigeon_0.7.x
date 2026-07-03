@@ -1036,6 +1036,10 @@ class NowPlayingScreenWidget:
         # Rasterized + de-whitened SVG chrome; only indicators / the file itself change it.
         self._svg_chrome_bgra: np.ndarray | None = None
         self._svg_chrome_sig: tuple[object, ...] | None = None
+        # Fully-composited frame minus the animated meter bars; reused across
+        # audio-sim ticks so each tick only copies + redraws the meters.
+        self._static_bgra: np.ndarray | None = None
+        self._static_sig: tuple[object, ...] | None = None
 
     @property
     def chrome_visible(self) -> bool:
@@ -1044,6 +1048,8 @@ class NowPlayingScreenWidget:
     def clear_cache(self) -> None:
         self._cached_bgra = None
         self._cached_sig = None
+        self._static_bgra = None
+        self._static_sig = None
 
     def set_now_playing_chrome_visible(self, visible: bool) -> bool:
         v = bool(visible)
@@ -1308,9 +1314,9 @@ class NowPlayingScreenWidget:
         self._svg_chrome_sig = sig
         return self._svg_chrome_bgra
 
-    def _render_frame_bgra(self) -> np.ndarray:
+    def _render_static_bgra(self) -> np.ndarray:
+        """Everything except the animated audio meter bars (cached across sim ticks)."""
         st = self._state
-        t_mono = time.monotonic()
         out = _fallback_base_bgra()
         self._paste_patch(out, self._render_svg_base(), 0, 0)
 
@@ -1381,11 +1387,6 @@ class NowPlayingScreenWidget:
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
-        if st.audio_levels_sim:
-            meter_levels = self._audio_sim.levels(t_mono)
-        else:
-            meter_levels = {name: 0.0 for name, *_ in _AUDIO_CHANNELS}
-        _draw_audio_levels_bgra(out, meter_levels)
         _draw_audio_channel_labels_bgra(out)
 
         cfg_line = _audio_config_line(st.incoming, st.config)
@@ -1436,6 +1437,23 @@ class NowPlayingScreenWidget:
 
         return out
 
+    def _render_frame_bgra(self, sig: tuple[object, ...] | None = None) -> np.ndarray:
+        st = self._state
+        if sig is None:
+            sig = self._state_sig()
+        # The last sig element is the audio-sim time bucket; everything else
+        # describes the static (non-meter) content.
+        static_sig = sig[:-1]
+        if self._static_bgra is None or self._static_sig != static_sig:
+            self._static_bgra = self._render_static_bgra()
+            self._static_sig = static_sig
+
+        if not st.audio_levels_sim:
+            return self._static_bgra
+        out = self._static_bgra.copy()
+        _draw_audio_levels_bgra(out, self._audio_sim.levels(time.monotonic()))
+        return out
+
     def bgra_frame(self) -> np.ndarray | None:
         if (
             not self._state.chrome_visible
@@ -1446,7 +1464,7 @@ class NowPlayingScreenWidget:
         if self._cached_bgra is not None and self._cached_sig == sig:
             return self._cached_bgra
         self._cached_sig = sig
-        self._cached_bgra = self._render_frame_bgra()
+        self._cached_bgra = self._render_frame_bgra(sig)
         return self._cached_bgra
 
     def design_blits(self) -> list[DesignPatch]:

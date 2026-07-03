@@ -2815,6 +2815,9 @@ def main() -> int:
                 return False
             if _clock_saver_for_compose(now_mono):
                 return False
+            # New now-playing screen (070326) draws clock, audio config, and volume.
+            if _use_new_now_playing_ui():
+                return False
             return True
 
         def _warm_info_cluster_blits(now_mono: float) -> None:
