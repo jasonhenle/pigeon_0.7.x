@@ -2456,11 +2456,7 @@ def main() -> int:
         def _view_one_uses_now_playing_screen() -> bool:
             if now_playing_screen_widget is None:
                 return False
-            if _effective_display_view() != DisplayView.ONE:
-                return False
-            if status_bar_widget is None or not status_bar_widget.now_playing_chrome_visible:
-                return False
-            return True
+            return _effective_display_view() == DisplayView.ONE
 
         def _sync_now_playing_screen_state() -> None:
             nonlocal skip_cache
@@ -2528,9 +2524,7 @@ def main() -> int:
                 backdrop_bgr = cv2.cvtColor(poster_bgra, cv2.COLOR_BGRA2BGR)
             tt_bgra = tmdb_logo_patch_bgra.copy() if tmdb_logo_patch_bgra is not None else None
             md = apple_tv_auto_state.get("last_metadata")
-            has_np = bool(
-                status_bar_widget is not None and status_bar_widget.now_playing_chrome_visible
-            )
+            has_np = _effective_display_view() == DisplayView.ONE
             has_rx = bool(inc or cfg or vol)
             has_tmdb = tt_bgra is not None or backdrop_bgr is not None
             sb = streaming_badge_state
@@ -2569,7 +2563,9 @@ def main() -> int:
             if not _PIGEON_EXT or now_playing_screen_widget is None:
                 return
             display_view_holder[0] = DisplayView.ONE
-            scene_enabled = True
+            # View 1 chrome composites without a video ``last_frame``; keep scene off so
+            # ``render_once`` does not early-return before painting the now-playing screen.
+            scene_enabled = False
             last_frame = None
             brightness_current = brightness_from = brightness_target = LANDING_DISPLAY_BRIGHTNESS
             if status_bar_widget is not None:
@@ -2580,8 +2576,11 @@ def main() -> int:
 
         def _activate_now_playing_after_splash() -> None:
             """Splash lifted — now-playing should already be live under the overlay."""
+            nonlocal skip_cache
             _enable_now_playing_screen()
             _startup_splash_complete[0] = True
+            skip_cache = None
+            render_once()
 
         _post_splash_startup_hook[0] = _activate_now_playing_after_splash
 
@@ -10021,7 +10020,12 @@ def main() -> int:
                 if backdrop_master_bgr is None:
                     use_backdrop_scene = False
             if not _backdrop_active_for_view():
-                if last_frame is None:
+                _view_one_static = (
+                    _PIGEON_EXT
+                    and now_playing_screen_widget is not None
+                    and _effective_display_view() == DisplayView.ONE
+                )
+                if last_frame is None and not _view_one_static:
                     _schedule_next_render()
                     return
                 if not _PIGEON_EXT and scaled_display is None:
