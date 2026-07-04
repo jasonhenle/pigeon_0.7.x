@@ -39,15 +39,48 @@ def _natural_png_sort_key(p: Path) -> tuple[object, ...]:
 
 
 def list_splash_png_paths(assets_root: Path) -> list[Path]:
-    """Sorted ``*.png`` paths under ``assets_root / SPLASH_SEQUENCE_DIRNAME``, or empty if missing."""
-    d = assets_root / SPLASH_SEQUENCE_DIRNAME
-    if not d.is_dir():
-        # Backward compatibility with older asset packs.
-        d = assets_root / _LEGACY_SPLASH_SEQUENCE_DIRNAME
-    if not d.is_dir():
-        return []
-    files = [p for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".png"]
-    return sorted(files, key=_natural_png_sort_key)
+    """Sorted splash PNG sequence paths, or empty if none found.
+
+    Discovery order (first non-empty wins):
+      1. ``pigeonAssets/pigeonSplash/*.png`` (canonical folder next to ``pigeonSplash.mp4``).
+      2. Legacy ``P_0.5_WIDGET_splash/*.png``.
+      3. Loose numbered frames at ``pigeonAssets/`` root whose stem starts with
+         ``pigeonSplash``, ``P_0.5_WIDGET_splash``, or ``splash`` (case-insensitive).
+    """
+    for dirname in (SPLASH_SEQUENCE_DIRNAME, _LEGACY_SPLASH_SEQUENCE_DIRNAME):
+        d = assets_root / dirname
+        if not d.is_dir():
+            continue
+        try:
+            files = [p for p in d.iterdir() if p.is_file() and p.suffix.lower() == ".png"]
+        except OSError:
+            continue
+        if files:
+            return sorted(files, key=_natural_png_sort_key)
+
+    if assets_root.is_dir():
+        prefixes = ("pigeonsplash", "p_0.5_widget_splash", "splash")
+        loose: list[Path] = []
+        try:
+            for p in assets_root.iterdir():
+                if not p.is_file() or p.suffix.lower() != ".png":
+                    continue
+                stem = p.stem.lower()
+                if any(stem.startswith(pref) for pref in prefixes):
+                    loose.append(p)
+        except OSError:
+            pass
+        if loose:
+            return sorted(loose, key=_natural_png_sort_key)
+    return []
+
+
+def resolve_splash_media(assets_root: Path) -> tuple[list[Path], Path | None]:
+    """Return ``(png_paths, video_path)`` — PNG sequence preferred, else video, else built-in."""
+    pngs = list_splash_png_paths(assets_root)
+    if pngs:
+        return pngs, None
+    return [], find_splash_video_path(assets_root)
 
 
 # Container formats searched in order when looking for a hardware-decodable splash video.
@@ -78,8 +111,8 @@ def find_splash_video_path(assets_root: Path) -> Path | None:
          ``pigeonsplash``, ``P_0.5_WIDGET_splash``, or ``splash`` (case-insensitive).
 
     H.264/HEVC assets decode via OpenCV's ``VideoCapture`` (hardware-accelerated on
-    macOS) and are strongly preferred over PNG sequences for large/long splashes —
-    the PNG path has to alpha-composite every frame through Tk's RGBA software pipeline.
+    macOS). Callers should use ``resolve_splash_media`` so a ``pigeonSplash/`` PNG
+    sequence wins when present; this helper is the video fallback only.
     """
     search_dirs: list[Path] = []
     for name in (SPLASH_SEQUENCE_DIRNAME, _LEGACY_SPLASH_SEQUENCE_DIRNAME):

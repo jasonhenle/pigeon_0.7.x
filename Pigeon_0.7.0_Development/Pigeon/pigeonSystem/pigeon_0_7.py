@@ -187,6 +187,7 @@ try:
         flatten_bgra_over_bg_to_rgb,
         list_splash_png_paths,
         load_splash_bgra,
+        resolve_splash_media,
         resize_bgra_if_needed,
         splash_end_fade_factor,
     )
@@ -348,8 +349,8 @@ class DisplayView(IntEnum):
 
 class ViewOneLayout(IntEnum):
     """
-    When ``DisplayView.ONE`` is active, Shift+1 cycles the layout toggle; plain ``1`` toggles
-    the new vs. classic now-playing chrome when playback chrome is visible.
+    When ``DisplayView.ONE`` is active, Shift+1 cycles the layout toggle (historical
+    full / simple / poster modes). View 1 always renders the 070326 now-playing screen.
 
     Member names are **historical** — they describe the happy-path visual that
     shipped before the v0.6.14 V01 ↔ V02 swap and the v0.6.19 view-naming
@@ -769,17 +770,15 @@ def main() -> int:
     content_host = tk.Frame(shell, bg="#111")
     content_host.pack(fill=tk.BOTH, expand=True)
 
-    # Full-window splash when extensions load: H.264/HEVC video if present (hardware-decoded on
-    # macOS via VideoToolbox), else PNG sequence, else built-in wordmark.
+    # Full-window splash: PNG sequence in ``pigeonSplash/`` if present, else H.264/HEVC
+    # video (hardware-decoded on macOS), else built-in wordmark.
     startup_ph: list[tk.Widget | None] = [None]
     splash_png_paths: list[Path] = []
     splash_video_path: Path | None = None
     if _PIGEON_EXT:
         try:
             _assets_root = Path(_PROJECT_DIR) / "pigeonAssets"
-            splash_video_path = find_splash_video_path(_assets_root)
-            if splash_video_path is None:
-                splash_png_paths = list_splash_png_paths(_assets_root)
+            splash_png_paths, splash_video_path = resolve_splash_media(_assets_root)
         except Exception:
             splash_png_paths = []
             splash_video_path = None
@@ -2223,7 +2222,10 @@ def main() -> int:
             # Splash overlay or new now-playing UI — never draw the legacy full-screen saver clock.
             if startup_ph[0] is not None:
                 return False
-            if new_now_playing_ui_holder[0] and now_playing_screen_widget is not None:
+            if (
+                _effective_display_view() == DisplayView.ONE
+                and now_playing_screen_widget is not None
+            ):
                 return False
             ev = _effective_display_view()
             if ev == DisplayView.FOUR:
@@ -2441,8 +2443,7 @@ def main() -> int:
                 volume_top_right_col_1based=float(VIEW_ONE_CLOCK_COL_RIGHT),
             )
 
-        # New now-playing screen (070326): default on View 1; key ``1`` toggles vs classic chrome.
-        new_now_playing_ui_holder: list[bool] = [True]
+        # Now-playing screen (070326): sole View 1 chrome.
         audio_levels_sim_holder: list[bool] = [False]
         # [filename, decoded BGRA] — avoids re-reading the badge PNG on every composite.
         _np_badge_bgra_cache: list = ["", None]
@@ -2452,9 +2453,7 @@ def main() -> int:
                 assets_dir=Path(_PROJECT_DIR) / "pigeonAssets",
             )
 
-        def _use_new_now_playing_ui() -> bool:
-            if not new_now_playing_ui_holder[0]:
-                return False
+        def _view_one_uses_now_playing_screen() -> bool:
             if now_playing_screen_widget is None:
                 return False
             if _effective_display_view() != DisplayView.ONE:
@@ -2569,7 +2568,6 @@ def main() -> int:
             nonlocal skip_cache, last_frame, scene_enabled, brightness_current, brightness_from, brightness_target
             if not _PIGEON_EXT or now_playing_screen_widget is None:
                 return
-            new_now_playing_ui_holder[0] = True
             display_view_holder[0] = DisplayView.ONE
             scene_enabled = True
             last_frame = None
@@ -2586,6 +2584,25 @@ def main() -> int:
             _startup_splash_complete[0] = True
 
         _post_splash_startup_hook[0] = _activate_now_playing_after_splash
+
+        _splash_view_one_warm_done: list[bool] = [False]
+
+        def _warm_view_one_under_splash() -> None:
+            """Pre-rasterize 070326 chrome while the splash overlay is still up."""
+            if not _PIGEON_EXT or _splash_view_one_warm_done[0]:
+                return
+            _splash_view_one_warm_done[0] = True
+            _enable_now_playing_screen()
+            _warm_status_bar_blits()
+            if now_playing_screen_widget is not None:
+                try:
+                    now_playing_screen_widget.bgra_frame()
+                except Exception:
+                    pass
+            try:
+                root.update_idletasks()
+            except tk.TclError:
+                pass
 
         def _playback_is_netflix_stream() -> bool:
             lm = apple_tv_auto_state.get("last_metadata")
@@ -2879,7 +2896,7 @@ def main() -> int:
             if _clock_saver_for_compose(now_mono):
                 return False
             # New now-playing screen (070326) draws clock, audio config, and volume.
-            if _use_new_now_playing_ui():
+            if _view_one_uses_now_playing_screen():
                 return False
             return True
 
@@ -3098,7 +3115,7 @@ def main() -> int:
                 _refresh_tmdb_tt_gradient_tint()
                 return
             patch_wh = None
-            if _use_new_now_playing_ui():
+            if _view_one_uses_now_playing_screen():
                 from pigeon.widgets.now_playing_screen import status_bar_slot_wh
 
                 patch_wh = status_bar_slot_wh()
@@ -3466,430 +3483,24 @@ def main() -> int:
                 if use_cap:
                     return _present_frame_to_display(base2, dw, dh)
                 return base2
-            # View 1 pigeonFull: backdrop + title logo + theater widgets (fast cap path).
-            # Variant-aware: V02/V03/V05 render here (post–v0.6.14 swap). V03 forces a black
-            # base (BD missing); V05 replaces the TT image with generated title text in the
-            # same rect that V02 uses for pigeonTMDB_TT.
-            if _view_one_variant_uses_full_path():
-                from pigeon.image_ui_protocol import build_backdrop_design_layer_bgr
-
+            # View 1: 070326 now-playing screen only (no classic chrome / TMDB backdrop stack).
+            if _effective_display_view() == DisplayView.ONE:
                 _set_playback_overlay_clock_saver_volume_flag()
                 _warm_tmdb_logo_patch()
                 dw, dh = display_dims[0], display_dims[1]
                 cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
-                if _use_new_now_playing_ui():
-                    canvas_np = np.zeros((int(DESIGN_H), int(DESIGN_W), 3), dtype=np.uint8)
-                    canvas_np[:] = (0, 0, 0)
-                    _sync_now_playing_screen_state()
-                    if now_playing_screen_widget is not None:
-                        now_playing_screen_widget.render(canvas_np)
-                    base2 = cv2.resize(
-                        canvas_np,
-                        (cap_w, cap_h),
-                        interpolation=cv_resize_interp(
-                            int(DESIGN_W), int(DESIGN_H), cap_w, cap_h
-                        ),
-                    )
-                    if use_cap:
-                        return _present_frame_to_display(base2, dw, dh)
-                    return base2
-                _vv_full = _current_view_one_variant()
-                _vv_force_black_bd = bool(
-                    ViewOneVariant is not None
-                    and _vv_full == ViewOneVariant.V03
+                canvas_np = np.zeros((int(DESIGN_H), int(DESIGN_W), 3), dtype=np.uint8)
+                canvas_np[:] = (0, 0, 0)
+                _sync_now_playing_screen_state()
+                if now_playing_screen_widget is not None:
+                    now_playing_screen_widget.render(canvas_np)
+                base2 = cv2.resize(
+                    canvas_np,
+                    (cap_w, cap_h),
+                    interpolation=cv_resize_interp(
+                        int(DESIGN_W), int(DESIGN_H), cap_w, cap_h
+                    ),
                 )
-                _vv_title_text_mode = bool(
-                    ViewOneVariant is not None
-                    and _vv_full == ViewOneVariant.V05
-                )
-                # viewOne.02 (post–v0.6.14 swap: the full-composition alternate) has
-                # custom chrome positioning:
-                #   • time right-aligned to the right edge of grid column 18
-                #     (``col_right_1based=19.0`` in the top-right anchor API).
-                #   • streaming appLogo left-aligned to the left edge of grid column 2
-                #     (``col_right_1based = 2 + badge_span_w = 4.0``).
-                # V03 (BD-missing) and V05 (TT-missing) keep the widgets' default
-                # positions — the request was scoped to V02 only.
-                _vv_full_is_v02 = bool(
-                    ViewOneVariant is not None
-                    and _vv_full == ViewOneVariant.V02
-                )
-                _v02_badge_dx = 0
-                if (
-                    _vv_full_is_v02
-                    and rect_for_span_top_right_at_cell is not None
-                    and playback_overlay_widget is not None
-                ):
-                    _b_span = getattr(playback_overlay_widget, "badge_span", (2, 1))
-                    _b_row = float(getattr(playback_overlay_widget, "badge_row", 0.5))
-                    _b_col_right_default = float(
-                        getattr(playback_overlay_widget, "badge_top_right_col_1based", 18.0)
-                    )
-                    _b_col_right_v02 = float(_b_span[0]) + 2.0  # left edge of col 2
-                    _x_default = rect_for_span_top_right_at_cell(
-                        int(_b_span[0]),
-                        int(_b_span[1]),
-                        row_1based=_b_row,
-                        col_right_1based=_b_col_right_default,
-                    )[0]
-                    _x_v02 = rect_for_span_top_right_at_cell(
-                        int(_b_span[0]),
-                        int(_b_span[1]),
-                        row_1based=_b_row,
-                        col_right_1based=_b_col_right_v02,
-                    )[0]
-                    _v02_badge_dx = int(_x_v02 - _x_default)
-                bm2 = None if _vv_force_black_bd else _backdrop_bgr_for_view_two()
-                now_bd = time.monotonic()
-                if bm2 is not None:
-                    bd2 = build_backdrop_design_layer_bgr(
-                        bm2,
-                        app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit,
-                        app_logo_clock_saver_style=_app_logo_clock_saver_style_now(),
-                    )
-                    lit2 = _apply_brightness(bd2, brightness)
-                    assert scale_cover_center_crop is not None
-                    base2 = scale_cover_center_crop(lit2, cap_w, cap_h)
-                    bdim_bd = _clock_saver_backdrop_brightness(now_bd)
-                    if bdim_bd < 1.0 - 1e-6:
-                        base2 = (base2.astype(np.float32) * bdim_bd).astype(np.uint8)
-                elif _vv_force_black_bd:
-                    base2 = np.zeros((cap_h, cap_w, 3), dtype=np.uint8)
-                else:
-                    sb, sg, sr = get_stage_bgr()
-                    base2 = np.empty((cap_h, cap_w, 3), dtype=np.uint8)
-                    base2[:] = (sb, sg, sr)
-                # Mic/EQ visualizer is now drawn **above** the bottom gradient (see
-                # per-branch blend points below). Keeping it here would let the
-                # gradient (rows 7.5–8) dim the EQ bars — the user wants the
-                # visualizer on top.
-                _logo_w = _active_tmdb_logo_widget()
-                # Precompute the variant TT (or V05 generated title text) patch + target rect but
-                # defer the alpha-blend so it lands **above** the bottom gradient. Drawing the TT
-                # before the bottom gradient would let ``playback_lower_gradient_bgra`` darken
-                # or wash the logo — we want the gradient to affect the BD layer only, not the TT.
-                _variant_tt_blit: tuple[np.ndarray, int, int, int, int] | None = None
-                if _view_one_is_pigeon_simple():
-                    # viewOne.videoContent_b: title on row 6.25 (Sharp Sans ExtraBold, audioConfig-sized).
-                    _variant_tt_blit = None
-                    if (
-                        render_view_one_video_content_b_title_patch_bgra is not None
-                        and alpha_blend_bgra_over_bgr is not None
-                        and get_grid_geometry is not None
-                    ):
-                        _b_title = (active_tmdb_display_title or "").strip()
-                        if _b_title:
-                            _text_patch_b = render_view_one_video_content_b_title_patch_bgra(
-                                _b_title
-                            )
-                            if _text_patch_b is not None:
-                                g1 = get_grid_geometry()
-                                _bph, _bpw = _text_patch_b.shape[:2]
-                                wx = 0
-                                wy = int(
-                                    round(float(g1.y0) + (6.25 - 1.0) * float(g1.cell))
-                                )
-                                wy = max(0, min(wy, DESIGN_H - _bph))
-                                ww, wh = int(DESIGN_W), int(_bph)
-                                x, y, rw, rh = _design_rect_to_target(
-                                    wx, wy, ww, wh, cap_w, cap_h
-                                )
-                                patch_b = cv2.resize(
-                                    _text_patch_b,
-                                    (rw, rh),
-                                    interpolation=cv_resize_interp(
-                                        _bpw, _bph, rw, rh
-                                    ),
-                                )
-                                _variant_tt_blit = (
-                                    patch_b,
-                                    int(x),
-                                    int(y),
-                                    int(rw),
-                                    int(rh),
-                                )
-                elif _effective_display_view() == DisplayView.THREE:
-                    # viewThree.clock uses backdrop only in this path.
-                    _variant_tt_blit = None
-                elif _vv_title_text_mode and alpha_blend_bgra_over_bgr is not None:
-                    # viewOne.05: generated title text reuses viewOne.02's TT rect
-                    # (post–v0.6.14 swap: V02 is the full composition; V05 is the
-                    # TT-missing "default" that substitutes rendered text).
-                    assert get_grid_geometry is not None
-                    g1 = get_grid_geometry()
-                    # viewOne.videoContent_b TT band: y=[8.0, 8.5].
-                    wh = max(1, int(round(0.5 * float(g1.cell))))
-                    ww = max(1, int(round(DESIGN_W * 0.82)))
-                    wy = int(round(g1.y0 + (8.0 - 1.0) * float(g1.cell)))
-                    wx = int(round((DESIGN_W - ww) / 2.0))
-                    wy = max(0, min(wy, DESIGN_H - wh))
-                    wx = max(0, min(wx, DESIGN_W - ww))
-                    _text_patch = (
-                        render_ui_text_patch_bgra(active_tmdb_display_title or "", ww, wh)
-                        if render_ui_text_patch_bgra is not None
-                        else None
-                    )
-                    if _text_patch is not None:
-                        x, y, rw, rh = _design_rect_to_target(wx, wy, ww, wh, cap_w, cap_h)
-                        _th, _tw = _text_patch.shape[:2]
-                        patch = cv2.resize(
-                            _text_patch,
-                            (rw, rh),
-                            interpolation=cv_resize_interp(_tw, _th, rw, rh),
-                        )
-                        _variant_tt_blit = (patch, int(x), int(y), int(rw), int(rh))
-                elif (
-                    _logo_w is not None
-                    and active_tmdb_title_key
-                    and alpha_blend_bgra_over_bgr is not None
-                ):
-                    # viewOne.videoContent_a (pigeonTMDB_BD + pigeonTMDB_TT): same maximal
-                    # contain rect as the black simple path — largest uniform-fit without
-                    # overlapping badge / clock / receiver stack / bottom chrome.
-                    wx, wy, ww, wh = _view_one_video_content_a_tt_contain_rect_design()
-                    _logo_patch = _logo_w.bgra_patch_for_title(
-                        active_tmdb_title_key,
-                        display_title=active_tmdb_display_title,
-                        patch_wh=(int(ww), int(wh)),
-                    )
-                    x, y, rw, rh = _design_rect_to_target(wx, wy, ww, wh, cap_w, cap_h)
-                    _lh, _lw = _logo_patch.shape[:2]
-                    patch = cv2.resize(
-                        _logo_patch,
-                        (rw, rh),
-                        interpolation=cv_resize_interp(_lw, _lh, rw, rh),
-                    )
-                    _variant_tt_blit = (patch, int(x), int(y), int(rw), int(rh))
-
-                def _apply_variant_tt_blit_above_gradient(target: np.ndarray) -> None:
-                    """Blit the deferred variant TT patch so it sits above the bottom gradient.
-
-                    Keeps the BD layer (``pigeonTMDB_BD``) under the gradient while lifting the
-                    TT (``pigeonTMDB_TT``) to the top of the chrome stack for readability.
-                    """
-                    if _variant_tt_blit is None or alpha_blend_bgra_over_bgr is None:
-                        return
-                    _p, _x, _y, _rw, _rh = _variant_tt_blit
-                    sub = target[_y : _y + _rh, _x : _x + _rw]
-                    sub[:] = alpha_blend_bgra_over_bgr(sub, _p)
-
-                # Match the general fast path: lower gradient, clock saver when idle, else small clock widget.
-                _blend_top_gradient_fast(base2, cap_w, cap_h)
-                now_cs2 = time.monotonic()
-                cs2 = _clock_saver_for_compose(now_cs2)
-                if cs2:
-                    # Saver mode has no bottom gradient, so blend the visualizer
-                    # before the saver digits land. This keeps the saver clock
-                    # legible on top while letting the bars play underneath.
-                    _maybe_blend_mic_visualizer(base2)
-                    if alpha_blend_bgra_over_bgr is not None:
-                        acc_cs2 = (
-                            tuple(status_bar_widget.accent_bgr)
-                            if status_bar_widget is not None
-                            else None
-                        )
-                        _cs_dim2 = _clock_saver_layer_opacity(now_cs2)
-                        _clock_saver_dim_pre_digit_canvas(base2, _cs_dim2)
-                        (time_bgra2, t_rect2), (date_bgra2, d_rect2) = clock_saver_composite_bgra(
-                            shadow_bgr=acc_cs2,
-                            layer_opacity=_cs_dim2,
-                            time_layer_opacity=1.0,
-                            date_layer_opacity=_cs_dim2,
-                            date_anchor_row=CLOCK_ANCHOR_ROW,
-                            date_anchor_col=CLOCK_ANCHOR_COL,
-                        )
-                        for cs_bgra2, (sx2, sy2, sw2, sh2) in (
-                            (date_bgra2, d_rect2),
-                            (time_bgra2, t_rect2),
-                        ):
-                            x2, y2, rw2, rh2 = _design_rect_to_target(sx2, sy2, sw2, sh2, cap_w, cap_h)
-                            _ch2, _cw2 = cs_bgra2.shape[:2]
-                            patch2 = cv2.resize(
-                                cs_bgra2,
-                                (rw2, rh2),
-                                interpolation=cv_resize_interp(_cw2, _ch2, rw2, rh2),
-                            )
-                            sub2 = base2[y2 : y2 + rh2, x2 : x2 + rw2]
-                            sub2[:] = alpha_blend_bgra_over_bgr(sub2, patch2)
-                        if (
-                            (
-                                playback_overlay_flags.get("clock_saver_volume_only")
-                                or playback_overlay_flags.get("clock_saver_netflix_full_overlay")
-                            )
-                            and playback_overlay_blits
-                            and alpha_blend_bgra_over_bgr is not None
-                        ):
-                            for pb2 in playback_overlay_blits:
-                                x0b, y0b, wwb, whb = int(pb2.x), int(pb2.y), int(pb2.w), int(pb2.h)
-                                x2, y2, rw2, rh2 = _design_rect_to_target(
-                                    x0b, y0b, wwb, whb, cap_w, cap_h
-                                )
-                                _ph2, _pw2 = pb2.bgra.shape[:2]
-                                patch_pb = cv2.resize(
-                                    _clock_saver_dim_overlay_bgra(pb2.bgra, _cs_dim2),
-                                    (rw2, rh2),
-                                    interpolation=cv_resize_interp(_pw2, _ph2, rw2, rh2),
-                                )
-                                sub_pb = base2[y2 : y2 + rh2, x2 : x2 + rw2]
-                                sub_pb[:] = alpha_blend_bgra_over_bgr(sub_pb, patch_pb)
-                else:
-                    if (
-                        playback_lower_gradient_bgra is not None
-                        and alpha_blend_bgra_over_bgr is not None
-                        and not _vv_is_music()
-                    ):
-                        gx2, gy2, gw2, gh2, grad_bgra2 = playback_lower_gradient_bgra(
-                            gradient_bgr=tmdb_tt_gradient_bgr_holder[0]
-                        )
-                        x2, y2, rw2, rh2 = _design_rect_to_target(
-                            gx2, gy2, gw2, gh2, cap_w, cap_h
-                        )
-                        _ghg2, _gwg2 = grad_bgra2.shape[:2]
-                        patch_g2 = cv2.resize(
-                            grad_bgra2,
-                            (rw2, rh2),
-                            interpolation=cv_resize_interp(_gwg2, _ghg2, rw2, rh2),
-                        )
-                        sub_g2 = base2[y2 : y2 + rh2, x2 : x2 + rw2]
-                        sub_g2[:] = alpha_blend_bgra_over_bgr(sub_g2, patch_g2)
-                    # Viz blends AFTER the bottom gradient so the EQ bars sit
-                    # above the gradient tint rather than being dimmed by it.
-                    _maybe_blend_mic_visualizer(base2)
-                    if _effective_display_view() != DisplayView.FOUR:
-                        if _info_cluster_compose_active(now_cs2):
-                            _blend_info_cluster_into_target(base2, cap_w, cap_h, now_cs2)
-                        else:
-                            _refresh_clock_patch_bgra()
-                            if (
-                                clock_patch_bgra is not None
-                                and clock_widget is not None
-                                and alpha_blend_bgra_over_bgr is not None
-                            ):
-                                # viewOne.02 override: recompute the clock rect so its right edge
-                                # anchors to the right side of grid column 18 (col_right=19.0).
-                                # W/H stay the widget's configured span so ``clock_patch_bgra``
-                                # (sized for the standard design_rect) still blits cleanly.
-                                if (
-                                    _vv_full_is_v02
-                                    and rect_for_span_top_right_at_cell is not None
-                                ):
-                                    _cw_span = getattr(clock_widget, "grid_span", (5, 1))
-                                    _cw_anchor_row = float(
-                                        getattr(clock_widget, "grid_anchor", (0.5, 15.0))[0]
-                                    )
-                                    wx2, wy2, ww2, wh2 = rect_for_span_top_right_at_cell(
-                                        int(_cw_span[0]),
-                                        int(_cw_span[1]),
-                                        row_1based=_cw_anchor_row,
-                                        col_right_1based=19.0,
-                                    )
-                                else:
-                                    dr2 = getattr(clock_widget, "design_rect", None)
-                                    wx2, wy2, ww2, wh2 = dr2() if callable(dr2) else (0, 0, 0, 0)
-                                if ww2 >= 1 and wh2 >= 1:
-                                    x2, y2, rw2, rh2 = _design_rect_to_target(
-                                        wx2, wy2, ww2, wh2, cap_w, cap_h
-                                    )
-                                    _kh2, _kw2 = clock_patch_bgra.shape[:2]
-                                    patch_ck = cv2.resize(
-                                        clock_patch_bgra,
-                                        (rw2, rh2),
-                                        interpolation=cv_resize_interp(_kw2, _kh2, rw2, rh2),
-                                    )
-                                    sub_ck = base2[y2 : y2 + rh2, x2 : x2 + rw2]
-                                    sub_ck[:] = alpha_blend_bgra_over_bgr(sub_ck, patch_ck)
-                    if status_bar_blits and alpha_blend_bgra_over_bgr is not None:
-                        for sb2 in status_bar_blits:
-                            x0s, y0s, wws, whs = int(sb2.x), int(sb2.y), int(sb2.w), int(sb2.h)
-                            x2, y2, rw2, rh2 = _design_rect_to_target(
-                                x0s, y0s, wws, whs, cap_w, cap_h
-                            )
-                            _bhs, _bws = sb2.bgra.shape[:2]
-                            patch_sb = cv2.resize(
-                                sb2.bgra,
-                                (rw2, rh2),
-                                interpolation=cv_resize_interp(_bws, _bhs, rw2, rh2),
-                            )
-                            sub_sb = base2[y2 : y2 + rh2, x2 : x2 + rw2]
-                            sub_sb[:] = alpha_blend_bgra_over_bgr(sub_sb, patch_sb)
-                    if playback_overlay_blits and alpha_blend_bgra_over_bgr is not None:
-                        for pb2o in playback_overlay_blits:
-                            if (
-                                _info_cluster_compose_active(now_cs2)
-                                and getattr(pb2o, "layer", "") == PATCH_LAYER_RECEIVER_AUDIO
-                            ):
-                                continue
-                            x0p, y0p, wwp, whp = int(pb2o.x), int(pb2o.y), int(pb2o.w), int(pb2o.h)
-                            # viewOne.02 override: translate the streaming-badge blit to
-                            # left-align with grid column 2. The badge's W/H come from
-                            # ``AudioConfig._build`` at its default col_right=18 anchor, so
-                            # a pure x-shift is sufficient — no re-rasterization needed.
-                            if (
-                                _v02_badge_dx
-                                and getattr(pb2o, "layer", "") == PATCH_LAYER_STREAMING_BADGE
-                            ):
-                                x0p += _v02_badge_dx
-                            x2, y2, rw2, rh2 = _design_rect_to_target(
-                                x0p, y0p, wwp, whp, cap_w, cap_h
-                            )
-                            _php, _pwp = pb2o.bgra.shape[:2]
-                            patch_po = cv2.resize(
-                                pb2o.bgra,
-                                (rw2, rh2),
-                                interpolation=cv_resize_interp(_pwp, _php, rw2, rh2),
-                            )
-                            sub_po = base2[y2 : y2 + rh2, x2 : x2 + rw2]
-                            sub_po[:] = alpha_blend_bgra_over_bgr(sub_po, patch_po)
-                    if (
-                        dev_phase == DevPhase.OFF
-                        and location_toast_patch_bgra is not None
-                        and alpha_blend_bgra_over_bgr is not None
-                        and (
-                            not _info_cluster_compose_active(now_cs2)
-                            or bool(location_toast_state.get("startup_top_left"))
-                        )
-                    ):
-                        now_lt2 = time.monotonic()
-                        ta2 = _location_toast_alpha(now_lt2)
-                        if ta2 > 1e-6:
-                            acc_lt = (
-                                tuple(status_bar_widget.accent_bgr)
-                                if status_bar_widget is not None
-                                else None
-                            )
-                            patch_lt2, (lwx2, lwy2, lww2, lwh2) = location_toast_patch_bgra(
-                                str(location_toast_state["text"]),
-                                alpha=ta2,
-                                shadow_bgr=acc_lt,
-                                col_right_offset_cells=0.0,
-                                row_offset_cells=0.0,
-                                startup_top_left=bool(
-                                    location_toast_state.get("startup_top_left")
-                                ),
-                            )
-                            if patch_lt2 is not None:
-                                x2, y2, rw2, rh2 = _design_rect_to_target(
-                                    lwx2, lwy2, lww2, lwh2, cap_w, cap_h
-                                )
-                                _th2, _tw2 = patch_lt2.shape[:2]
-                                patch_lt_r = cv2.resize(
-                                    patch_lt2,
-                                    (rw2, rh2),
-                                    interpolation=cv_resize_interp(_tw2, _th2, rw2, rh2),
-                                )
-                                sub_lt = base2[y2 : y2 + rh2, x2 : x2 + rw2]
-                                sub_lt[:] = alpha_blend_bgra_over_bgr(sub_lt, patch_lt_r)
-                # TT (``pigeonTMDB_TT``) is the last thing blended in the pigeonFull path so it
-                # sits **above** both the bottom gradient (drawn in the ``else`` branch above) and
-                # the clock-saver layout (drawn in the ``if cs2:`` branch). The backdrop
-                # (``pigeonTMDB_BD``) stays below the gradient as before — the gradient is still
-                # visible over the BD, just not over the TT.
-                _skip_tt_cs_fallback = cs2 and (
-                    tmdb_logo_app_fallback_active
-                    or _view_one_streaming_logo_duplicate_fallback()
-                )
-                if not _skip_tt_cs_fallback:
-                    _apply_variant_tt_blit_above_gradient(base2)
                 if use_cap:
                     return _present_frame_to_display(base2, dw, dh)
                 return base2
@@ -4099,7 +3710,7 @@ def main() -> int:
                     and (_logo_w := _active_tmdb_logo_widget()) is not None
                     and active_tmdb_title_key
                     and alpha_blend_bgra_over_bgr is not None
-                    and not _use_new_now_playing_ui()
+                    and not _view_one_uses_now_playing_screen()
                 ):
                     if (
                         _effective_display_view() == DisplayView.ONE
@@ -4290,9 +3901,9 @@ def main() -> int:
             # the gradient, then clock saver / clock widget / overlays on
             # top of the visualizer. See the saver branch for the no-gradient
             # variant.
-            if not (_use_new_now_playing_ui() and not cs):
+            if not (_view_one_uses_now_playing_screen() and not cs):
                 _blend_top_gradient_design(canvas)
-            if not cs and _use_new_now_playing_ui():
+            if not cs and _view_one_uses_now_playing_screen():
                 canvas[:] = (0, 0, 0)
                 _sync_now_playing_screen_state()
                 if now_playing_screen_widget is not None:
@@ -4342,7 +3953,7 @@ def main() -> int:
                             src = _clock_saver_dim_overlay_bgra(p.bgra, _cs_dim_d)
                             patch = src[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
                             roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
-            elif not _use_new_now_playing_ui():
+            else:
                 if (
                     playback_lower_gradient_bgra is not None
                     and alpha_blend_bgra_over_bgr is not None
@@ -4426,7 +4037,7 @@ def main() -> int:
                     DisplayView.FOUR,
                     DisplayView.TWO,
                     DisplayView.THREE,
-                ) and not _view_one_is_pigeon_poster() and not _use_new_now_playing_ui():
+                ) and not _view_one_is_pigeon_poster() and not _view_one_uses_now_playing_screen():
                     if tmdb_logo_cover_design_xywh is not None:
                         lx, ly, lw, lh = tmdb_logo_cover_design_xywh
                         _paste_tmdb_logo_uniform_cover_design(
@@ -4948,10 +4559,8 @@ def main() -> int:
         def _compose_shown_frame(frame_bgr: np.ndarray | None, brightness: float) -> np.ndarray:
             if (
                 _PIGEON_EXT
-                and new_now_playing_ui_holder[0]
                 and now_playing_screen_widget is not None
                 and _effective_display_view() == DisplayView.ONE
-                and _use_new_now_playing_ui()
             ):
                 return compose_display_fast_no_grid(
                     frame_bgr,
@@ -4987,6 +4596,7 @@ def main() -> int:
                 return _black_screen_bgr()
             if (
                 _PIGEON_EXT
+                and _effective_display_view() != DisplayView.ONE
                 and _view_one_is_pigeon_poster()
                 and not _vv_is_music()
                 and _vv_has_content_title()
@@ -5003,7 +4613,12 @@ def main() -> int:
                     show_grid=_design_grid_overlay_active(),
                     frame_is_design_sized=True,
                 )
-            if _PIGEON_EXT and _view_one_variant_uses_simple_path() and not _backdrop_active_for_view():
+            if (
+                _PIGEON_EXT
+                and _effective_display_view() != DisplayView.ONE
+                and _view_one_variant_uses_simple_path()
+                and not _backdrop_active_for_view()
+            ):
                 sb, sg, sr = _view_one_dark_accent_bg_bgr()
                 black = np.empty((DESIGN_H, DESIGN_W, 3), dtype=np.uint8)
                 black[:] = (sb, sg, sr)
@@ -5152,6 +4767,7 @@ def main() -> int:
         if _PIGEON_EXT:
             _warm_status_bar_blits()
             _warm_playback_overlay_blits()
+            root.after(50, _warm_view_one_under_splash)
 
         # Display off: no landing art (black / stage composite only in render_once).
         if not scene_enabled:
@@ -5919,7 +5535,7 @@ def main() -> int:
                         if tmdb_logo_widget_view_six is not None:
                             tmdb_logo_widget_view_six.clear_cache()
                         _warm_tmdb_logo_patch()
-                        if _use_new_now_playing_ui() and now_playing_screen_widget is not None:
+                        if _view_one_uses_now_playing_screen() and now_playing_screen_widget is not None:
                             now_playing_screen_widget.clear_cache()
                             _sync_now_playing_screen_state()
                         skip_cache = None
@@ -5935,7 +5551,7 @@ def main() -> int:
                     if tmdb_logo_widget_view_six is not None:
                         tmdb_logo_widget_view_six.clear_cache()
                     _warm_tmdb_logo_patch()
-                    if _use_new_now_playing_ui() and now_playing_screen_widget is not None:
+                    if _view_one_uses_now_playing_screen() and now_playing_screen_widget is not None:
                         now_playing_screen_widget.clear_cache()
                         _sync_now_playing_screen_state()
                     skip_cache = None
@@ -6034,7 +5650,7 @@ def main() -> int:
                         pass
                 if dev_phase == DevPhase.SETTINGS:
                     sync_developer_chrome()
-                if _use_new_now_playing_ui() and now_playing_screen_widget is not None:
+                if _view_one_uses_now_playing_screen() and now_playing_screen_widget is not None:
                     now_playing_screen_widget.clear_cache()
                     _sync_now_playing_screen_state()
                 skip_cache = None
@@ -8901,8 +8517,7 @@ def main() -> int:
             if status_bar_widget is None:
                 return
             if (
-                new_now_playing_ui_holder[0]
-                and _effective_display_view() == DisplayView.ONE
+                _effective_display_view() == DisplayView.ONE
             ):
                 show = True
             elif not current_apple_tv.get("identifier"):
@@ -9979,20 +9594,12 @@ def main() -> int:
                     _capture_last_view_one_layout_from_live_view()
                     return "break"
                 if opt_key:
-                    # Option+1: toggle new (070326) vs classic now-playing chrome on View 1.
-                    new_now_playing_ui_holder[0] = not bool(new_now_playing_ui_holder[0])
-                    if now_playing_screen_widget is not None:
-                        now_playing_screen_widget.clear_cache()
-                    if new_now_playing_ui_holder[0]:
-                        _enable_now_playing_screen()
-                    skip_cache = None
-                    render_once()
                     _bump_pigeon_user_activity(event)
                     return "break"
                 # Plain 1 on View 1: already on view one — do not flip UI mode.
                 _bump_pigeon_user_activity(event)
                 return "break"
-            if ch == "6" and _use_new_now_playing_ui():
+            if ch == "6" and _view_one_uses_now_playing_screen():
                 audio_levels_sim_holder[0] = not bool(audio_levels_sim_holder[0])
                 if now_playing_screen_widget is not None:
                     now_playing_screen_widget.set_audio_levels_sim(audio_levels_sim_holder[0])
@@ -10346,7 +9953,7 @@ def main() -> int:
                 if playing:
                     return frame_interval_ms
                 # Audio meter sim animates continuously; keep ~30 FPS while active.
-                if audio_levels_sim_holder[0] and _use_new_now_playing_ui():
+                if audio_levels_sim_holder[0] and _view_one_uses_now_playing_screen():
                     return 33
                 return paused_interval_ms
 
@@ -10484,7 +10091,7 @@ def main() -> int:
             tmdb_flag_badge_on = bool(tmdb_quality_error_flag[0])
             tmdb_flag_badge_cache_key = 1 if tmdb_flag_badge_on else 0
 
-            audio_sim_animating = bool(audio_levels_sim_holder[0]) and _use_new_now_playing_ui()
+            audio_sim_animating = bool(audio_levels_sim_holder[0]) and _view_one_uses_now_playing_screen()
             if (
                 not playing
                 and not mic_eq_needs_composite
@@ -10624,7 +10231,7 @@ def main() -> int:
                 receiver_overlay_state["config"] = new_cf
                 receiver_overlay_state["volume"] = new_vol
                 if overlay_unchanged:
-                    if _use_new_now_playing_ui():
+                    if _view_one_uses_now_playing_screen():
                         _sync_now_playing_screen_state()
                     return
                 last_device_interaction_mono = time.monotonic()
@@ -10632,7 +10239,7 @@ def main() -> int:
                     _bump_clock_saver_significant_device()
                 _warm_playback_overlay_blits()
                 skip_cache = None
-                if _use_new_now_playing_ui():
+                if _view_one_uses_now_playing_screen():
                     _sync_now_playing_screen_state()
                 render_once()
 
@@ -10774,6 +10381,7 @@ def main() -> int:
 
         shell.bind("<Configure>", _on_shell_configure)
 
+        _warm_view_one_under_splash()
         _enable_now_playing_screen()
         render_once()
         root.after(600, _receiver_poll_tick)
