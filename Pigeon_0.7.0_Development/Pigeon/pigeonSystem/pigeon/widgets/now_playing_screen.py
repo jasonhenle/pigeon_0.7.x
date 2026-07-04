@@ -153,8 +153,15 @@ _TC_Y = 247
 _STATUS_INDICATOR_TMDB_CX = 753
 _STATUS_INDICATOR_DOT_R = 8
 _CLOCK_RIGHT_X = _STATUS_INDICATOR_TMDB_CX + _STATUS_INDICATOR_DOT_R
-_CLOCK_Y = 405
+_CLOCK_Y = 398
 _CLOCK_SIZE_PX = 60
+# SVG circle centers for the four status dots (layer 01).
+_STATUS_INDICATOR_CENTERS: tuple[tuple[float, float], ...] = (
+    (692.89, 444.33),  # audio
+    (712.89, 444.33),  # now playing
+    (732.89, 444.33),  # receiver
+    (752.89, 444.33),  # tmdb
+)
 
 _SERVICE_TEXT_X = 522
 _SERVICE_TEXT_Y = 452
@@ -163,15 +170,18 @@ _SERVICE_MIN_GAP_AFTER_VOLUME = 24
 
 # Audio config line (SVG ``05_widget_audio_config_text``).
 _AUDIO_CFG_TEXT_X = 46
-_AUDIO_CFG_TEXT_Y = 453
+_AUDIO_CFG_TEXT_Y = 462
 _AUDIO_CFG_TEXT_SIZE = 25
+# Keep the audio-config line on its own row below channel abbreviations (y≈426).
+_AUDIO_CFG_MAX_W = 220
 
 _VOLUME_X = 295
 _VOLUME_Y = 426
 _VOLUME_SIZE = 36
-# Bottom chrome band — wipe stale SVG/demo pixels before drawing receiver lines.
-_BOTTOM_CHROME_WIPE_Y = 395
-_BOTTOM_CHROME_WIPE_H = 85
+# Targeted bottom wipes — must not cover status dots (x≈685+), clock (y≈340–415, x≈520+), or channel labels (y≈400–430).
+_BOTTOM_CONFIG_WIPE_TOP = 446
+_BOTTOM_MID_WIPE_TOP = 412
+_BOTTOM_TEXT_WIPE_RIGHT_X = 678
 
 # Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px.
 _AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
@@ -705,15 +715,40 @@ def _fit_text_patch(
     fill_rgb: tuple[int, int, int],
     bold: bool = True,
     align: str = "left",
+    max_width_px: int | None = None,
 ) -> tuple[np.ndarray, int, int]:
     if not text:
         return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
+    draw_text = str(text)
+    if max_width_px is not None and max_width_px > 0:
+        probe_patch, probe_w, probe_h = _fit_text_patch(
+            draw_text,
+            size_px=size_px,
+            fill_rgb=fill_rgb,
+            bold=bold,
+            align=align,
+        )
+        if probe_w <= max_width_px:
+            return probe_patch, probe_w, probe_h
+        ell = "…"
+        for n in range(len(draw_text), 0, -1):
+            candidate = draw_text[:n].rstrip() + ell
+            cp, cw, ch = _fit_text_patch(
+                candidate,
+                size_px=size_px,
+                fill_rgb=fill_rgb,
+                bold=bold,
+                align=align,
+            )
+            if cw <= max_width_px:
+                return cp, cw, ch
+        return probe_patch, probe_w, probe_h
     path = resolve_ui_font_extrabold() or resolve_ui_font_bold()
     font = _load_font(str(path or ""), size_px)
     pad = 2
     probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
-    l, t, r, b = draw.textbbox((0, 0), text, font=font)
+    l, t, r, b = draw.textbbox((0, 0), draw_text, font=font)
     tw, th = max(1, r - l), max(1, b - t)
     img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -724,7 +759,7 @@ def _fit_text_patch(
     else:
         tx = pad - l
     ty = pad - t
-    draw.text((tx, ty), text, font=font, fill=(*fill_rgb, 255))
+    draw.text((tx, ty), draw_text, font=font, fill=(*fill_rgb, 255))
     arr = np.asarray(img)
     return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA), tw + pad * 2, th + pad * 2
 
@@ -967,6 +1002,57 @@ def _draw_audio_channel_labels_bgra(canvas: np.ndarray) -> None:
         patch, _, _ = _fit_text_patch(label, size_px=size_px, fill_rgb=fill_rgb, bold=True)
         self_h = int(patch.shape[0])
         _paste_patch_bgra(canvas, patch, x, y - self_h + max(2, _sy(18)))
+
+
+def _wipe_bottom_receiver_text_bands_bgra(canvas: np.ndarray) -> None:
+    """Clear stale audio/volume/service ink without erasing channel labels, clock, or status dots."""
+    bottom = int(DESIGN_H)
+    # Config row (below SL/L/C/R/SR/LFE labels).
+    cfg_h = max(0, bottom - _BOTTOM_CONFIG_WIPE_TOP)
+    if cfg_h > 0:
+        _draw_rounded_rect_bgra(
+            canvas,
+            0,
+            _BOTTOM_CONFIG_WIPE_TOP,
+            300,
+            cfg_h,
+            fill_bgr=_COLOR_BG_BGR,
+            radius=0,
+        )
+    # Volume + service band (stops before indicator column).
+    mid_h = max(0, bottom - _BOTTOM_MID_WIPE_TOP)
+    mid_w = max(0, _BOTTOM_TEXT_WIPE_RIGHT_X - 240)
+    if mid_h > 0 and mid_w > 0:
+        _draw_rounded_rect_bgra(
+            canvas,
+            240,
+            _BOTTOM_MID_WIPE_TOP,
+            mid_w,
+            mid_h,
+            fill_bgr=_COLOR_BG_BGR,
+            radius=0,
+        )
+
+
+def _draw_status_indicator_dots_bgra(canvas: np.ndarray, state: NowPlayingScreenState) -> None:
+    """Redraw the four status dots after bottom wipes (SVG ink is cleared in that pass)."""
+    flags = (
+        state.indicator_audio,
+        state.indicator_now_playing,
+        state.indicator_receiver,
+        state.indicator_tmdb,
+    )
+    r = _STATUS_INDICATOR_DOT_R
+    for (cx, cy), ok in zip(_STATUS_INDICATOR_CENTERS, flags):
+        bgr = _COLOR_SUCCESS_BGR if ok else _COLOR_FAIL_BGR
+        cv2.circle(
+            canvas,
+            (int(round(cx)), int(round(cy))),
+            r,
+            (*bgr, 255),
+            thickness=-1,
+            lineType=cv2.LINE_AA,
+        )
 
 
 def _draw_audio_levels_bgra(
@@ -1333,9 +1419,9 @@ class NowPlayingScreenWidget:
         progress = st.progress if st.trt_substantive else 0.0
         played_w = max(0, min(_BAR_W, int(round(progress * float(_BAR_W)))))
 
-        # During pause, keep played/unplayed chrome but omit TMDb TT + backdrop layers.
-        bar_tt = None if st.show_paused else self._tt_bgra
-        bar_backdrop = None if st.show_paused else self._backdrop_bgr
+        # During pause, keep TMDb TT + backdrop visible under the "paused" overlay.
+        bar_tt = self._tt_bgra
+        bar_backdrop = self._backdrop_bgr
 
         unplayed_group = _compose_bar_group_bgra(
             played=False,
@@ -1410,31 +1496,11 @@ class NowPlayingScreenWidget:
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
-        # Wipe the full bottom chrome band so stale SVG ink, debug dict text, or prior
-        # receiver rows never bleed through volume / service / clock.
-        _draw_rounded_rect_bgra(
-            out,
-            0,
-            _BOTTOM_CHROME_WIPE_Y,
-            int(DESIGN_W),
-            _BOTTOM_CHROME_WIPE_H,
-            fill_bgr=_COLOR_BG_BGR,
-            radius=0,
-        )
+        # Targeted bottom wipes — full-width band was erasing status dots and clock ink.
+        _wipe_bottom_receiver_text_bands_bgra(out)
 
-        # Always wipe the audio-config band so SVG demo ink or stale pixels never show
-        # when the receiver line is empty (idle / standby / filtered placeholders).
-        _audio_cfg_wipe_h = max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE)) + 8)
-        _audio_cfg_wipe_w = min(int(DESIGN_W) - _AUDIO_CFG_TEXT_X, 420)
-        _draw_rounded_rect_bgra(
-            out,
-            _AUDIO_CFG_TEXT_X - 2,
-            _AUDIO_CFG_TEXT_Y - _audio_cfg_wipe_h,
-            _audio_cfg_wipe_w,
-            _audio_cfg_wipe_h,
-            fill_bgr=_COLOR_BG_BGR,
-            radius=0,
-        )
+        _draw_audio_channel_labels_bgra(out)
+
         cfg_line = _audio_config_line(st.incoming, st.config)
         if cfg_line:
             cfg_patch, _, th = _fit_text_patch(
@@ -1442,6 +1508,7 @@ class NowPlayingScreenWidget:
                 size_px=max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE))),
                 fill_rgb=(237, 28, 36),
                 bold=True,
+                max_width_px=_AUDIO_CFG_MAX_W,
             )
             self._paste_patch(
                 out,
@@ -1471,7 +1538,7 @@ class NowPlayingScreenWidget:
             align="right",
         )
         clk_x = _CLOCK_RIGHT_X - clk_tw
-        self._paste_patch(out, clk_patch, clk_x, _CLOCK_Y - clk_th + max(4, _sy(8)))
+        clk_y = _CLOCK_Y - clk_th + max(4, _sy(8))
 
         service_text = str(st.badge_label or "").strip()
         if service_text:
@@ -1484,7 +1551,9 @@ class NowPlayingScreenWidget:
             svc_x = max(_SERVICE_TEXT_X, vol_right_x + _SERVICE_MIN_GAP_AFTER_VOLUME)
             self._paste_patch(out, svc_patch, svc_x, _SERVICE_TEXT_Y - th)
 
-        _draw_audio_channel_labels_bgra(out)
+        # Clock + status dots last so bottom wipes never cover them.
+        self._paste_patch(out, clk_patch, clk_x, clk_y)
+        _draw_status_indicator_dots_bgra(out, st)
 
         return out
 

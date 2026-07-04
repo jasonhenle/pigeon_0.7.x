@@ -410,23 +410,32 @@ def _normalize_unicode_dashes_for_episode_titles(s: str) -> str:
 
 
 def _normalize_interpunct_for_tmdb(s: str) -> str:
-    """Map middle-dot / bullet separators to hyphen or space for TMDb search (``WALL·E`` → ``WALL-E``)."""
+    """Preserve middle-dot titles for TMDb search (API indexes ``WALL·E`` with the dot).
+
+    Hyphen/compact variants are attempted separately in :func:`_tmdb_query_variants`; mapping
+    ``·`` → ``-`` breaks the movie search (``WALL-E`` returns unrelated ``wall`` titles).
+    """
+    return s
+
+
+def _compact_interpunct_acronym(s: str) -> str | None:
+    """``WALL·E`` / ``WALL-E`` / ``WALL E`` → ``WALLE`` for TMDb variant search."""
     if not s:
-        return s
-    chars = list(s)
+        return None
+    chars = list(s.strip())
     out: list[str] = []
-    for i, ch in enumerate(chars):
+    for ch in chars:
         if ch in _INTERPUNCT_LIKE_CHARS:
-            prev = chars[i - 1] if i > 0 else ""
-            nxt = chars[i + 1] if i + 1 < len(chars) else ""
-            if prev.isalnum() and nxt.isalnum():
-                out.append("-")
-            else:
+            continue
+        if ch.isspace():
+            if out and out[-1] != " ":
                 out.append(" ")
         else:
             out.append(ch)
     t = "".join(out)
-    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+", "", t).strip()
+    if len(t) < 3:
+        return None
     return t
 
 
@@ -439,16 +448,13 @@ def _hyphen_acronym_movie_alias(q: str) -> str | None:
 
 
 def _normalize_title_for_show_split(s: str) -> str:
-    """Unicode dashes → spaced hyphen; interpunct → hyphen; NBSP-like → space; collapse runs."""
+    """Unicode dashes → spaced hyphen; preserve interpunct; NBSP-like → space; collapse runs."""
     if not s:
         return s
     t = _normalize_unicode_dashes_for_episode_titles(s.strip())
     t = _normalize_interpunct_for_tmdb(t)
     t = _SPACE_LIKE_RE.sub(" ", t)
     t = re.sub(r"\s+", " ", t).strip()
-    alias = _hyphen_acronym_movie_alias(t)
-    if alias and alias.lower() != t.lower():
-        return alias
     return t
 
 
@@ -867,6 +873,7 @@ def _tmdb_query_variants(raw: str) -> list[str]:
     (show-prefix, colon-left, etc.) are fallbacks only.
     """
     q0 = _normalize_title_for_show_split((raw or "").strip())
+    raw0 = (raw or "").strip()
     if not q0:
         return []
     out: list[str] = []
@@ -880,6 +887,11 @@ def _tmdb_query_variants(raw: str) -> list[str]:
 
     # Always try the exact/full title first; only fall back to simplifications.
     add(q0)
+    if raw0 and raw0.casefold() != q0.casefold():
+        add(raw0)
+    compact = _compact_interpunct_acronym(raw0 or q0)
+    if compact:
+        add(compact)
     alias = _hyphen_acronym_movie_alias(q0)
     if alias:
         add(alias)
@@ -1697,6 +1709,8 @@ def apply_tmdb_movie_query(
 
     try:
         item, kind = search_best_media(q, prefer=prefer, forgiving=forgiving)
+        if item is None and not fg:
+            item, kind = search_best_media(q, prefer=prefer, forgiving=True)
     except RuntimeError as e:
         return False, str(e), None
     except urllib.error.HTTPError as e:

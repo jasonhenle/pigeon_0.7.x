@@ -5857,6 +5857,9 @@ def main() -> int:
                     if tmdb_logo_widget_view_six is not None:
                         tmdb_logo_widget_view_six.clear_cache()
                     _warm_tmdb_logo_patch()
+                    if _use_new_now_playing_ui() and now_playing_screen_widget is not None:
+                        now_playing_screen_widget.clear_cache()
+                        _sync_now_playing_screen_state()
                     skip_cache = None
                     render_once()
                     if dev_phase == DevPhase.SETTINGS:
@@ -5955,6 +5958,9 @@ def main() -> int:
                         pass
                 if dev_phase == DevPhase.SETTINGS:
                     sync_developer_chrome()
+                if _use_new_now_playing_ui() and now_playing_screen_widget is not None:
+                    now_playing_screen_widget.clear_cache()
+                    _sync_now_playing_screen_state()
                 skip_cache = None
                 render_once()
 
