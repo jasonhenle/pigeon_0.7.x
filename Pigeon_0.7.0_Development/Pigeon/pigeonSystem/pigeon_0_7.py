@@ -10025,9 +10025,10 @@ def main() -> int:
             if not scene_enabled:
                 if _PIGEON_EXT:
                     out_bgr = _compose_shown_frame(None, 1.0)
+                    out_bgr = _blend_view_four_debug(out_bgr)
                     if lerp_bgr_red_monochrome is not None:
                         sm = max(0.0, min(1.0, _compose_idle_strength_holder[0]))
-                        if sm > 1e-6:
+                        if sm > 1e-6 and _effective_display_view() != DisplayView.FOUR:
                             out_bgr = lerp_bgr_red_monochrome(out_bgr, sm)
                     _update_label_photo_from_bgr(label, out_bgr, label_live_photo)
                 else:
