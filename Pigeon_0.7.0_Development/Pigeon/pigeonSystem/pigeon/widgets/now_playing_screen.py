@@ -153,7 +153,7 @@ _TC_Y = 247
 _STATUS_INDICATOR_TMDB_CX = 753
 _STATUS_INDICATOR_DOT_R = 8
 _CLOCK_RIGHT_X = _STATUS_INDICATOR_TMDB_CX + _STATUS_INDICATOR_DOT_R
-_CLOCK_Y = 398
+_CLOCK_Y = 405
 _CLOCK_SIZE_PX = 60
 # SVG circle centers for the four status dots (layer 01).
 _STATUS_INDICATOR_CENTERS: tuple[tuple[float, float], ...] = (
@@ -168,12 +168,12 @@ _SERVICE_TEXT_Y = 452
 _SERVICE_TEXT_SIZE_PX = 30
 _SERVICE_MIN_GAP_AFTER_VOLUME = 24
 
-# Audio config line (SVG ``05_widget_audio_config_text``).
-_AUDIO_CFG_TEXT_X = 46
-_AUDIO_CFG_TEXT_Y = 462
+# Audio config line (SVG ``05_widget_audio_config_text`` at ~46×453; x shifted right of LFE).
+_AUDIO_CFG_TEXT_X = 230
+_AUDIO_CFG_TEXT_Y = 453
 _AUDIO_CFG_TEXT_SIZE = 25
-# Keep the audio-config line on its own row below channel abbreviations (y≈426).
-_AUDIO_CFG_MAX_W = 220
+# Dedicated row below channel abbreviations (y≈426); must not overlap SL/L/C/R/SR/LFE.
+_AUDIO_CFG_MAX_W = 200
 
 _VOLUME_X = 295
 _VOLUME_Y = 426
@@ -1538,7 +1538,7 @@ class NowPlayingScreenWidget:
             align="right",
         )
         clk_x = _CLOCK_RIGHT_X - clk_tw
-        clk_y = _CLOCK_Y - clk_th + max(4, _sy(8))
+        clk_y = _CLOCK_Y - clk_th
 
         service_text = str(st.badge_label or "").strip()
         if service_text:

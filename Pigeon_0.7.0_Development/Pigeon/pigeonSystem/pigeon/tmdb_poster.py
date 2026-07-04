@@ -362,7 +362,9 @@ _UNICODE_DASH_CHARS = frozenset(
 
 # NBSP and other spaces that break naive ``" - "`` substring checks (Peacock / tvOS metadata).
 _SPACE_LIKE_RE = re.compile(r"[\u00a0\u2000-\u200a\u202f\u205f\u3000]+")
-# Middle dot / bullet separators (Apple TV ``WALL·E``) — TMDb indexes ``WALL-E``, not the interpunct.
+# Middle dot / bullet separators (Apple TV ``WALL·E``) — TMDb indexes ``WALL·E`` with the dot;
+# hyphen queries (``WALL-E``) return unrelated ``wall*`` titles.
+_INTERPUNCT_CHAR = "\u00b7"
 _INTERPUNCT_LIKE_CHARS = frozenset("\u00b7\u2022\u2024\u2219\u22c5\u30fb\uff65")
 # ``WALL E`` / ``WALL·E`` → ``WALL-E`` (short suffix token only, e.g. not ``STAR WARS``).
 _ACRONYM_HYPHEN_SUFFIX_RE = re.compile(r"^([\w]{2,})\s+([\w]{1,2})$")
@@ -425,7 +427,7 @@ def _compact_interpunct_acronym(s: str) -> str | None:
     chars = list(s.strip())
     out: list[str] = []
     for ch in chars:
-        if ch in _INTERPUNCT_LIKE_CHARS:
+        if ch in _INTERPUNCT_LIKE_CHARS or ch in _UNICODE_DASH_CHARS or ch == "-":
             continue
         if ch.isspace():
             if out and out[-1] != " ":
@@ -437,6 +439,15 @@ def _compact_interpunct_acronym(s: str) -> str | None:
     if len(t) < 3:
         return None
     return t
+
+
+def _interpunct_from_hyphen_acronym(q: str) -> str | None:
+    """``WALL-E`` → ``WALL·E`` — TMDb movie search uses the middle-dot title, not the hyphen."""
+    s = (q or "").strip()
+    m = re.match(r"^([A-Za-z0-9]{2,})-([A-Za-z0-9]{1,2})$", s)
+    if not m:
+        return None
+    return f"{m.group(1)}{_INTERPUNCT_CHAR}{m.group(2)}"
 
 
 def _hyphen_acronym_movie_alias(q: str) -> str | None:
@@ -885,7 +896,11 @@ def _tmdb_query_variants(raw: str) -> list[str]:
             seen.add(t)
             out.append(t)
 
-    # Always try the exact/full title first; only fall back to simplifications.
+    # Hyphen acronym titles (``WALL-E``): TMDb indexes ``WALL·E`` — try that before the hyphen.
+    interpunct = _interpunct_from_hyphen_acronym(raw0 or q0)
+    if interpunct:
+        add(interpunct)
+    # Always try the exact/full title next; only fall back to simplifications.
     add(q0)
     if raw0 and raw0.casefold() != q0.casefold():
         add(raw0)
@@ -989,6 +1004,35 @@ def _tokens_subsequence(needle: list[str], haystack: list[str]) -> bool:
         if haystack[i : i + nlen] == needle:
             return True
     return False
+
+
+def _short_acronym_compact_norm(query: str) -> str | None:
+    """Compact form for Pixar-style titles (``WALL·E``, ``WALL-E``, ``WALL E`` → ``walle``)."""
+    compact = _compact_interpunct_acronym(query)
+    if not compact or len(compact) > 8:
+        return None
+    nq = _norm_query(query)
+    tokens = [t for t in nq.split() if t]
+    if len(tokens) == 2 and len(tokens[1]) <= 2:
+        return _compact_norm_for_acronym(compact)
+    if re.fullmatch(r"^[A-Za-z0-9]{2,}-[A-Za-z0-9]{1,2}$", (query or "").strip()):
+        return _compact_norm_for_acronym(compact)
+    if any(ch in _INTERPUNCT_LIKE_CHARS for ch in (query or "")):
+        return _compact_norm_for_acronym(compact)
+    return None
+
+
+def _weak_short_acronym_match(query: str, item: dict, rank: tuple[int, int]) -> bool:
+    """Reject fuzzy ``wall*`` hits when the query is a short acronym like ``WALL-E``."""
+    if rank[0] >= 4:
+        return False
+    must = _short_acronym_compact_norm(query)
+    if not must:
+        return False
+    for title in _result_titles(item):
+        if _compact_norm_for_acronym(title) == must:
+            return False
+    return True
 
 
 def _match_rank(query: str, item: dict) -> tuple[int, int]:
@@ -1197,9 +1241,12 @@ def _best_with_poster_from_results(
     # Prefer exact / whole-word title matches from the real search query; tie-break by
     # shorter title, then TMDb popularity. Fall back to full pool only if every rank is 0.
     scored = [(r, _match_rank(query, r)) for r in with_poster]
+    scored = [(r, rk) for r, rk in scored if not _weak_short_acronym_match(query, r, rk)]
+    if not scored:
+        return None
     if forgiving:
         best_key = max(rank for _, rank in scored)
-        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else with_poster
+        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else [r for r, _ in scored]
     else:
         min_tier = _literal_min_acceptable_tier(query)
         strict = [(r, rk) for r, rk in scored if rk[0] >= min_tier]
@@ -1235,9 +1282,12 @@ def _best_from_results(
         if not items:
             return None
     scored = [(r, _match_rank(query, r)) for r in items]
+    scored = [(r, rk) for r, rk in scored if not _weak_short_acronym_match(query, r, rk)]
+    if not scored:
+        return None
     if forgiving:
         best_key = max(rank for _, rank in scored)
-        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else items
+        pool = [r for r, rank in scored if rank == best_key] if best_key[0] > 0 else [r for r, _ in scored]
     else:
         min_tier = _literal_min_acceptable_tier(query)
         strict = [(r, rk) for r, rk in scored if rk[0] >= min_tier]
@@ -1353,11 +1403,26 @@ def _tmdb_movie_detail(movie_id: int) -> dict | None:
     return data
 
 
+_KNOWN_TMDB_MOVIE_ID_BY_COMPACT_NORM: dict[str, int] = {
+    "walle": 10681,
+}
+
+
 def _forced_tmdb_movie_id_for_disambiguated_query(q: str) -> int | None:
     """
     TMDb search often picks the wrong row when many titles share ``Taylor Swift`` tokens
     (e.g. *Journey to Fearless* over *The Eras Tour*). Map full queries to the known movie ids.
     """
+    must = _short_acronym_compact_norm(q)
+    if must:
+        known = _KNOWN_TMDB_MOVIE_ID_BY_COMPACT_NORM.get(must)
+        if known is not None:
+            return known
+    cn = _compact_norm_for_acronym(q)
+    if cn:
+        known = _KNOWN_TMDB_MOVIE_ID_BY_COMPACT_NORM.get(cn)
+        if known is not None:
+            return known
     n = _norm_query(q)
     if not n:
         return None
@@ -1443,7 +1508,7 @@ def search_best_media_with_poster(
     """
     fg = tmdb_match_forgiving(override=forgiving)
     raw = (query or "").strip()
-    if raw and fg:
+    if raw:
         mf = _forced_tmdb_movie_item_for_disambiguated_query(raw, require_poster=True)
         if mf is not None:
             return mf, "movie"
@@ -1488,7 +1553,7 @@ def search_best_media(
     """Pick one movie or TV hit; ``auto`` tries movies first, then TV if no movie match."""
     fg = tmdb_match_forgiving(override=forgiving)
     raw = (query or "").strip()
-    if raw and fg:
+    if raw:
         mf = _forced_tmdb_movie_item_for_disambiguated_query(raw, require_poster=False)
         if mf is not None:
             return mf, "movie"
@@ -1710,7 +1775,18 @@ def apply_tmdb_movie_query(
     try:
         item, kind = search_best_media(q, prefer=prefer, forgiving=forgiving)
         if item is None and not fg:
-            item, kind = search_best_media(q, prefer=prefer, forgiving=True)
+            variants = _tmdb_query_variants(q)
+            for v in variants:
+                if v.strip().casefold() == q.strip().casefold():
+                    continue
+                item, kind = search_best_media(v, prefer=prefer, forgiving=False)
+                if item is not None:
+                    break
+            if item is None:
+                for v in variants:
+                    item, kind = search_best_media(v, prefer=prefer, forgiving=True)
+                    if item is not None:
+                        break
     except RuntimeError as e:
         return False, str(e), None
     except urllib.error.HTTPError as e:
