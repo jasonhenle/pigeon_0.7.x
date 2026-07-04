@@ -2586,11 +2586,28 @@ def main() -> int:
 
         _splash_view_one_warm_done: list[bool] = [False]
 
-        def _warm_view_one_under_splash() -> None:
-            """Pre-rasterize 070326 chrome while the splash overlay is still up."""
-            if not _PIGEON_EXT or _splash_view_one_warm_done[0]:
+        def _warm_view_one_splash_chrome_only() -> None:
+            """Rasterize 070326 SVG chrome early (no playback poll helpers required)."""
+            if not _PIGEON_EXT or now_playing_screen_widget is None:
                 return
-            _splash_view_one_warm_done[0] = True
+            display_view_holder[0] = DisplayView.ONE
+            if status_bar_widget is not None:
+                status_bar_widget.set_now_playing_chrome_visible(True)
+            if now_playing_screen_widget.set_now_playing_chrome_visible(True):
+                now_playing_screen_widget.clear_cache()
+            try:
+                now_playing_screen_widget.bgra_frame()
+            except Exception:
+                pass
+            try:
+                root.update_idletasks()
+            except tk.TclError:
+                pass
+
+        def _warm_view_one_under_splash() -> None:
+            """Full View 1 enable + state sync once playback helpers exist."""
+            if not _PIGEON_EXT:
+                return
             _enable_now_playing_screen()
             _warm_status_bar_blits()
             if now_playing_screen_widget is not None:
@@ -2602,6 +2619,9 @@ def main() -> int:
                 root.update_idletasks()
             except tk.TclError:
                 pass
+            _splash_view_one_warm_done[0] = True
+
+        root.after(150, _warm_view_one_splash_chrome_only)
 
         def _playback_is_netflix_stream() -> bool:
             lm = apple_tv_auto_state.get("last_metadata")
@@ -4766,7 +4786,6 @@ def main() -> int:
         if _PIGEON_EXT:
             _warm_status_bar_blits()
             _warm_playback_overlay_blits()
-            root.after(50, _warm_view_one_under_splash)
 
         # Display off: no landing art (black / stage composite only in render_once).
         if not scene_enabled:
@@ -8321,6 +8340,9 @@ def main() -> int:
             total_i = max(1, int(round(total_f)))
             return max(0.0, min(1.0, played_i / float(total_i)))
 
+        # Mid-bootstrap (~1–2 s in): SVG chrome is warm; full sync is safe now.
+        _warm_view_one_splash_chrome_only()
+
         def _refresh_extrapolated_timecodes(*, tick_steps: int = 1) -> None:
             """Update TRT labels + progress using stepped display time (steady rhythm)."""
             nonlocal skip_cache
@@ -10020,12 +10042,24 @@ def main() -> int:
                 if backdrop_master_bgr is None:
                     use_backdrop_scene = False
             if not _backdrop_active_for_view():
-                _view_one_static = (
+                _static_compose_without_video = (
                     _PIGEON_EXT
-                    and now_playing_screen_widget is not None
-                    and _effective_display_view() == DisplayView.ONE
+                    and (
+                        (
+                            now_playing_screen_widget is not None
+                            and _effective_display_view() == DisplayView.ONE
+                        )
+                        or not scene_enabled
+                        or _effective_display_view() in (
+                            DisplayView.TWO,
+                            DisplayView.THREE,
+                            DisplayView.FOUR,
+                            DisplayView.FIVE,
+                            DisplayView.SIX,
+                        )
+                    )
                 )
-                if last_frame is None and not _view_one_static:
+                if last_frame is None and not _static_compose_without_video:
                     _schedule_next_render()
                     return
                 if not _PIGEON_EXT and scaled_display is None:
@@ -10383,10 +10417,22 @@ def main() -> int:
 
             threading.Thread(target=work_safe, daemon=True).start()
 
+        def _splash_paint_view_one_under_overlay() -> None:
+            """Composite View 1 under the splash while bootstrap finishes (helpers now exist)."""
+            if not _PIGEON_EXT or bootstrap_done[0]:
+                return
+            _warm_view_one_under_splash()
+            nonlocal skip_cache
+            skip_cache = None
+            render_once()
+
+        root.after(0, _splash_paint_view_one_under_overlay)
+
         shell.bind("<Configure>", _on_shell_configure)
 
         _warm_view_one_under_splash()
         _enable_now_playing_screen()
+        skip_cache = None
         render_once()
         root.after(600, _receiver_poll_tick)
 
