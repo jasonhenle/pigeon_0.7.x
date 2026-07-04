@@ -955,8 +955,13 @@ def _layout_tt_and_backdrop_rects(
     return (tt_x, tt_y, max(tt_w, 0), max(tt_h, 0)), (bd_x, bd_y, bd_w, bd_h), tt_fit, bd_fit
 
 
+# Luma at/above this becomes pure white in the unplayed duotone. Binary cut —
+# a pixel is either full white or on the red/black ramp, never a gray ramp.
+_UNPLAYED_HIGHLIGHT_LUMA_MIN = 235
+
+
 def _prepare_backdrop_unplayed_bgra(bd_fit: np.ndarray) -> np.ndarray:
-    """High-contrast red duotone for the unplayed backdrop (bright=luma→red, dark=black)."""
+    """Red duotone for the unplayed backdrop; only the brightest highlights pop to pure white."""
     if bd_fit is None or bd_fit.size == 0:
         return bd_fit
     out = bd_fit.copy()
@@ -964,7 +969,9 @@ def _prepare_backdrop_unplayed_bgra(bd_fit: np.ndarray) -> np.ndarray:
     if not np.any(mask):
         return out
     mono = bgr_to_red_monochrome_luma(out[:, :, :3])
+    highlights = mono[:, :, 2] >= _UNPLAYED_HIGHLIGHT_LUMA_MIN
     out[:, :, :3] = mono
+    out[:, :, :3][highlights] = 255
     return out
 
 
