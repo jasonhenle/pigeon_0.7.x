@@ -160,8 +160,8 @@ _LOWER_BASELINE_Y = 453
 _CLOCK_SIZE_PX = 60
 _VOLUME_SIZE_PX = _CLOCK_SIZE_PX
 _SERVICE_TEXT_SIZE_PX = 30
-# Right edge of service label (right-aligned); 100px inset from the left screen edge.
-_SERVICE_TEXT_RIGHT_X = 100
+# Right edge of service label (right-aligned); 100px inset from the right screen edge.
+_SERVICE_TEXT_RIGHT_X = int(DESIGN_W) - 100
 _AUDIO_CFG_TEXT_SIZE = 25
 _AUDIO_CFG_MAX_W = 280
 # Right edge of the LFE meter column — volume is centered between here and the clock.
