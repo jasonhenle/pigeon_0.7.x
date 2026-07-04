@@ -496,28 +496,34 @@ def metadata_has_playback_title(metadata: Mapping[str, Any] | None) -> bool:
 
 
 def resolve_metadata_tmdb_query(metadata: Mapping[str, Any] | None) -> str:
-    """Best TMDb search string from a poll metadata dict (``query`` plus title fallbacks)."""
+    """Best TMDb search string from a poll metadata dict (``title`` / rawTitle first, then ``query``)."""
     if not metadata:
         return ""
-    q = str(metadata.get("query") or "").strip()
-    if q:
-        return q
     try:
-        derived = tmdb_query_from_raw_title(
-            raw_title_from_metadata_dict(metadata),
-            base_query=None,
-        )
-        if derived and str(derived).strip():
-            return str(derived).strip()
-    except Exception:
-        pass
-    try:
-        from pigeon.tmdb_poster import refine_tmdb_search_query
+        from pigeon.tmdb_poster import is_degenerate_tmdb_query, refine_tmdb_search_query
     except ImportError:
 
         def refine_tmdb_search_query(x: str | None) -> str | None:  # type: ignore[misc]
             return (str(x).strip() or None) if x else None
 
+        def is_degenerate_tmdb_query(x: str) -> bool:  # type: ignore[misc]
+            return not (x or "").strip()
+
+    rt = raw_title_from_metadata_dict(metadata)
+    raw_title = (rt.raw_title or "").strip()
+    if raw_title:
+        refined = refine_tmdb_search_query(raw_title) or raw_title
+        if refined.strip() and not is_degenerate_tmdb_query(refined):
+            return refined.strip()
+    q = str(metadata.get("query") or "").strip()
+    if q:
+        return q
+    try:
+        derived = tmdb_query_from_raw_title(rt, base_query=None)
+        if derived and str(derived).strip():
+            return str(derived).strip()
+    except Exception:
+        pass
     for key in ("series_name", "title", "artist", "album"):
         raw = str(metadata.get(key) or "").strip()
         if not raw:
@@ -526,3 +532,47 @@ def resolve_metadata_tmdb_query(metadata: Mapping[str, Any] | None) -> str:
         if refined.strip():
             return refined.strip()
     return ""
+
+
+def tmdb_query_candidates_from_metadata(metadata: Mapping[str, Any] | None) -> list[str]:
+    """Ordered unique TMDb search strings — raw ``title`` first, then derived alternates."""
+    if not metadata:
+        return []
+    try:
+        from pigeon.tmdb_poster import (
+            equivalent_tmdb_search_queries,
+            is_degenerate_tmdb_query,
+            refine_tmdb_search_query,
+        )
+    except ImportError:
+        q = resolve_metadata_tmdb_query(metadata)
+        return [q] if q else []
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(cand: str | None) -> None:
+        c = (cand or "").strip()
+        if not c or is_degenerate_tmdb_query(c):
+            return
+        r = refine_tmdb_search_query(c) or c
+        key = r.strip().casefold()
+        if not key or key in seen:
+            return
+        if out and any(equivalent_tmdb_search_queries(r, prev) for prev in out):
+            return
+        seen.add(key)
+        out.append(r.strip())
+
+    rt = raw_title_from_metadata_dict(metadata)
+    add(rt.raw_title)
+    add(str(metadata.get("query") or ""))
+    try:
+        add(tmdb_query_from_raw_title(rt, base_query=None))
+    except Exception:
+        pass
+    for key in ("series_name", "artist", "album", "title"):
+        add(str(metadata.get(key) or ""))
+    if not out:
+        add(resolve_metadata_tmdb_query(metadata))
+    return out

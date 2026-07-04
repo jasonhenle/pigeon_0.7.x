@@ -484,6 +484,25 @@ def _widget_accepts_typing(widget: tk.Misc) -> bool:
     return False
 
 
+def _raw_title_query_from_metadata(md: dict | None) -> str | None:
+    """Verbatim playback ``title`` (rawTitle layer) refined for TMDb."""
+    if not md:
+        return None
+    try:
+        from pigeon.raw_title import raw_title_from_metadata_dict
+        from pigeon.tmdb_poster import is_degenerate_tmdb_query, refine_tmdb_search_query
+
+        rt = raw_title_from_metadata_dict(md)
+        raw = (rt.raw_title or "").strip()
+        if not raw:
+            return None
+        r = refine_tmdb_search_query(raw) or raw
+        return r.strip() if r.strip() and not is_degenerate_tmdb_query(r) else None
+    except Exception:
+        raw = str(md.get("title") or "").strip()
+        return raw or None
+
+
 def _alternate_tmdb_query_from_metadata(md: dict | None, primary: str) -> str | None:
     """
     Pick a different TMDb query from last Apple TV metadata.
@@ -2200,6 +2219,11 @@ def main() -> int:
                 return False
             if not scene_enabled:
                 return False
+            # Splash overlay or new now-playing UI — never draw the legacy full-screen saver clock.
+            if startup_ph[0] is not None:
+                return False
+            if new_now_playing_ui_holder[0] and now_playing_screen_widget is not None:
+                return False
             ev = _effective_display_view()
             if ev == DisplayView.FOUR:
                 return False
@@ -2539,23 +2563,27 @@ def main() -> int:
             ):
                 skip_cache = None
 
-        def _activate_now_playing_after_splash() -> None:
-            """Splash → now-playing screen immediately (skip landing toast / idle chrome wait)."""
+        def _enable_now_playing_screen() -> None:
+            """Show the 070326 now-playing screen (chrome on, scene compositing). Idempotent."""
             nonlocal skip_cache, last_frame, scene_enabled, brightness_current, brightness_from, brightness_target
             if not _PIGEON_EXT or now_playing_screen_widget is None:
                 return
             if not new_now_playing_ui_holder[0]:
                 return
             display_view_holder[0] = DisplayView.ONE
-            _startup_splash_complete[0] = True
             scene_enabled = True
-            last_frame = landing_scene_design_bgr
+            last_frame = None
             brightness_current = brightness_from = brightness_target = LANDING_DISPLAY_BRIGHTNESS
             if status_bar_widget is not None:
                 if status_bar_widget.set_now_playing_chrome_visible(True):
                     _warm_status_bar_blits()
             _sync_now_playing_screen_state()
             skip_cache = None
+
+        def _activate_now_playing_after_splash() -> None:
+            """Splash lifted — now-playing should already be live under the overlay."""
+            _enable_now_playing_screen()
+            _startup_splash_complete[0] = True
 
         _post_splash_startup_hook[0] = _activate_now_playing_after_splash
 
@@ -4918,6 +4946,24 @@ def main() -> int:
             return out
 
         def _compose_shown_frame(frame_bgr: np.ndarray | None, brightness: float) -> np.ndarray:
+            if (
+                _PIGEON_EXT
+                and new_now_playing_ui_holder[0]
+                and now_playing_screen_widget is not None
+                and _effective_display_view() == DisplayView.ONE
+                and _use_new_now_playing_ui()
+            ):
+                return compose_display_fast_no_grid(
+                    frame_bgr,
+                    brightness,
+                    frame_is_display_sized=bool(
+                        frame_bgr is not None
+                        and frame_bgr.size > 0
+                        and int(frame_bgr.shape[0]) == int(DESIGN_H)
+                        and int(frame_bgr.shape[1]) == int(DESIGN_W)
+                    ),
+                )
+
             def _view_one_dark_accent_bg_bgr() -> tuple[int, int, int]:
                 """Darker variant of the current accent color for viewOne video a/c backgrounds.
 
@@ -5344,6 +5390,10 @@ def main() -> int:
         # Set True by ⌘⇧X / Ctrl+Shift+X; failure count bumps immediately, cleared when a
         # successful TMDb populate is scored for a new content event key.
         tmdb_quality_error_flag: list[bool] = [False]
+        tmdb_quality_flag_set_mono: list[float] = [0.0]
+        tmdb_quality_auto_unlog_after_id: list[str | None] = [None]
+        tmdb_error_flag_retry_rule_idx: list[int] = [0]
+        TMDB_QUALITY_UNLOG_WINDOW_S = 20.0
         # Last content event key that has already been scored for TMDb quality.
         tmdb_quality_last_scored_event_key: list[str] = [""]
         tmdb_quality_overlay_mode: list[str] = [""]
@@ -5816,7 +5866,13 @@ def main() -> int:
             except Exception:
                 pass
 
-            def finish_tmdb(ok_m: bool, msg_m: str, backdrop_master: np.ndarray | None = None) -> None:
+            def finish_tmdb(
+                ok_m: bool,
+                msg_m: str,
+                backdrop_master: np.ndarray | None = None,
+                match_tier: int = 0,
+                search_query: str = "",
+            ) -> None:
                 nonlocal skip_cache, cap, scene_enabled, last_frame, scaled_display, scaled_version, playing, use_backdrop_scene, backdrop_master_bgr, saved_backdrop_master_bgr, saved_backdrop_app_logo_letterbox_fit, backdrop_app_logo_letterbox_fit, brightness_current, brightness_from, brightness_target, brightness_t0, active_tmdb_title_key, active_tmdb_display_title, tmdb_logo_patch_bgra, tmdb_logo_app_fallback_active
                 sys.stderr.write(f"pigeon: tmdb → {msg_m}\n")
                 sys.stderr.flush()
@@ -5826,6 +5882,7 @@ def main() -> int:
                     append_pigeon_log(f"tmdb → {msg_m}")
                 except Exception:
                     pass
+                tier_ok = _tmdb_match_tier_acceptable(search_query or q, int(match_tier))
                 if not ok_m:
                     # No show title found: do not interrupt with an error dialog. Surface the
                     # streaming-app logo in the content-logo slot and leave the current scene
@@ -5849,6 +5906,20 @@ def main() -> int:
                         )
                     except Exception:
                         pass
+                    if _apply_rawtitle_text_tt_fallback():
+                        if tmdb_logo_widget is not None:
+                            tmdb_logo_widget.clear_cache()
+                        if tmdb_logo_widget_view_six is not None:
+                            tmdb_logo_widget_view_six.clear_cache()
+                        _warm_tmdb_logo_patch()
+                        if _use_new_now_playing_ui() and now_playing_screen_widget is not None:
+                            now_playing_screen_widget.clear_cache()
+                            _sync_now_playing_screen_state()
+                        skip_cache = None
+                        render_once()
+                        if dev_phase == DevPhase.SETTINGS:
+                            sync_developer_chrome()
+                        return
                     active_tmdb_title_key = None
                     active_tmdb_display_title = None
                     tmdb_logo_app_fallback_active = True
@@ -5874,6 +5945,13 @@ def main() -> int:
                 else:
                     active_tmdb_title_key = None
                     active_tmdb_display_title = None
+                if ok_m and not tier_ok:
+                    sys.stderr.write(
+                        f"pigeon: TMDb match tier {match_tier} below threshold for {search_query or q!r} "
+                        "— using rawTitle text TT.\n"
+                    )
+                    sys.stderr.flush()
+                    _apply_rawtitle_text_tt_fallback()
                 if tmdb_logo_widget is not None:
                     tmdb_logo_widget.clear_cache()
                 if tmdb_logo_widget_view_six is not None:
@@ -5926,22 +6004,13 @@ def main() -> int:
                             ev_key = f"{str(active_tmdb_title_key or '').strip()}::{qk}"
                         if ev_key and ev_key != str(tmdb_quality_last_scored_event_key[0] or ""):
                             had_qe = bool(tmdb_quality_error_flag[0])
+                            if had_qe:
+                                _cancel_tmdb_quality_auto_unlog_timer()
                             tmdb_quality_error_flag[0] = False
                             cur_q = read_app_state()
                             s_q = int(cur_q.get("tmdb_quality_successes", 0) or 0)
                             f_q = int(cur_q.get("tmdb_quality_failures", 0) or 0)
-                            if had_qe:
-                                # Failure was already persisted when the flag was toggled on.
-                                try:
-                                    _append_tmdb_quality_event_report_log(
-                                        outcome="FAILURE",
-                                        title_key=active_tmdb_title_key,
-                                        display_title=active_tmdb_display_title,
-                                        msg_m=msg_m,
-                                    )
-                                except Exception:
-                                    pass
-                            else:
+                            if not had_qe:
                                 s_q += 1
                                 try:
                                     _append_tmdb_quality_event_report_log(
@@ -5965,13 +6034,52 @@ def main() -> int:
                 render_once()
 
             def worker() -> None:
+                used_q = q
                 try:
+                    from pigeon.raw_title import tmdb_query_candidates_from_metadata
                     from pigeon.tmdb_poster import apply_tmdb_movie_query
 
-                    ok_w, msg_w, bd_w = apply_tmdb_movie_query(q, prefer=prefer)  # type: ignore[arg-type]
+                    candidates: list[str] = []
+                    md_raw = apple_tv_auto_state.get("last_metadata")
+                    if isinstance(md_raw, dict):
+                        for cand in tmdb_query_candidates_from_metadata(md_raw):
+                            if cand not in candidates:
+                                candidates.append(cand)
+                    if q not in candidates:
+                        candidates.insert(0, q)
+                    elif candidates and candidates[0] != q:
+                        candidates = [q] + [c for c in candidates if c != q]
+                    if not candidates:
+                        candidates = [q]
+                    ok_w, msg_w, bd_w, tier_w = False, "No candidates.", None, 0
+                    used_q = q
+                    for cand in candidates:
+                        ok_try, msg_try, bd_try, tier_try = apply_tmdb_movie_query(
+                            cand, prefer=prefer
+                        )  # type: ignore[arg-type]
+                        used_q = cand
+                        if ok_try and _tmdb_match_tier_acceptable(cand, int(tier_try)):
+                            ok_w, msg_w, bd_w, tier_w = ok_try, msg_try, bd_try, tier_try
+                            break
+                        if ok_try and not ok_w:
+                            ok_w, msg_w, bd_w, tier_w = ok_try, msg_try, bd_try, tier_try
+                    if not ok_w:
+                        for cand in candidates:
+                            ok_try, msg_try, bd_try, tier_try = apply_tmdb_movie_query(
+                                cand, prefer=prefer, forgiving=True
+                            )  # type: ignore[arg-type]
+                            used_q = cand
+                            if ok_try:
+                                ok_w, msg_w, bd_w, tier_w = ok_try, msg_try, bd_try, tier_try
+                                break
                 except Exception as e:
-                    ok_w, msg_w, bd_w = False, str(e), None
-                root.after(0, lambda o=ok_w, m=msg_w, b=bd_w: finish_tmdb(o, m, b))
+                    ok_w, msg_w, bd_w, tier_w, used_q = False, str(e), None, 0, q
+                root.after(
+                    0,
+                    lambda o=ok_w, m=msg_w, b=bd_w, t=tier_w, sq=used_q: finish_tmdb(
+                        o, m, b, t, sq
+                    ),
+                )
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -6030,6 +6138,64 @@ def main() -> int:
                 _refresh_match_quality_glance_label()
             except Exception:
                 pass
+
+        def _cancel_tmdb_quality_auto_unlog_timer() -> None:
+            aid = tmdb_quality_auto_unlog_after_id[0]
+            if aid:
+                try:
+                    root.after_cancel(aid)
+                except tk.TclError:
+                    pass
+            tmdb_quality_auto_unlog_after_id[0] = None
+
+        def _clear_tmdb_quality_flag(*, undo: bool, show_overlay: bool) -> None:
+            nonlocal skip_cache
+            if tmdb_quality_error_flag[0] and undo:
+                _adjust_tmdb_quality_failure_delta(-1)
+            tmdb_quality_error_flag[0] = False
+            _cancel_tmdb_quality_auto_unlog_timer()
+            if show_overlay:
+                _trigger_tmdb_quality_toggle_overlay("undo")
+            skip_cache = None
+
+        def _schedule_tmdb_quality_auto_expire() -> None:
+            _cancel_tmdb_quality_auto_unlog_timer()
+            delay_ms = int(round(TMDB_QUALITY_UNLOG_WINDOW_S * 1000.0))
+
+            def _expire() -> None:
+                nonlocal skip_cache
+                tmdb_quality_auto_unlog_after_id[0] = None
+                if tmdb_quality_error_flag[0]:
+                    tmdb_quality_error_flag[0] = False
+                    skip_cache = None
+
+            tmdb_quality_auto_unlog_after_id[0] = root.after(delay_ms, _expire)
+
+        def _apply_rawtitle_text_tt_fallback() -> bool:
+            nonlocal active_tmdb_title_key, active_tmdb_display_title, tmdb_logo_app_fallback_active
+            try:
+                from pigeon.raw_title import raw_title_from_metadata_dict
+                from pigeon.tmdb_poster import title_key
+            except ImportError:
+                return False
+            md = apple_tv_auto_state.get("last_metadata")
+            if not isinstance(md, dict):
+                return False
+            rt = raw_title_from_metadata_dict(md)
+            raw = (rt.raw_title or "").strip()
+            if not raw:
+                return False
+            active_tmdb_title_key = title_key(raw)
+            active_tmdb_display_title = raw
+            tmdb_logo_app_fallback_active = False
+            return True
+
+        def _tmdb_match_tier_acceptable(query: str, tier: int) -> bool:
+            try:
+                from pigeon.tmdb_poster import _literal_min_acceptable_tier
+            except ImportError:
+                return int(tier) >= 4
+            return int(tier) >= int(_literal_min_acceptable_tier(query))
 
         def on_reset_tmdb_match_quality_stats() -> None:
             """Zero the Settings success/fail counters (state.json only). Logs and desktop reports unchanged."""
@@ -9259,6 +9425,53 @@ def main() -> int:
             widget.bind("<Enter>", show)
             widget.bind("<Leave>", hide)
 
+        def _perform_tmdb_error_flag_retry() -> None:
+            """Second-chance TMDb fetch when the user flags bad artwork (⌘⇧X)."""
+            if not _PIGEON_EXT:
+                return
+            rules = [
+                ("tv", "raw_title", "tv+raw_title"),
+                ("tv", "alternate", "tv+alternate_query"),
+                ("auto", "raw_title", "auto+raw_title"),
+                ("auto", "alternate", "auto+alternate_query"),
+                ("movie", "raw_title", "movie+raw_title"),
+            ]
+            idx = tmdb_error_flag_retry_rule_idx[0] % len(rules)
+            prefer, qsource, rule_id = rules[idx]
+            primary = str(apple_tv_auto_state.get("query") or "").strip()
+            md_raw = apple_tv_auto_state.get("last_metadata")
+            md = md_raw if isinstance(md_raw, dict) else {}
+            alt = _alternate_tmdb_query_from_metadata(md if md else None, primary)
+            raw_q = _raw_title_query_from_metadata(md if md else None)
+            if qsource == "raw_title":
+                q = (raw_q or primary).strip()
+            elif qsource == "alternate":
+                q = (alt or raw_q or primary).strip()
+            else:
+                q = primary
+            if not q:
+                return
+            tmdb_error_flag_retry_rule_idx[0] = idx + 1
+            _tmdb_retry_log_append(
+                {
+                    "event": "tmdb_error_flag_retry",
+                    "rule_index": idx,
+                    "rule_id": rule_id,
+                    "prefer": prefer,
+                    "query_source": qsource,
+                    "query_sent": q,
+                    "primary_query": primary,
+                    "raw_title_query": raw_q,
+                    "alternate_available": bool(alt),
+                    "alternate_query": alt,
+                }
+            )
+            spawn_tmdb_poster_fetch(q, prefer=prefer)
+            sys.stderr.write(
+                f"pigeon: tmdb error-flag retry ({rule_id}) prefer={prefer} q={q!r}\n"
+            )
+            sys.stderr.flush()
+
         def _perform_tmdb_artwork_retry() -> None:
             if not _PIGEON_EXT:
                 return
@@ -9329,7 +9542,7 @@ def main() -> int:
             return "break"
 
         def on_tmdb_quality_error_report_hotkey(event: tk.Event) -> str | None:
-            """Toggle TMDb artwork error flag (⌘⇧X); failure rate updates immediately on flag/undo."""
+            """Flag TMDb artwork error (⌘⇧X); log immediately, retry fetch, 20s undo window."""
             _bump_pigeon_user_activity(event)
             if not _PIGEON_EXT:
                 return None
@@ -9347,34 +9560,45 @@ def main() -> int:
                 or bool(st & 0x20000)
             )
             ctrl = bool(st & 0x0004)
-            # macOS: ⌘⇧X (primary). Any OS: Ctrl+Shift+X also accepted when that binding fires.
             if not shift or not (meta_cmd or ctrl):
                 return None
             now_q = time.monotonic()
             if now_q - _last_tmdb_quality_report_mono[0] < 0.15:
                 return "break"
             _last_tmdb_quality_report_mono[0] = now_q
-            prev_flag = bool(tmdb_quality_error_flag[0])
-            tmdb_quality_error_flag[0] = not prev_flag
-            is_flagged = bool(tmdb_quality_error_flag[0])
-            if is_flagged and not prev_flag:
-                _adjust_tmdb_quality_failure_delta(1)
-            elif prev_flag and not is_flagged:
-                _adjust_tmdb_quality_failure_delta(-1)
-            _trigger_tmdb_quality_toggle_overlay("flag" if is_flagged else "undo")
+            if tmdb_quality_error_flag[0]:
+                elapsed = now_q - float(tmdb_quality_flag_set_mono[0] or 0.0)
+                if elapsed <= TMDB_QUALITY_UNLOG_WINDOW_S:
+                    _clear_tmdb_quality_flag(undo=True, show_overlay=True)
+                    try:
+                        sys.stderr.write(
+                            "pigeon: TMDb quality flag undone within 20s window (⌘⇧X).\n"
+                        )
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                    return "break"
+                _clear_tmdb_quality_flag(undo=False, show_overlay=False)
+            tmdb_quality_error_flag[0] = True
+            tmdb_quality_flag_set_mono[0] = now_q
+            _adjust_tmdb_quality_failure_delta(1)
+            _trigger_tmdb_quality_toggle_overlay("flag")
             try:
-                if is_flagged:
-                    sys.stderr.write(
-                        "pigeon: TMDb material quality issue flagged (⌘⇧X / Ctrl+Shift+X). "
-                        "Persisted failure count increased now; the next scored successful populate still "
-                        f"logs FAILURE to {PIGEON_STATE_DIR_TILDE}/tmdb_quality_event_reports.log and clears the flag.\n"
-                    )
-                else:
-                    sys.stderr.write(
-                        "pigeon: TMDb material quality issue flag cleared (⌘⇧X / Ctrl+Shift+X). "
-                        "Persisted failure count decreased now (not below zero); the next scored populate "
-                        "counts as success unless flagged again.\n"
-                    )
+                _append_tmdb_quality_event_report_log(
+                    outcome="FAILURE",
+                    title_key=active_tmdb_title_key,
+                    display_title=active_tmdb_display_title,
+                    msg_m="user_flagged",
+                )
+            except Exception:
+                pass
+            _perform_tmdb_error_flag_retry()
+            _schedule_tmdb_quality_auto_expire()
+            try:
+                sys.stderr.write(
+                    "pigeon: TMDb material quality issue flagged (⌘⇧X). "
+                    "Logged immediately; retrying TMDb fetch; undo available for 20s.\n"
+                )
                 sys.stderr.flush()
             except Exception:
                 pass
@@ -10488,6 +10712,7 @@ def main() -> int:
 
         shell.bind("<Configure>", _on_shell_configure)
 
+        _enable_now_playing_screen()
         render_once()
         root.after(600, _receiver_poll_tick)
 

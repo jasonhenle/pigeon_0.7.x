@@ -618,6 +618,20 @@ def compound_title_streaming_series_fix(
     return None
 
 
+_GUEST_ON_SHOW_RE = re.compile(
+    r"^(.+?)\s+on\s+(snl|saturday\s+night\s+live)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _guest_on_show_canonical_query(s: str) -> str | None:
+    """``Will Ferrell on SNL`` → ``Saturday Night Live`` for TMDb TV search."""
+    m = _GUEST_ON_SHOW_RE.match((s or "").strip())
+    if not m:
+        return None
+    return _SHORT_SHOW_CANONICAL_QUERIES.get("snl") or "Saturday Night Live"
+
+
 def refine_tmdb_search_query(raw: str | None) -> str | None:
     """
     Last-mile cleanup for any metadata source: unicode dashes, then ``Show - segment`` / colon stripping.
@@ -628,6 +642,9 @@ def refine_tmdb_search_query(raw: str | None) -> str | None:
     s = _normalize_title_for_show_split(str(raw).strip())
     if not s:
         return None
+    guest_show = _guest_on_show_canonical_query(s)
+    if guest_show:
+        return guest_show
     pick = colon_prefix_show_query(s)
     out = (pick or s).strip()
     return out or None
@@ -1751,19 +1768,20 @@ def fetch_tmdb_poster_to_pulled(
 
 def apply_tmdb_movie_query(
     query: str, *, prefer: Prefer = "auto", forgiving: bool | None = None
-) -> tuple[bool, str, np.ndarray | None]:
+) -> tuple[bool, str, np.ndarray | None, int]:
     """
     Search TMDb, prefer cached logo when present; pull missing assets and cache as
     ``{Title}_{Logo|Backdrop}`` in pigeonReFormattedMedia.
 
     Always picks a **random** backdrop from TMDb image results (not served from cache).
 
-    Returns ``(ok, message, backdrop_master_bgr_or_none)`` where master is BGR scaled to uniform
-    design canvas height for the compositor, or None if no backdrop could be loaded.
+    Returns ``(ok, message, backdrop_master_bgr_or_none, match_tier)`` where master is BGR
+    scaled to uniform design canvas height for the compositor, or None if no backdrop could be
+    loaded. ``match_tier`` is the :func:`_match_rank` tier (0 when no hit).
     """
     q = query.strip()
     if not q:
-        return False, "Empty search.", None
+        return False, "Empty search.", None, 0
     # Protocol: keep ORIGINAL as transient staging only; clear leftovers before each new TMDB pull.
     try:
         ensure_tmdb_media_dirs()
@@ -1788,13 +1806,13 @@ def apply_tmdb_movie_query(
                     if item is not None:
                         break
     except RuntimeError as e:
-        return False, str(e), None
+        return False, str(e), None, 0
     except urllib.error.HTTPError as e:
-        return False, f"TMDb API error ({e.code}): {e.reason}", None
+        return False, f"TMDb API error ({e.code}): {e.reason}", None, 0
     except urllib.error.URLError as e:
-        return False, f"TMDb network error: {e.reason}", None
+        return False, f"TMDb network error: {e.reason}", None, 0
     except (json.JSONDecodeError, OSError, ValueError) as e:
-        return False, str(e), None
+        return False, str(e), None, 0
 
     if item is None or kind is None:
         variants = _tmdb_query_variants(q) if fg else [q]
@@ -1811,7 +1829,10 @@ def apply_tmdb_movie_query(
             "only. Apple TV sometimes sends a label TMDb does not recognize (episode titles, apps, "
             "Show: guest lines, or extras). Check spelling and network — API errors show a different message.",
             None,
+            0,
         )
+
+    match_tier = int(_match_rank(q, item)[0])
 
     display_title = _display_title(item, kind)
     # TMDb may classify an SNL sketch row as a **movie**; still normalize the on-screen title.
@@ -1893,4 +1914,4 @@ def apply_tmdb_movie_query(
     summary = " | ".join(parts)
     trim_pulled_media_dir()
     # Prefix title_key + display_title so the UI can render a text fallback when no English logo exists.
-    return True, f"{tk}::{display_title}::{summary}", backdrop_master
+    return True, f"{tk}::{display_title}::{summary}", backdrop_master, match_tier

@@ -152,8 +152,21 @@ _TC_Y = 247
 _STATUS_INDICATOR_TMDB_CX = 753
 _STATUS_INDICATOR_DOT_R = 8
 _CLOCK_RIGHT_X = _STATUS_INDICATOR_TMDB_CX + _STATUS_INDICATOR_DOT_R
-_CLOCK_Y = 405
+# Shared baselines (SVG ``02_widget_clock_text`` y≈405; config/service row y≈453).
+_UPPER_BASELINE_Y = 405
+_LOWER_BASELINE_Y = 453
 _CLOCK_SIZE_PX = 60
+_VOLUME_SIZE_PX = _CLOCK_SIZE_PX
+_SERVICE_TEXT_SIZE_PX = 30
+_AUDIO_CFG_TEXT_SIZE = 25
+_AUDIO_CFG_MAX_W = 280
+# Right edge of the LFE meter column — volume is centered between here and the clock.
+_AUDIO_METER_RIGHT_X = 222
+# Drop shadow on TMDb TT in the played (watched) bar group only.
+_TT_PLAYED_DROP_SHADOW = True
+_TT_SHADOW_OFFSET = (4, 5)
+_TT_SHADOW_BLUR_SIGMA = 4.0
+_TT_SHADOW_STRENGTH = 0.55
 # SVG circle centers for the four status dots (layer 01).
 _STATUS_INDICATOR_CENTERS: tuple[tuple[float, float], ...] = (
     (692.89, 444.33),  # audio
@@ -161,46 +174,30 @@ _STATUS_INDICATOR_CENTERS: tuple[tuple[float, float], ...] = (
     (732.89, 444.33),  # receiver
     (752.89, 444.33),  # tmdb
 )
-
-_SERVICE_TEXT_X = 522
-_SERVICE_TEXT_Y = 452
-_SERVICE_TEXT_SIZE_PX = 30
-_SERVICE_MIN_GAP_AFTER_VOLUME = 24
-
-# Audio config line (SVG ``05_widget_audio_config_text`` at ~46×453).
-_AUDIO_CFG_TEXT_X = 46
-_AUDIO_CFG_TEXT_Y = 453
-_AUDIO_CFG_TEXT_SIZE = 25
-# Dedicated row below channel abbreviations (y≈426); incoming codec only (not MS surround mode).
-_AUDIO_CFG_MAX_W = 240
-
-_VOLUME_X = 295
-_VOLUME_Y = 426
-_VOLUME_SIZE = 36
-# Targeted bottom wipes — must not cover status dots (x≈685+), clock (y≈340–415, x≈520+), or channel labels (y≈400–430).
+# Targeted bottom wipes — must not cover status dots (x≈685+), clock (y≈340–415, x≈520+).
 _BOTTOM_CONFIG_WIPE_TOP = 446
 _BOTTOM_MID_WIPE_TOP = 412
 _BOTTOM_TEXT_WIPE_RIGHT_X = 678
 
-# Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px.
+# Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px (bottom = upper baseline).
 _AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
-    ("SL", 53, 405, 11, 23),
-    ("L", 76, 405, 11, 44),
-    ("C", 99, 405, 11, 87),
-    ("R", 124, 405, 11, 44),
-    ("SR", 150, 405, 11, 23),
-    ("LFE", 211, 405, 11, 9),
+    ("SL", 53, _UPPER_BASELINE_Y, 11, 23),
+    ("L", 76, _UPPER_BASELINE_Y, 11, 44),
+    ("C", 99, _UPPER_BASELINE_Y, 11, 87),
+    ("R", 124, _UPPER_BASELINE_Y, 11, 44),
+    ("SR", 150, _UPPER_BASELINE_Y, 11, 23),
+    ("LFE", 211, _UPPER_BASELINE_Y, 11, 9),
 )
+# Channel abbreviations share the lower baseline with service + audio config.
 _AUDIO_LABELS: tuple[tuple[str, int, int], ...] = (
-    ("SL", 46, 426),
-    ("L", 76, 426),
-    ("C", 99, 426),
-    ("R", 124, 426),
-    ("SR", 142, 426),
-    ("LFE", 200, 426),
+    ("SL", 46, _LOWER_BASELINE_Y),
+    ("L", 76, _LOWER_BASELINE_Y),
+    ("C", 99, _LOWER_BASELINE_Y),
+    ("R", 124, _LOWER_BASELINE_Y),
+    ("SR", 142, _LOWER_BASELINE_Y),
+    ("LFE", 200, _LOWER_BASELINE_Y),
 )
 _CONTAINER_RX = 12
-_SERVICE_TEXT_SIZE_PX = 30
 
 @dataclass
 class NowPlayingScreenState:
@@ -778,6 +775,44 @@ def _audio_config_line(incoming: str, config: str) -> str:
     return line.upper() if line else ""
 
 
+def _paste_text_on_baseline(
+    canvas: np.ndarray,
+    patch: np.ndarray,
+    x: int,
+    baseline_y: int,
+) -> None:
+    """Paste a text patch so its typographic baseline sits on ``baseline_y``."""
+    if patch is None or patch.size == 0:
+        return
+    th = int(patch.shape[0])
+    _paste_patch_bgra(canvas, patch, x, baseline_y - th)
+
+
+def _tt_with_drop_shadow_bgra(src: np.ndarray) -> tuple[np.ndarray, int]:
+    """Padded BGRA with a soft shadow behind ``src``; returns ``(image, pad_px)``."""
+    if src is None or src.size == 0:
+        return src, 0
+    ox, oy = _TT_SHADOW_OFFSET
+    sigma = float(_TT_SHADOW_BLUR_SIGMA)
+    pad = max(8, int(round(sigma * 3)) + max(abs(ox), abs(oy)) + 2)
+    h, w = src.shape[:2]
+    out_h, out_w = h + pad * 2, w + pad * 2
+    shadow = np.zeros((out_h, out_w), dtype=np.float32)
+    alpha = src[:, :, 3].astype(np.float32) / 255.0
+    sy, sx = pad + oy, pad + ox
+    shadow[sy : sy + h, sx : sx + w] = np.maximum(
+        shadow[sy : sy + h, sx : sx + w],
+        alpha * float(_TT_SHADOW_STRENGTH),
+    )
+    k = max(3, int(round(sigma * 2)) | 1)
+    shadow = cv2.GaussianBlur(shadow, (k, k), sigmaX=sigma, sigmaY=sigma)
+    out = np.zeros((out_h, out_w, 4), dtype=np.uint8)
+    sa = np.clip(shadow * 255.0, 0.0, 255.0).astype(np.uint8)
+    out[:, :, 3] = sa
+    _paste_patch_bgra(out, src, pad, pad)
+    return out, pad
+
+
 def _tt_to_white_bgra(src: np.ndarray, *, tint: float = _TT_TINT_WHITE) -> np.ndarray:
     """Tint visible TT pixels toward white (``tint``=0.5 → 50% white)."""
     if src is None or src.size == 0:
@@ -928,8 +963,16 @@ def _compose_bar_group_bgra(
     rel_bd_x = bd_x - _BAR_L
     rel_bd_y = bd_y - _BAR_T
     if tt_fit is not None and tt_fit.size > 0:
-        tt_layer = tt_fit if played else _tt_to_white_bgra(tt_fit)
-        _paste_rounded_bgra(canvas, tt_layer, rel_tt_x, rel_tt_y, radius=_IMAGE_CORNER_RX)
+        if played:
+            tt_layer = tt_fit
+            if _TT_PLAYED_DROP_SHADOW:
+                shadowed, spad = _tt_with_drop_shadow_bgra(tt_layer)
+                _paste_patch_bgra(canvas, shadowed, rel_tt_x - spad, rel_tt_y - spad)
+            else:
+                _paste_rounded_bgra(canvas, tt_layer, rel_tt_x, rel_tt_y, radius=_IMAGE_CORNER_RX)
+        else:
+            tt_layer = _tt_to_white_bgra(tt_fit)
+            _paste_rounded_bgra(canvas, tt_layer, rel_tt_x, rel_tt_y, radius=_IMAGE_CORNER_RX)
     if bd_fit is not None and bd_fit.size > 0:
         bd_layer = bd_fit if played else _prepare_backdrop_unplayed_bgra(bd_fit)
         _paste_rounded_bgra(canvas, bd_layer, rel_bd_x, rel_bd_y, radius=_IMAGE_CORNER_RX)
@@ -997,13 +1040,12 @@ def _paste_patch_bgra(canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> 
 
 
 def _draw_audio_channel_labels_bgra(canvas: np.ndarray) -> None:
-    """Draw Sharp Sans Extrabold channel labels (SVG ``*_text`` layers are stripped)."""
+    """Draw Sharp Sans Extrabold channel labels on the lower baseline row."""
     size_px = max(10, _sy(20.0))
     fill_rgb = (237, 28, 36)
-    for label, x, y in _AUDIO_LABELS:
+    for label, x, baseline_y in _AUDIO_LABELS:
         patch, _, _ = _fit_text_patch(label, size_px=size_px, fill_rgb=fill_rgb, bold=True)
-        self_h = int(patch.shape[0])
-        _paste_patch_bgra(canvas, patch, x, y - self_h + max(2, _sy(18)))
+        _paste_text_on_baseline(canvas, patch, x, baseline_y)
 
 
 def _wipe_bottom_receiver_text_bands_bgra(canvas: np.ndarray) -> None:
@@ -1503,36 +1545,7 @@ class NowPlayingScreenWidget:
 
         _draw_audio_channel_labels_bgra(out)
 
-        cfg_line = _audio_config_line(st.incoming, st.config)
-        if cfg_line:
-            cfg_patch, _, th = _fit_text_patch(
-                cfg_line,
-                size_px=max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE))),
-                fill_rgb=(237, 28, 36),
-                bold=True,
-                max_width_px=_AUDIO_CFG_MAX_W,
-            )
-            self._paste_patch(
-                out,
-                cfg_patch,
-                _AUDIO_CFG_TEXT_X,
-                _AUDIO_CFG_TEXT_Y - th,
-            )
-
-        vol_line = _receiver_volume_display_line(st.volume)
-        vol_right_x = _VOLUME_X
-        if vol_line:
-            vol_patch, vol_tw, vol_th = _fit_text_patch(
-                vol_line,
-                size_px=max(10, _sy(float(_VOLUME_SIZE))),
-                fill_rgb=(225, 0, 24),
-                bold=True,
-            )
-            vol_y = _VOLUME_Y - vol_th
-            self._paste_patch(out, vol_patch, _VOLUME_X, vol_y)
-            vol_right_x = _VOLUME_X + vol_tw
-
-        clk_patch, clk_tw, clk_th = _fit_text_patch(
+        clk_patch, clk_tw, _ = _fit_text_patch(
             _clock_text(),
             size_px=_CLOCK_SIZE_PX,
             fill_rgb=(237, 28, 36),
@@ -1540,21 +1553,46 @@ class NowPlayingScreenWidget:
             align="right",
         )
         clk_x = _CLOCK_RIGHT_X - clk_tw
-        clk_y = _CLOCK_Y - clk_th
+
+        vol_line = _receiver_volume_display_line(st.volume)
+        vol_center_x = (_AUDIO_METER_RIGHT_X + clk_x) // 2
+        if vol_line:
+            vol_patch, vol_tw, _ = _fit_text_patch(
+                vol_line,
+                size_px=max(10, _sy(float(_VOLUME_SIZE_PX))),
+                fill_rgb=(225, 0, 24),
+                bold=True,
+            )
+            vol_x = vol_center_x - vol_tw // 2
+            _paste_text_on_baseline(out, vol_patch, vol_x, _UPPER_BASELINE_Y)
+            vol_center_x = vol_x + vol_tw // 2
+
+        cfg_line = _audio_config_line(st.incoming, st.config)
+        if cfg_line:
+            cfg_patch, cfg_tw, _ = _fit_text_patch(
+                cfg_line,
+                size_px=max(10, _sy(float(_AUDIO_CFG_TEXT_SIZE))),
+                fill_rgb=(237, 28, 36),
+                bold=True,
+                max_width_px=_AUDIO_CFG_MAX_W,
+            )
+            cfg_x = vol_center_x - cfg_tw // 2
+            _paste_text_on_baseline(out, cfg_patch, cfg_x, _LOWER_BASELINE_Y)
 
         service_text = str(st.badge_label or "").strip()
         if service_text:
-            svc_patch, _, th = _fit_text_patch(
+            svc_patch, svc_tw, _ = _fit_text_patch(
                 service_text.lower(),
                 size_px=max(10, _sy(float(_SERVICE_TEXT_SIZE_PX))),
                 fill_rgb=(237, 28, 36),
                 bold=True,
+                align="right",
             )
-            svc_x = max(_SERVICE_TEXT_X, vol_right_x + _SERVICE_MIN_GAP_AFTER_VOLUME)
-            self._paste_patch(out, svc_patch, svc_x, _SERVICE_TEXT_Y - th)
+            svc_x = _CLOCK_RIGHT_X - svc_tw
+            _paste_text_on_baseline(out, svc_patch, svc_x, _LOWER_BASELINE_Y)
 
         # Clock + status dots last so bottom wipes never cover them.
-        self._paste_patch(out, clk_patch, clk_x, clk_y)
+        _paste_text_on_baseline(out, clk_patch, clk_x, _UPPER_BASELINE_Y)
         _draw_status_indicator_dots_bgra(out, st)
 
         return out
