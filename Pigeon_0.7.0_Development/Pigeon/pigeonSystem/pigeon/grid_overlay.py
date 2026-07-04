@@ -170,111 +170,92 @@ def build_absolute_grid_overlay_bgra(
     with_fractional_lines: bool = False,
 ) -> np.ndarray:
     """
-    Absolute-pixel grid for viewFive.
+    Absolute-pixel grid for viewFive (built at the true design resolution).
 
-    - Major lines every 50 px across the full 800×480 design canvas.
-    - Optional minor lines at 25%/50%/75% between majors (12.5/25/37.5 px).
-    - Top + left labels number lines (0 at edge, then 1 at 50 px, etc.).
+    - A 1 px line exactly on every 50 px coordinate, horizontally and vertically.
+    - Every line is labeled with its actual pixel value ("150", "400", …) so
+      on-screen coordinates can be read straight off the overlay.
+    - Optional minor lines at 12.5/25/37.5 px between majors.
     """
     w = max(1, int(width))
     h = max(1, int(height))
     overlay = np.zeros((h, w, 4), dtype=np.uint8)
 
-    major_step = 50.0
-    # 50% transparent grid overall.
-    major_alpha = 128
+    major_step = 50
     major_bgr = (255, 255, 0)
-    major_thickness = 4
+    # 1 px lines: the drawn pixel IS the coordinate (the old 4 px lines read ±2 px off).
+    major_thickness = 1
+    major_alpha = 165
+    hundred_alpha = 235  # multiples of 100 pop for quicker counting
 
-    half_bgr = (255, 255, 0)
+    minor_bgr = (255, 255, 0)
     half_alpha = 96
-    half_thickness = 2
-    quarter_bgr = (255, 255, 0)
-    quarter_alpha = 72
-    quarter_thickness = 1
+    quarter_alpha = 64
+    minor_thickness = 1
 
-    # Draw major vertical lines.
-    max_major_x_idx = int(np.floor(float(w) / major_step))
-    for i in range(max_major_x_idx + 1):
-        x = int(round(i * major_step))
-        x = max(0, min(w - 1, x))
-        _draw_line_with_alpha(
-            overlay,
-            (x, 0),
-            (x, h - 1),
-            major_bgr,
-            major_alpha,
-            major_thickness,
-        )
-        if with_fractional_lines and i < max_major_x_idx:
-            for frac, t, a in ((0.25, quarter_thickness, quarter_alpha), (0.5, half_thickness, half_alpha), (0.75, quarter_thickness, quarter_alpha)):
-                xf = int(round((i + frac) * major_step))
+    x_lines = list(range(0, w, major_step))
+    y_lines = list(range(0, h, major_step))
+
+    for x in x_lines:
+        xc = min(w - 1, x)
+        a = hundred_alpha if x % 100 == 0 else major_alpha
+        _draw_line_with_alpha(overlay, (xc, 0), (xc, h - 1), major_bgr, a, major_thickness)
+        if with_fractional_lines:
+            for frac, a2 in ((12.5, quarter_alpha), (25.0, half_alpha), (37.5, quarter_alpha)):
+                xf = int(round(x + frac))
                 if xf <= 0 or xf >= w - 1:
                     continue
                 _draw_line_with_alpha(
-                    overlay,
-                    (xf, 0),
-                    (xf, h - 1),
-                    half_bgr if frac == 0.5 else quarter_bgr,
-                    a,
-                    t,
+                    overlay, (xf, 0), (xf, h - 1), minor_bgr, a2, minor_thickness
                 )
 
-    # Draw major horizontal lines.
-    max_major_y_idx = int(np.floor(float(h) / major_step))
-    for i in range(max_major_y_idx + 1):
-        y = int(round(i * major_step))
-        y = max(0, min(h - 1, y))
-        _draw_line_with_alpha(
-            overlay,
-            (0, y),
-            (w - 1, y),
-            major_bgr,
-            major_alpha,
-            major_thickness,
-        )
-        if with_fractional_lines and i < max_major_y_idx:
-            for frac, t, a in ((0.25, quarter_thickness, quarter_alpha), (0.5, half_thickness, half_alpha), (0.75, quarter_thickness, quarter_alpha)):
-                yf = int(round((i + frac) * major_step))
+    for y in y_lines:
+        yc = min(h - 1, y)
+        a = hundred_alpha if y % 100 == 0 else major_alpha
+        _draw_line_with_alpha(overlay, (0, yc), (w - 1, yc), major_bgr, a, major_thickness)
+        if with_fractional_lines:
+            for frac, a2 in ((12.5, quarter_alpha), (25.0, half_alpha), (37.5, quarter_alpha)):
+                yf = int(round(y + frac))
                 if yf <= 0 or yf >= h - 1:
                     continue
                 _draw_line_with_alpha(
-                    overlay,
-                    (0, yf),
-                    (w - 1, yf),
-                    half_bgr if frac == 0.5 else quarter_bgr,
-                    a,
-                    t,
+                    overlay, (0, yf), (w - 1, yf), minor_bgr, a2, minor_thickness
                 )
 
-    # Line-number labels: top (x lines) and left (y lines).
-    font_scale = max(0.9, min(1.25, h / 360.0))
-    top_y = max(12, int(round(16.0)))
-    left_x = max(10, int(round(14.0)))
+    # Pixel-value labels: x values along the top edge, y values along the left edge.
+    font_scale = max(0.85, min(1.15, h / 420.0))
     text_bgra = (180, 255, 255, 235)
     box_bgra = (0, 0, 0, 180)
+    font = cv2.FONT_HERSHEY_PLAIN
+    (_, label_th), _ = cv2.getTextSize("0123456789", font, font_scale, 1)
+    top_y = max(10, label_th // 2 + 6)
+    left_x_pad = 6
 
-    for i in range(max_major_x_idx + 1):
-        x = int(round(i * major_step))
-        x = max(0, min(w - 1, x))
+    for x in x_lines:
+        if x == 0:
+            continue  # the y-axis "0" label owns the corner
+        label = str(x)
+        (tw, _), _ = cv2.getTextSize(label, font, font_scale, 1)
+        cx = min(x, w - tw // 2 - left_x_pad)
         _draw_centered_label_box(
             overlay,
-            str(i),
-            center_x=x,
+            label,
+            center_x=cx,
             center_y=top_y,
             font_scale=font_scale,
             text_bgra=text_bgra,
             box_bgra=box_bgra,
         )
 
-    for i in range(max_major_y_idx + 1):
-        y = int(round(i * major_step))
-        y = max(0, min(h - 1, y))
+    for y in y_lines:
+        label = str(y)
+        (tw, _), _ = cv2.getTextSize(label, font, font_scale, 1)
+        cy = max(y, top_y) if y == 0 else min(y, h - label_th)
         _draw_centered_label_box(
             overlay,
-            str(i),
-            center_x=left_x,
-            center_y=y,
+            label,
+            center_x=left_x_pad + tw // 2 + 4,
+            center_y=cy,
             font_scale=font_scale,
             text_bgra=text_bgra,
             box_bgra=box_bgra,

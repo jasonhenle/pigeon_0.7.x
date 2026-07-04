@@ -183,6 +183,32 @@ _BOTTOM_CONFIG_WIPE_TOP = 446
 _BOTTOM_MID_WIPE_TOP = 412
 _BOTTOM_TEXT_WIPE_RIGHT_X = 678
 
+# --- Variation layouts (np = status bar, rv = receiver info, ck = clock) ---
+# "full" keeps the 070326 SVG layout with audio meters (HDMI analysis / sim).
+# The other modes drop the meters and re-anchor text per the 070426 mocks.
+_LAYOUT_MODES = ("full", "np_rv_ck", "np_ck", "rv_ck", "ck")
+# np_* modes: text row under the bar (volume/clock upper, config/service lower).
+_NP_UPPER_BASELINE_Y = 368
+_NP_LOWER_BASELINE_Y = 426
+_NP_LEFT_X = 58
+_NP_CLOCK_SIZE_PX = 72
+_NP_VOLUME_SIZE_PX = 72
+_NP_TEXT_SIZE_PX = 30
+_NP_SERVICE_RIGHT_X = _BOTTOM_TEXT_WIPE_RIGHT_X  # service label ends left of the dots
+# rv_ck / ck modes (no now-playing bar): right-aligned stack with a large clock.
+_RV_RIGHT_X = _CLOCK_RIGHT_X
+_RV_VOLUME_BASELINE_Y = 122
+_RV_VOLUME_SIZE_PX = 64
+_RV_CFG_BASELINE_Y = 192
+_RV_CFG_SIZE_PX = 40
+_RV_CLOCK_BASELINE_Y = 362
+_RV_CLOCK_SIZE_PX = 128
+
+
+def _normalized_layout_mode(mode: str) -> str:
+    m = str(mode or "").strip().lower()
+    return m if m in _LAYOUT_MODES else "np_rv_ck"
+
 # Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px (bottom = upper baseline).
 _AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
     ("SL", 53, _UPPER_BASELINE_Y, 11, 23),
@@ -224,6 +250,8 @@ class NowPlayingScreenState:
     indicator_tmdb: bool = False
     indicator_audio: bool = False
     audio_levels_sim: bool = False
+    # "full" | "np_rv_ck" | "np_ck" | "rv_ck" | "ck" — see _LAYOUT_MODES.
+    layout_mode: str = "np_rv_ck"
 
 
 def default_now_playing_svg_path(assets_dir: Path | str | None = None) -> Path:
@@ -1263,6 +1291,14 @@ class NowPlayingScreenWidget:
         self.clear_cache()
         return True
 
+    def set_layout_mode(self, mode: str) -> bool:
+        m = _normalized_layout_mode(mode)
+        if m == self._state.layout_mode:
+            return False
+        self._state.layout_mode = m
+        self.clear_cache()
+        return True
+
     def set_streaming_badge(self, *, show: bool, filename: str, label: str) -> bool:
         sig = (bool(show), str(filename or ""), str(label or ""))
         cur = (self._state.badge_show, self._state.badge_filename, self._state.badge_label)
@@ -1351,6 +1387,8 @@ class NowPlayingScreenWidget:
         badge_filename: str = "",
         badge_label: str = "",
         audio_levels_sim: bool | None = None,
+        layout_mode: str | None = None,
+        indicator_now_playing: bool | None = None,
     ) -> bool:
         """Batch update from ``pigeon_0_7`` holders; returns True when the cached frame is stale."""
         changed = False
@@ -1373,11 +1411,17 @@ class NowPlayingScreenWidget:
         ):
             changed = True
         if self.set_indicators(
-            now_playing=bool(has_now_playing),
+            now_playing=bool(
+                has_now_playing
+                if indicator_now_playing is None
+                else indicator_now_playing
+            ),
             receiver=bool(has_receiver),
             tmdb=bool(has_tmdb),
             audio=bool(audio_analysis),
         ):
+            changed = True
+        if layout_mode is not None and self.set_layout_mode(layout_mode):
             changed = True
         if self.set_backdrop_bgr(tmdb_backdrop_bgr):
             changed = True
@@ -1417,6 +1461,7 @@ class NowPlayingScreenWidget:
             st.indicator_tmdb,
             st.indicator_audio,
             st.audio_levels_sim,
+            st.layout_mode,
             bd_id,
             tt_id,
             # Clock shows h:mm only — invalidate per minute, not per second.
@@ -1458,10 +1503,14 @@ class NowPlayingScreenWidget:
 
     def _render_static_bgra(self) -> np.ndarray:
         """Everything except the animated audio meter bars (cached across sim ticks)."""
-        st = self._state
-        out = _fallback_base_bgra()
-        self._paste_patch(out, self._render_svg_base(), 0, 0)
+        mode = _normalized_layout_mode(self._state.layout_mode)
+        if mode == "full":
+            return self._render_static_full_bgra()
+        return self._render_static_variation_bgra(mode)
 
+    def _draw_bar_and_timecode(self, out: np.ndarray) -> None:
+        """Now-playing bar (unplayed + played reveal + paused overlay) and timecode pill."""
+        st = self._state
         progress = st.progress if st.trt_substantive else 0.0
         played_w = max(0, min(_BAR_W, int(round(progress * float(_BAR_W)))))
 
@@ -1542,6 +1591,14 @@ class NowPlayingScreenWidget:
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
+    def _render_static_full_bgra(self) -> np.ndarray:
+        """070326 SVG layout with audio meter chrome (HDMI analysis / sim)."""
+        st = self._state
+        out = _fallback_base_bgra()
+        self._paste_patch(out, self._render_svg_base(), 0, 0)
+
+        self._draw_bar_and_timecode(out)
+
         # Targeted bottom wipes — full-width band was erasing status dots and clock ink.
         _wipe_bottom_receiver_text_bands_bgra(out)
 
@@ -1599,6 +1656,106 @@ class NowPlayingScreenWidget:
 
         return out
 
+    def _render_static_variation_bgra(self, mode: str) -> np.ndarray:
+        """Meter-less layouts (np/rv/ck mocks): black base, no SVG chrome, dots always drawn."""
+        st = self._state
+        out = _fallback_base_bgra()
+
+        has_bar = mode in ("np_rv_ck", "np_ck")
+        show_receiver_text = mode in ("np_rv_ck", "rv_ck")
+
+        if has_bar:
+            self._draw_bar_and_timecode(out)
+
+        vol_line = _receiver_volume_display_line(st.volume) if show_receiver_text else ""
+        cfg_line = _audio_config_line(st.incoming, st.config) if show_receiver_text else ""
+        cfg_line = cfg_line.lower()
+        service_text = str(st.badge_label or "").strip().lower() if has_bar else ""
+
+        if mode == "np_rv_ck":
+            # Left cluster: volume over audio config, aligned with the bar's left edge.
+            if vol_line:
+                vol_patch, _, _ = _fit_text_patch(
+                    vol_line,
+                    size_px=max(10, _sy(float(_NP_VOLUME_SIZE_PX))),
+                    fill_rgb=(225, 0, 24),
+                    bold=True,
+                )
+                _paste_text_on_baseline(out, vol_patch, _NP_LEFT_X, _NP_UPPER_BASELINE_Y)
+            if cfg_line:
+                cfg_patch, _, _ = _fit_text_patch(
+                    cfg_line,
+                    size_px=max(10, _sy(float(_NP_TEXT_SIZE_PX))),
+                    fill_rgb=(237, 28, 36),
+                    bold=True,
+                    max_width_px=_AUDIO_CFG_MAX_W,
+                )
+                _paste_text_on_baseline(out, cfg_patch, _NP_LEFT_X, _NP_LOWER_BASELINE_Y)
+
+        if has_bar:
+            clk_patch, clk_tw, _ = _fit_text_patch(
+                _clock_text(),
+                size_px=max(10, _sy(float(_NP_CLOCK_SIZE_PX))),
+                fill_rgb=(237, 28, 36),
+                bold=True,
+                align="right",
+            )
+            if mode == "np_ck":
+                clk_x = (int(DESIGN_W) - clk_tw) // 2
+            else:
+                clk_x = _CLOCK_RIGHT_X - clk_tw
+            _paste_text_on_baseline(out, clk_patch, clk_x, _NP_UPPER_BASELINE_Y)
+            if service_text:
+                svc_patch, svc_tw, _ = _fit_text_patch(
+                    service_text,
+                    size_px=max(10, _sy(float(_NP_TEXT_SIZE_PX))),
+                    fill_rgb=(237, 28, 36),
+                    bold=True,
+                    align="right",
+                )
+                if mode == "np_ck":
+                    svc_x = clk_x + (clk_tw - svc_tw) // 2
+                else:
+                    svc_x = _NP_SERVICE_RIGHT_X - svc_tw
+                _paste_text_on_baseline(out, svc_patch, svc_x, _NP_LOWER_BASELINE_Y)
+        else:
+            # rv_ck / ck: right-aligned stack — volume, config, then a large clock.
+            if vol_line:
+                vol_patch, vol_tw, _ = _fit_text_patch(
+                    vol_line,
+                    size_px=max(10, _sy(float(_RV_VOLUME_SIZE_PX))),
+                    fill_rgb=(225, 0, 24),
+                    bold=True,
+                    align="right",
+                )
+                _paste_text_on_baseline(
+                    out, vol_patch, _RV_RIGHT_X - vol_tw, _RV_VOLUME_BASELINE_Y
+                )
+            if cfg_line:
+                cfg_patch, cfg_tw, _ = _fit_text_patch(
+                    cfg_line,
+                    size_px=max(10, _sy(float(_RV_CFG_SIZE_PX))),
+                    fill_rgb=(237, 28, 36),
+                    bold=True,
+                    align="right",
+                )
+                _paste_text_on_baseline(
+                    out, cfg_patch, _RV_RIGHT_X - cfg_tw, _RV_CFG_BASELINE_Y
+                )
+            clk_patch, clk_tw, _ = _fit_text_patch(
+                _clock_text(),
+                size_px=max(10, _sy(float(_RV_CLOCK_SIZE_PX))),
+                fill_rgb=(237, 28, 36),
+                bold=True,
+                align="right",
+            )
+            _paste_text_on_baseline(
+                out, clk_patch, _RV_RIGHT_X - clk_tw, _RV_CLOCK_BASELINE_Y
+            )
+
+        _draw_status_indicator_dots_bgra(out, st)
+        return out
+
     def _render_frame_bgra(self, sig: tuple[object, ...] | None = None) -> np.ndarray:
         st = self._state
         if sig is None:
@@ -1610,7 +1767,8 @@ class NowPlayingScreenWidget:
             self._static_bgra = self._render_static_bgra()
             self._static_sig = static_sig
 
-        if not st.audio_levels_sim:
+        # Animated meters exist only in the full (HDMI-analysis) layout.
+        if not st.audio_levels_sim or _normalized_layout_mode(st.layout_mode) != "full":
             return self._static_bgra
         out = self._static_bgra.copy()
         _draw_audio_levels_bgra(out, self._audio_sim.levels(time.monotonic()))

@@ -726,6 +726,11 @@ def main() -> int:
     cap: cv2.VideoCapture | None = None
 
     root = tk.Tk()
+    _app_startup_mono = time.monotonic()
+    try:
+        root.configure(bg="#000")
+    except tk.TclError:
+        pass
     root.title("")
     root.geometry(f"{WINDOW_W}x{WINDOW_H}")
     root.minsize(
@@ -803,6 +808,13 @@ def main() -> int:
         w = startup_ph[0]
         if w is None:
             return
+        # Paint View 1 under the splash before lifting it (avoids a one-frame white/unpainted flash).
+        _finish_post_splash_startup_transition()
+        try:
+            root.update_idletasks()
+            root.update()
+        except tk.TclError:
+            pass
         try:
             w.destroy()
         except tk.TclError:
@@ -819,7 +831,6 @@ def main() -> int:
             pass
         if post_splash_mono[0] is None:
             post_splash_mono[0] = time.monotonic()
-        _finish_post_splash_startup_transition()
 
     _tk_pack_orig = tk.Widget.pack
     _tk_grid_orig = tk.Widget.grid
@@ -1171,6 +1182,15 @@ def main() -> int:
 
         label = tk.Label(video_area, bd=0, highlightthickness=0, takefocus=True, bg="#000")
         label.pack(fill=tk.BOTH, expand=True)
+        # Black PhotoImage before first composite so lifting the splash never reveals an empty label.
+        _startup_label_black_photo: list[ImageTk.PhotoImage | None] = [None]
+        try:
+            _bb = np.zeros((WINDOW_H, WINDOW_W, 3), dtype=np.uint8)
+            _startup_label_black_photo[0] = _bgr_to_tk_image(_bb)
+            label.configure(image=_startup_label_black_photo[0])
+            label.image = _startup_label_black_photo[0]
+        except Exception:
+            pass
 
         settings_frame = tk.Frame(video_area, bg="#111")
         settings_scroll_outer = tk.Frame(settings_frame, bg="#111")
@@ -2445,6 +2465,25 @@ def main() -> int:
 
         # Now-playing screen (070326): sole View 1 chrome.
         audio_levels_sim_holder: list[bool] = [False]
+        # Manual View 1 layout override, cycled with [1]. None = auto-detect from
+        # connections. "full" also runs the placeholder audio-meter animation
+        # (stand-in until HDMI audio extraction is wired up).
+        view_one_np_layout_force_holder: list[str | None] = [None]
+        _VIEW_ONE_NP_LAYOUT_CYCLE: tuple[str | None, ...] = (
+            None,
+            "full",
+            "np_rv_ck",
+            "np_ck",
+            "rv_ck",
+            "ck",
+        )
+
+        def _audio_sim_active() -> bool:
+            """Placeholder meter animation: key-6 toggle or a forced 'full' layout."""
+            return (
+                bool(audio_levels_sim_holder[0])
+                or view_one_np_layout_force_holder[0] == "full"
+            )
         # [filename, decoded BGRA] — avoids re-reading the badge PNG on every composite.
         _np_badge_bgra_cache: list = ["", None]
         now_playing_screen_widget = None
@@ -2475,9 +2514,13 @@ def main() -> int:
                 if pair is not None:
                     played_text = _format_hmmss(int(pair[0]))
                     remaining_text = _format_hmmss(int(pair[1]))
+            lm_np = apple_tv_auto_state.get("last_metadata")
+            atv_live = isinstance(lm_np, dict) and not _atv_metadata_is_content_idle(lm_np)
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
-            if not _receiver_audio_lines_eligible():
+            # With player data live, idle/placeholder audio text stays hidden; without a
+            # player (rv_ck layouts) the receiver info is the content, so keep it.
+            if atv_live and not _receiver_audio_lines_eligible():
                 inc = ""
                 cfg = ""
             vol = ""
@@ -2523,12 +2566,30 @@ def main() -> int:
             elif poster_bgra is not None and poster_bgra.size > 0:
                 backdrop_bgr = cv2.cvtColor(poster_bgra, cv2.COLOR_BGRA2BGR)
             tt_bgra = tmdb_logo_patch_bgra.copy() if tmdb_logo_patch_bgra is not None else None
-            md = apple_tv_auto_state.get("last_metadata")
             has_np = _effective_display_view() == DisplayView.ONE
             has_rx = bool(inc or cfg or vol)
             has_tmdb = tt_bgra is not None or backdrop_bgr is not None
             sb = streaming_badge_state
             badge_label = str(sb.get("label") or "").strip()
+            sim_on = _audio_sim_active()
+            forced_mode = view_one_np_layout_force_holder[0]
+            # Layout adapts to what is connected, unless [1] forced a specific
+            # variation. HDMI audio extraction is not wired up yet, so "full"
+            # (meters) only appears via the sim/placeholder; the default with
+            # player + receiver data is np_rv_ck per the 070426 mocks.
+            if forced_mode is not None:
+                layout_mode = forced_mode
+            elif sim_on:
+                layout_mode = "full"
+            elif atv_live and has_rx:
+                layout_mode = "np_rv_ck"
+            elif atv_live:
+                layout_mode = "np_ck"
+            elif has_rx:
+                layout_mode = "rv_ck"
+            else:
+                layout_mode = "ck"
+            sim_render = sim_on and layout_mode == "full"
             if now_playing_screen_widget.update_state(
                 progress=progress,
                 remaining_text=remaining_text,
@@ -2539,7 +2600,7 @@ def main() -> int:
                 has_now_playing=has_np,
                 has_receiver=has_rx,
                 has_tmdb=has_tmdb,
-                audio_analysis=False,
+                audio_analysis=sim_render,
                 service_badge_bgra=badge_bgra,
                 tmdb_tt_bgra=tt_bgra,
                 tmdb_backdrop_bgr=backdrop_bgr,
@@ -2553,7 +2614,9 @@ def main() -> int:
                 badge_show=bool(fn or badge_label),
                 badge_filename=fn,
                 badge_label=badge_label,
-                audio_levels_sim=bool(audio_levels_sim_holder[0]),
+                audio_levels_sim=sim_render,
+                layout_mode=layout_mode,
+                indicator_now_playing=atv_live,
             ):
                 skip_cache = None
 
@@ -2586,10 +2649,19 @@ def main() -> int:
 
         _splash_view_one_warm_done: list[bool] = [False]
 
-        def _warm_view_one_splash_chrome_only() -> None:
+        def _log_view_one_startup_phase(phase: str) -> None:
+            try:
+                dt = time.monotonic() - _app_startup_mono
+                sys.stderr.write(f"pigeon: view1 {phase} +{dt:.3f}s\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
+        def _warm_view_one_splash_chrome_only(*, phase: str = "chrome-only") -> None:
             """Rasterize 070326 SVG chrome early (no playback poll helpers required)."""
             if not _PIGEON_EXT or now_playing_screen_widget is None:
                 return
+            t0 = time.monotonic()
             display_view_holder[0] = DisplayView.ONE
             if status_bar_widget is not None:
                 status_bar_widget.set_now_playing_chrome_visible(True)
@@ -2603,11 +2675,13 @@ def main() -> int:
                 root.update_idletasks()
             except tk.TclError:
                 pass
+            _log_view_one_startup_phase(f"{phase} ({(time.monotonic() - t0) * 1000.0:.0f} ms raster)")
 
-        def _warm_view_one_under_splash() -> None:
+        def _warm_view_one_under_splash(*, phase: str = "full-warm") -> None:
             """Full View 1 enable + state sync once playback helpers exist."""
             if not _PIGEON_EXT:
                 return
+            t0 = time.monotonic()
             _enable_now_playing_screen()
             _warm_status_bar_blits()
             if now_playing_screen_widget is not None:
@@ -2620,8 +2694,9 @@ def main() -> int:
             except tk.TclError:
                 pass
             _splash_view_one_warm_done[0] = True
+            _log_view_one_startup_phase(f"{phase} ({(time.monotonic() - t0) * 1000.0:.0f} ms)")
 
-        root.after(150, _warm_view_one_splash_chrome_only)
+        root.after(150, lambda: _warm_view_one_splash_chrome_only(phase="chrome-early"))
 
         def _playback_is_netflix_stream() -> bool:
             lm = apple_tv_auto_state.get("last_metadata")
@@ -8358,7 +8433,7 @@ def main() -> int:
             return max(0.0, min(1.0, played_i / float(total_i)))
 
         # Mid-bootstrap (~1–2 s in): SVG chrome is warm; full sync is safe now.
-        _warm_view_one_splash_chrome_only()
+        _warm_view_one_splash_chrome_only(phase="chrome-mid-bootstrap")
 
         def _refresh_extrapolated_timecodes(*, tick_steps: int = 1) -> None:
             """Update TRT labels + progress using stepped display time (steady rhythm)."""
@@ -9632,7 +9707,17 @@ def main() -> int:
                 if opt_key:
                     _bump_pigeon_user_activity(event)
                     return "break"
-                # Plain 1 on View 1: already on view one — do not flip UI mode.
+                # Plain 1 on View 1: cycle the now-playing layout variations
+                # (auto → full/placeholder anim → np_rv_ck → np_ck → rv_ck → ck).
+                if _view_one_uses_now_playing_screen():
+                    cyc = _VIEW_ONE_NP_LAYOUT_CYCLE
+                    cur = view_one_np_layout_force_holder[0]
+                    idx = cyc.index(cur) if cur in cyc else 0
+                    view_one_np_layout_force_holder[0] = cyc[(idx + 1) % len(cyc)]
+                    _sync_now_playing_screen_state()
+                    skip_cache = None
+                    _bump_pigeon_user_activity(event)
+                    return "break"
                 _bump_pigeon_user_activity(event)
                 return "break"
             if ch == "6" and _view_one_uses_now_playing_screen():
@@ -9989,7 +10074,7 @@ def main() -> int:
                 if playing:
                     return frame_interval_ms
                 # Audio meter sim animates continuously; keep ~30 FPS while active.
-                if audio_levels_sim_holder[0] and _view_one_uses_now_playing_screen():
+                if _audio_sim_active() and _view_one_uses_now_playing_screen():
                     return 33
                 return paused_interval_ms
 
@@ -10145,7 +10230,7 @@ def main() -> int:
             tmdb_flag_badge_on = bool(tmdb_quality_error_flag[0])
             tmdb_flag_badge_cache_key = 1 if tmdb_flag_badge_on else 0
 
-            audio_sim_animating = bool(audio_levels_sim_holder[0]) and _view_one_uses_now_playing_screen()
+            audio_sim_animating = _audio_sim_active() and _view_one_uses_now_playing_screen()
             if (
                 not playing
                 and not mic_eq_needs_composite
@@ -10446,10 +10531,12 @@ def main() -> int:
 
         shell.bind("<Configure>", _on_shell_configure)
 
-        _warm_view_one_under_splash()
+        _warm_view_one_under_splash(phase="full-warm-bootstrap-end")
         _enable_now_playing_screen()
         skip_cache = None
+        t_render0 = time.monotonic()
         render_once()
+        _log_view_one_startup_phase(f"first-render ({(time.monotonic() - t_render0) * 1000.0:.0f} ms)")
         root.after(600, _receiver_poll_tick)
 
         if _PIGEON_EXT:
@@ -10461,6 +10548,7 @@ def main() -> int:
             except tk.TclError:
                 pass
         bootstrap_done[0] = True
+        _log_view_one_startup_phase("bootstrap-done")
         _try_remove_splash_overlay()
 
     if _PIGEON_EXT:

@@ -26,6 +26,7 @@ def main() -> None:
         badge_show=True,
         badge_label="netflix",
         audio_levels_sim=True,
+        layout_mode="full",
         service_badge_bgra=None,
         tmdb_tt_bgra=None,
         tmdb_backdrop_bgr=None,
