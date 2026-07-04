@@ -10316,19 +10316,21 @@ def main() -> int:
 
             def apply_overlay(incoming: str, config: str, volume: str) -> None:
                 nonlocal skip_cache, last_device_interaction_mono
+                from pigeon.widgets.playback_overlay import _looks_like_receiver_debug_blob
+
                 receiver_poll_busy["active"] = False
                 old_vol_raw = str(receiver_overlay_state.get("volume", ""))
                 old_in = str(receiver_overlay_state.get("incoming", ""))
                 old_cf = str(receiver_overlay_state.get("config", ""))
-                new_in = str(incoming)
-                new_cf = str(config)
-                new_vol = str(volume)
+                new_in = "" if _looks_like_receiver_debug_blob(incoming) else str(incoming or "")
+                new_cf = "" if _looks_like_receiver_debug_blob(config) else str(config or "")
+                new_vol = str(volume or "")
                 overlay_unchanged = (
                     old_in == new_in and old_cf == new_cf and old_vol_raw == new_vol
                 )
-                receiver_overlay_state["incoming"] = incoming
-                receiver_overlay_state["config"] = config
-                receiver_overlay_state["volume"] = volume
+                receiver_overlay_state["incoming"] = new_in
+                receiver_overlay_state["config"] = new_cf
+                receiver_overlay_state["volume"] = new_vol
                 if overlay_unchanged:
                     if _use_new_now_playing_ui():
                         _sync_now_playing_screen_state()

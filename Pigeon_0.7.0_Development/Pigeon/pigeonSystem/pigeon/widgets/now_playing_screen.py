@@ -30,6 +30,7 @@ from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold, r
 from pigeon.image_ui_protocol import load_image_bgra
 from pigeon.widgets.playback_overlay import (
     _image_contain_center_bgra,
+    _looks_like_receiver_debug_blob,
     _receiver_audio_display_line,
     _receiver_volume_display_line,
     _text_patch_bgra,
@@ -167,7 +168,10 @@ _AUDIO_CFG_TEXT_SIZE = 25
 
 _VOLUME_X = 295
 _VOLUME_Y = 426
-_VOLUME_SIZE = 60
+_VOLUME_SIZE = 36
+# Bottom chrome band — wipe stale SVG/demo pixels before drawing receiver lines.
+_BOTTOM_CHROME_WIPE_Y = 395
+_BOTTOM_CHROME_WIPE_H = 85
 
 # Audio level meters (layer 06) — x, baseline_y, bar_w, max_height_px.
 _AUDIO_CHANNELS: tuple[tuple[str, int, int, int, int], ...] = (
@@ -1108,7 +1112,10 @@ class NowPlayingScreenWidget:
     def set_receiver_state(self, *, incoming: str, config: str, volume: str) -> bool:
         changed = False
         for key, val in (("incoming", incoming), ("config", config), ("volume", volume)):
-            s = str(val or "")
+            if _looks_like_receiver_debug_blob(val):
+                s = ""
+            else:
+                s = str(val or "")
             if s != getattr(self._state, key):
                 setattr(self._state, key, s)
                 changed = True
@@ -1351,10 +1358,12 @@ class NowPlayingScreenWidget:
                 self._paste_patch(out, stroke_crop, _BAR_L, _BAR_T)
 
         if st.show_paused:
-            pw = _BAR_W
-            ph = _BAR_H
-            px = _BAR_L
-            py = _BAR_T
+            pad_x = max(3, int(round(_BAR_W * 0.07)))
+            pad_y = max(3, int(round(_BAR_H * 0.18)))
+            pw = max(8, _BAR_W - 2 * pad_x)
+            ph = max(8, _BAR_H - 2 * pad_y)
+            px = _BAR_L + pad_x
+            py = _BAR_T + pad_y
             _paused_pad = max(4, int(round(min(pw, ph) * 0.09)))
             paused = _text_patch_bgra(
                 "paused",
@@ -1362,7 +1371,7 @@ class NowPlayingScreenWidget:
                 ph,
                 align="center",
                 fill_rgba=(255, 255, 255, 230),
-                fit_max_h=max(6, int(round(0.94 * float(ph)))),
+                fit_max_h=min(56, max(28, int(round(0.26 * float(_BAR_H))))),
                 edge_pad_px=int(_paused_pad),
             )
             self._paste_patch(out, paused, px, py)
@@ -1401,7 +1410,17 @@ class NowPlayingScreenWidget:
             ty = _TC_Y + max(0, (_TC_H - th) // 2)
             self._paste_patch(out, tc_patch, tx, ty)
 
-        _draw_audio_channel_labels_bgra(out)
+        # Wipe the full bottom chrome band so stale SVG ink, debug dict text, or prior
+        # receiver rows never bleed through volume / service / clock.
+        _draw_rounded_rect_bgra(
+            out,
+            0,
+            _BOTTOM_CHROME_WIPE_Y,
+            int(DESIGN_W),
+            _BOTTOM_CHROME_WIPE_H,
+            fill_bgr=_COLOR_BG_BGR,
+            radius=0,
+        )
 
         # Always wipe the audio-config band so SVG demo ink or stale pixels never show
         # when the receiver line is empty (idle / standby / filtered placeholders).
@@ -1434,14 +1453,15 @@ class NowPlayingScreenWidget:
         vol_line = _receiver_volume_display_line(st.volume)
         vol_right_x = _VOLUME_X
         if vol_line:
-            vol_patch, _, _ = _fit_text_patch(
+            vol_patch, vol_tw, vol_th = _fit_text_patch(
                 vol_line,
-                size_px=_VOLUME_SIZE,
+                size_px=max(10, _sy(float(_VOLUME_SIZE))),
                 fill_rgb=(225, 0, 24),
                 bold=True,
             )
-            self._paste_patch(out, vol_patch, _VOLUME_X, _VOLUME_Y - _sy(26))
-            vol_right_x = _VOLUME_X + int(vol_patch.shape[1])
+            vol_y = _VOLUME_Y - vol_th
+            self._paste_patch(out, vol_patch, _VOLUME_X, vol_y)
+            vol_right_x = _VOLUME_X + vol_tw
 
         clk_patch, clk_tw, clk_th = _fit_text_patch(
             _clock_text(),
@@ -1463,6 +1483,8 @@ class NowPlayingScreenWidget:
             )
             svc_x = max(_SERVICE_TEXT_X, vol_right_x + _SERVICE_MIN_GAP_AFTER_VOLUME)
             self._paste_patch(out, svc_patch, svc_x, _SERVICE_TEXT_Y - th)
+
+        _draw_audio_channel_labels_bgra(out)
 
         return out
 

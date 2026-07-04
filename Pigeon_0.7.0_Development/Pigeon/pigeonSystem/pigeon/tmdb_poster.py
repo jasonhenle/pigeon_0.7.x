@@ -362,6 +362,10 @@ _UNICODE_DASH_CHARS = frozenset(
 
 # NBSP and other spaces that break naive ``" - "`` substring checks (Peacock / tvOS metadata).
 _SPACE_LIKE_RE = re.compile(r"[\u00a0\u2000-\u200a\u202f\u205f\u3000]+")
+# Middle dot / bullet separators (Apple TV ``WALL·E``) — TMDb indexes ``WALL-E``, not the interpunct.
+_INTERPUNCT_LIKE_CHARS = frozenset("\u00b7\u2022\u2024\u2219\u22c5\u30fb\uff65")
+# ``WALL E`` / ``WALL·E`` → ``WALL-E`` (short suffix token only, e.g. not ``STAR WARS``).
+_ACRONYM_HYPHEN_SUFFIX_RE = re.compile(r"^([\w]{2,})\s+([\w]{1,2})$")
 # ``Show - sketch`` with flexible space and any common dash (ASCII or unicode).
 _SHOW_EPISODE_SEP_RE = re.compile(
     r"\s+[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uff0d]\s+"
@@ -405,13 +409,46 @@ def _normalize_unicode_dashes_for_episode_titles(s: str) -> str:
     return t.strip()
 
 
+def _normalize_interpunct_for_tmdb(s: str) -> str:
+    """Map middle-dot / bullet separators to hyphen or space for TMDb search (``WALL·E`` → ``WALL-E``)."""
+    if not s:
+        return s
+    chars = list(s)
+    out: list[str] = []
+    for i, ch in enumerate(chars):
+        if ch in _INTERPUNCT_LIKE_CHARS:
+            prev = chars[i - 1] if i > 0 else ""
+            nxt = chars[i + 1] if i + 1 < len(chars) else ""
+            if prev.isalnum() and nxt.isalnum():
+                out.append("-")
+            else:
+                out.append(" ")
+        else:
+            out.append(ch)
+    t = "".join(out)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _hyphen_acronym_movie_alias(q: str) -> str | None:
+    """``WALL E`` → ``WALL-E`` when the suffix is a short token (Pixar-style acronym titles)."""
+    m = _ACRONYM_HYPHEN_SUFFIX_RE.match((q or "").strip())
+    if not m:
+        return None
+    return f"{m.group(1)}-{m.group(2)}"
+
+
 def _normalize_title_for_show_split(s: str) -> str:
-    """Unicode dashes → spaced hyphen; NBSP-like → space; collapse runs (for reliable ``Show - x`` splits)."""
+    """Unicode dashes → spaced hyphen; interpunct → hyphen; NBSP-like → space; collapse runs."""
     if not s:
         return s
     t = _normalize_unicode_dashes_for_episode_titles(s.strip())
+    t = _normalize_interpunct_for_tmdb(t)
     t = _SPACE_LIKE_RE.sub(" ", t)
     t = re.sub(r"\s+", " ", t).strip()
+    alias = _hyphen_acronym_movie_alias(t)
+    if alias and alias.lower() != t.lower():
+        return alias
     return t
 
 
@@ -843,6 +880,9 @@ def _tmdb_query_variants(raw: str) -> list[str]:
 
     # Always try the exact/full title first; only fall back to simplifications.
     add(q0)
+    alias = _hyphen_acronym_movie_alias(q0)
+    if alias:
+        add(alias)
 
     prefixes: list[str] = []
 

@@ -77,8 +77,21 @@ _IDLE_AUDIO_PLACEHOLDERS = frozenset(
 )
 
 
+def _looks_like_receiver_debug_blob(raw: object) -> bool:
+    """True when ``raw`` stringifies to a telnet/debug dict (must never paint on UI)."""
+    s = str(raw or "").strip()
+    if not s.startswith("{"):
+        return False
+    if not s.endswith("}"):
+        return False
+    # Typical leak: ``{'PW': 'STANDBY', 'MV': '-26dB', ...}``
+    return "'" in s and ":" in s
+
+
 def _receiver_audio_display_line(raw: object) -> str:
     """Strip placeholder / empty receiver strings so the overlay can omit those rows."""
+    if _looks_like_receiver_debug_blob(raw):
+        return ""
     s = str(raw or "").strip()
     if not s:
         return ""
