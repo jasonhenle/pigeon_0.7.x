@@ -69,6 +69,32 @@ pigeon_install_bundled_fonts() {
   fi
 }
 
+# Passwordless ``systemctl restart pigeon`` for in-app GitHub updates (Pi autostart).
+pigeon_install_systemd_restart_sudoers() {
+  local install_user="${1:-}"
+  local systemctl_bin=""
+  local dropin="/etc/sudoers.d/pigeon-update-restart"
+  if [[ -z "${install_user}" ]]; then
+    return 0
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return 0
+  fi
+  systemctl_bin="$(command -v systemctl)"
+  cat > "${dropin}" <<EOF
+# Pigeon: allow in-app GitHub updates to restart the systemd service without a password.
+${install_user} ALL=(root) NOPASSWD: ${systemctl_bin} restart pigeon.service, ${systemctl_bin} restart pigeon
+EOF
+  chmod 0440 "${dropin}"
+  if visudo -cf "${dropin}" >/dev/null 2>&1; then
+    echo "==> Passwordless sudo for pigeon restart: ${dropin}"
+    return 0
+  fi
+  rm -f "${dropin}"
+  echo "pigeon: WARNING — could not install sudoers drop-in; in-app restart may ask for a password." >&2
+  return 1
+}
+
 pigeon_print_usage() {
   local root="${1:-}"
   local ver="0.7.5"

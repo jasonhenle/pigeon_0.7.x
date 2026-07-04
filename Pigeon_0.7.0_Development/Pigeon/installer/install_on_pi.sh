@@ -165,6 +165,8 @@ chmod +x \
   "${INSTALL_DIR}/installer/Install-Pigeon.desktop" \
   "${INSTALL_DIR}/installer/Run-Pigeon.desktop" \
   "${INSTALL_DIR}/installer/pi_update_from_github.sh" \
+  "${INSTALL_DIR}/installer/pigeon_github_update.sh" \
+  "${INSTALL_DIR}/installer/configure_pigeon_restart_sudo.sh" \
   "${INSTALL_DIR}/installer/install_from_github.sh" 2>/dev/null || true
 
 echo "==> Creating Python virtual environment and installing pip packages (may take several minutes)…"
@@ -189,6 +191,7 @@ if [[ "${ENABLE_AUTOSTART}" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; th
     "${INSTALLER_DIR}/pigeon.service" > "${SERVICE_PATH}"
   systemctl daemon-reload
   systemctl enable pigeon.service
+  pigeon_install_systemd_restart_sudoers "${INSTALL_USER}" || true
 fi
 
 if [[ "${MAKE_SHORTCUTS}" -eq 1 ]]; then
@@ -231,6 +234,8 @@ if [[ "${ENABLE_AUTOSTART}" -eq 1 ]] && command -v systemctl >/dev/null 2>&1; th
   echo "  sudo systemctl start pigeon"
   echo "  sudo systemctl status pigeon"
   echo "  journalctl -u pigeon -f"
+  echo ""
+  echo "In-app Updates restart pigeon.service without a password (sudoers.d/pigeon-update-restart)."
   echo ""
   echo "Disable autostart:"
   echo "  sudo systemctl disable --now pigeon"
