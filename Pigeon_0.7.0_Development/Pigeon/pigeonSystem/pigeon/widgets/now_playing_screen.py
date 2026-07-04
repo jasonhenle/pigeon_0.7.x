@@ -24,7 +24,11 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pigeon.compositing import alpha_blend_bgra_over_bgr, cv_resize_interp, lerp_bgr_red_monochrome
+from pigeon.compositing import (
+    alpha_blend_bgra_over_bgr,
+    bgr_to_red_monochrome_luma,
+    cv_resize_interp,
+)
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.font_paths import resolve_ui_font_bold, resolve_ui_font_extrabold, resolve_ui_font_medium
 from pigeon.image_ui_protocol import load_image_bgra
@@ -138,8 +142,6 @@ _CONTENT_PAD = 50
 _IMAGE_CORNER_RX = 12
 _TT_TINT_WHITE = 0.50
 _PLAYED_STROKE_PX = 3
-_BACKDROP_RED_MONO = 0.82
-_BACKDROP_RED_OVERLAY_ALPHA = 0.45
 
 # Timecode container (tracks played edge).
 _CONTAINER_W = 164
@@ -158,15 +160,17 @@ _LOWER_BASELINE_Y = 453
 _CLOCK_SIZE_PX = 60
 _VOLUME_SIZE_PX = _CLOCK_SIZE_PX
 _SERVICE_TEXT_SIZE_PX = 30
+# Right edge of service label (right-aligned); 100px inset from the left screen edge.
+_SERVICE_TEXT_RIGHT_X = 100
 _AUDIO_CFG_TEXT_SIZE = 25
 _AUDIO_CFG_MAX_W = 280
 # Right edge of the LFE meter column — volume is centered between here and the clock.
 _AUDIO_METER_RIGHT_X = 222
 # Drop shadow on TMDb TT in the played (watched) bar group only.
 _TT_PLAYED_DROP_SHADOW = True
-_TT_SHADOW_OFFSET = (4, 5)
-_TT_SHADOW_BLUR_SIGMA = 4.0
-_TT_SHADOW_STRENGTH = 0.55
+_TT_SHADOW_OFFSET = (5, 6)
+_TT_SHADOW_BLUR_SIGMA = 5.0
+_TT_SHADOW_STRENGTH = 0.88
 # SVG circle centers for the four status dots (layer 01).
 _STATUS_INDICATOR_CENTERS: tuple[tuple[float, float], ...] = (
     (692.89, 444.33),  # audio
@@ -808,6 +812,7 @@ def _tt_with_drop_shadow_bgra(src: np.ndarray) -> tuple[np.ndarray, int]:
     shadow = cv2.GaussianBlur(shadow, (k, k), sigmaX=sigma, sigmaY=sigma)
     out = np.zeros((out_h, out_w, 4), dtype=np.uint8)
     sa = np.clip(shadow * 255.0, 0.0, 255.0).astype(np.uint8)
+    out[:, :, :3] = 0
     out[:, :, 3] = sa
     _paste_patch_bgra(out, src, pad, pad)
     return out, pad
@@ -923,18 +928,15 @@ def _layout_tt_and_backdrop_rects(
 
 
 def _prepare_backdrop_unplayed_bgra(bd_fit: np.ndarray) -> np.ndarray:
-    """Rounded backdrop with red monochrome treatment for the unplayed group."""
+    """High-contrast red duotone for the unplayed backdrop (bright=luma→red, dark=black)."""
     if bd_fit is None or bd_fit.size == 0:
         return bd_fit
     out = bd_fit.copy()
-    bgr = out[:, :, :3]
-    mono = lerp_bgr_red_monochrome(bgr, _BACKDROP_RED_MONO)
+    mask = out[:, :, 3] > 0
+    if not np.any(mask):
+        return out
+    mono = bgr_to_red_monochrome_luma(out[:, :, :3])
     out[:, :, :3] = mono
-    alpha = float(_BACKDROP_RED_OVERLAY_ALPHA)
-    overlay_bgr = np.array(_COLOR_PLAYED_BGR, dtype=np.float32)
-    mask = out[:, :, 3:4].astype(np.float32) / 255.0
-    blended = out[:, :, :3].astype(np.float32) * (1.0 - alpha * mask) + overlay_bgr * (alpha * mask)
-    out[:, :, :3] = np.clip(blended, 0, 255).astype(np.uint8)
     return out
 
 
@@ -1588,7 +1590,7 @@ class NowPlayingScreenWidget:
                 bold=True,
                 align="right",
             )
-            svc_x = _CLOCK_RIGHT_X - svc_tw
+            svc_x = _SERVICE_TEXT_RIGHT_X - svc_tw
             _paste_text_on_baseline(out, svc_patch, svc_x, _LOWER_BASELINE_Y)
 
         # Clock + status dots last so bottom wipes never cover them.

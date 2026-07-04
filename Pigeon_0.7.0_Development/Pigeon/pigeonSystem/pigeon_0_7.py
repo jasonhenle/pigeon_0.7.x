@@ -8075,14 +8075,31 @@ def main() -> int:
             _sync_trt_text_to_true_once()
 
         def _content_key_from_metadata(metadata: dict[str, object]) -> str | None:
+            pyatv_q = str(metadata.get("query") or "").strip()
             if resolve_metadata_tmdb_query is not None:
-                query = resolve_metadata_tmdb_query(metadata)
+                query = pyatv_q or resolve_metadata_tmdb_query(metadata)
             else:
-                query = str(metadata.get("query") or "").strip()
+                query = pyatv_q
             if not query:
                 return None
             prefer = _tmdb_pref_from_metadata(metadata)
             title = str(metadata.get("title") or "").strip()
+            try:
+                from pigeon.raw_title import (
+                    _title_looks_like_episode_in_metadata,
+                    raw_title_from_metadata_dict,
+                )
+                from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+                rt = raw_title_from_metadata_dict(metadata)
+                if _title_looks_like_episode_in_metadata(metadata, rt):
+                    for key in ("album", "series_name", "artist"):
+                        val = str(metadata.get(key) or "").strip()
+                        if val and not is_degenerate_tmdb_query(val):
+                            title = val
+                            break
+            except ImportError:
+                pass
             return "|".join((query, prefer, title))
 
         def _tmdb_spawn_identity(query: str, prefer: str) -> tuple[str, str]:
@@ -8877,6 +8894,7 @@ def main() -> int:
                         pass
                     _refresh_observed_pairing_led_rows()
                     _refresh_content_indicator()
+                    md_for_spawn: dict[str, object] | None = None
                     if metadata_w:
                         if ok_w:
                             _update_atv_interaction_from_poll_metadata(metadata_w)
@@ -8909,6 +8927,7 @@ def main() -> int:
                         merged_md["volume_percent"] = metadata_w.get("volume_percent")
                         if ok_w:
                             _bump_clock_saver_significant_device_from_metadata(merged_md)
+                        md_for_spawn = merged_md
                         apple_tv_auto_state["last_metadata"] = merged_md
                         _update_status_bar_from_metadata(metadata_w)
                         if playback_overlay_widget is not None:
@@ -8952,33 +8971,29 @@ def main() -> int:
                         roku_app_name=wk_roku_nm,
                     )
                     pyatv_tmdb_eligible = False
-                    if isinstance(metadata_w, dict):
+                    if isinstance(md_for_spawn, dict):
                         from pigeon.tmdb_poster import is_degenerate_tmdb_query
 
-                        query = (
-                            resolve_metadata_tmdb_query(metadata_w)
-                            if resolve_metadata_tmdb_query is not None
-                            else str(metadata_w.get("query") or "").strip()
-                        )
-                        content_key = _content_key_from_metadata(metadata_w)
-                        prefer = _tmdb_pref_from_metadata(metadata_w)
+                        query = str(md_for_spawn.get("query") or "").strip()
+                        content_key = _content_key_from_metadata(md_for_spawn)
+                        prefer = _tmdb_pref_from_metadata(md_for_spawn)
                         if (
                             query
                             and not is_degenerate_tmdb_query(query)
-                            and not _atv_metadata_is_content_idle(metadata_w)
+                            and not _atv_metadata_is_content_idle(md_for_spawn)
                         ):
                             pyatv_tmdb_eligible = True
                             prev_key = apple_tv_auto_state.get("content_key")
                             if content_key and content_key != prev_key:
                                 apple_tv_auto_state["content_key"] = content_key
-                            if _tmdb_spawn_identity_changed(query, prefer, metadata_w):
+                            if _tmdb_spawn_identity_changed(query, prefer, md_for_spawn):
                                 spawn_id = _tmdb_spawn_identity(query, prefer)
                                 apple_tv_auto_state["tmdb_key"] = spawn_id
                                 apple_tv_auto_state["query"] = query
                                 apple_tv_auto_state["prefer"] = prefer
                                 spawn_tmdb_poster_fetch(query, prefer=prefer)
                         if ok_w:
-                            _return_to_landing_if_atv_idle(metadata_w)
+                            _return_to_landing_if_atv_idle(md_for_spawn)
                     if not pyatv_tmdb_eligible and wk_roku_title is not None:
                         try:
                             from pigeon.tmdb_poster import is_degenerate_tmdb_query
