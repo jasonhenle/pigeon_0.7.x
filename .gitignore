@@ -41,6 +41,9 @@ Pigeon_0.6.0_Development/**/setup/pyatv_credentials
 
 # Pigeon 0.7 runtime caches and packaging staging (regenerated locally)
 Pigeon_0.7.0_Development/**/pigeonCashe/
+# TMDB title-key art caches written into pigeonAssets (16-hex-char filenames)
+Pigeon_0.7.0_Development/**/pigeonAssets/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F].png
+Pigeon_0.7.0_Development/**/pigeonAssets/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F].jpg
 Pigeon_0.7.0_Development/**/pigeonTMDB/pigeonTMDB_BD/
 Pigeon_0.7.0_Development/**/pigeonTMDB/pigeonTMDB_ORIGINAL/
 Pigeon_0.7.0_Development/**/pigeonTMDB/pigeonTMDB_Poster/
