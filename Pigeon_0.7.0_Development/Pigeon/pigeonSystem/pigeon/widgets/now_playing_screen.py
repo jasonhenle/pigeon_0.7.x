@@ -34,7 +34,6 @@ from pigeon.widgets.playback_overlay import (
     _receiver_audio_display_line,
     _receiver_volume_display_line,
     _text_patch_bgra,
-    receiver_audio_config_display_line,
 )
 from pigeon.widgets.status_bar import DesignPatch
 
@@ -168,12 +167,12 @@ _SERVICE_TEXT_Y = 452
 _SERVICE_TEXT_SIZE_PX = 30
 _SERVICE_MIN_GAP_AFTER_VOLUME = 24
 
-# Audio config line (SVG ``05_widget_audio_config_text`` at ~46×453; x shifted right of LFE).
-_AUDIO_CFG_TEXT_X = 230
+# Audio config line (SVG ``05_widget_audio_config_text`` at ~46×453).
+_AUDIO_CFG_TEXT_X = 46
 _AUDIO_CFG_TEXT_Y = 453
 _AUDIO_CFG_TEXT_SIZE = 25
-# Dedicated row below channel abbreviations (y≈426); must not overlap SL/L/C/R/SR/LFE.
-_AUDIO_CFG_MAX_W = 200
+# Dedicated row below channel abbreviations (y≈426); incoming codec only (not MS surround mode).
+_AUDIO_CFG_MAX_W = 240
 
 _VOLUME_X = 295
 _VOLUME_Y = 426
@@ -753,7 +752,7 @@ def _fit_text_patch(
     img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     if align == "right":
-        tx = tw + pad - 1 - l
+        tx = tw + pad - r
     elif align == "center":
         tx = (tw + pad * 2) // 2 - (l + r) // 2
     else:
@@ -773,7 +772,10 @@ def _clock_text(now: datetime | None = None) -> str:
 
 
 def _audio_config_line(incoming: str, config: str) -> str:
-    return receiver_audio_config_display_line(incoming, config)
+    """Incoming codec/format only — Denon ``MS`` surround mode stays off this row."""
+    _ = config
+    line = _receiver_audio_display_line(incoming)
+    return line.upper() if line else ""
 
 
 def _tt_to_white_bgra(src: np.ndarray, *, tint: float = _TT_TINT_WHITE) -> np.ndarray:
