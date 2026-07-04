@@ -1486,6 +1486,7 @@ def main() -> int:
             "tmdb_key": None,
             "query": None,
             "prefer": "auto",
+            "tmdb_fetch_in_flight": False,
             "last_metadata": None,
             # Last TMDb worker actually started (see spawn_tmdb_poster_fetch); for view 4 debug.
             "last_tmdb_fetch_input": None,
@@ -2568,8 +2569,7 @@ def main() -> int:
             nonlocal skip_cache, last_frame, scene_enabled, brightness_current, brightness_from, brightness_target
             if not _PIGEON_EXT or now_playing_screen_widget is None:
                 return
-            if not new_now_playing_ui_holder[0]:
-                return
+            new_now_playing_ui_holder[0] = True
             display_view_holder[0] = DisplayView.ONE
             scene_enabled = True
             last_frame = None
@@ -5808,7 +5808,9 @@ def main() -> int:
                 except Exception:
                     pass
 
-        def spawn_tmdb_poster_fetch(query: str, *, prefer: str = "auto") -> None:
+        def spawn_tmdb_poster_fetch(
+            query: str, *, prefer: str = "auto", force: bool = False
+        ) -> None:
             """TMDb search + download + poster pipeline on a worker thread.
 
             Short-circuits for MediaType.Music: on viewOne.audioContent the
@@ -5820,6 +5822,9 @@ def main() -> int:
             would otherwise generate against a TV/movie-only index.
             """
             from pigeon.tmdb_poster import is_degenerate_tmdb_query, refine_tmdb_search_query
+
+            if not force and apple_tv_auto_state.get("tmdb_fetch_in_flight"):
+                return
 
             if _vv_is_music():
                 # Clear any prior fetch breadcrumbs so the debug view doesn't
@@ -5859,6 +5864,7 @@ def main() -> int:
             apple_tv_auto_state["last_tmdb_fetch_input"] = q_in
             apple_tv_auto_state["last_tmdb_fetch_refined"] = q
             apple_tv_auto_state["last_tmdb_fetch_prefer"] = str(prefer or "auto").strip() or "auto"
+            apple_tv_auto_state["tmdb_fetch_in_flight"] = True
             try:
                 from pigeon.pi_diagnostics import append_pigeon_log
 
@@ -5874,6 +5880,7 @@ def main() -> int:
                 search_query: str = "",
             ) -> None:
                 nonlocal skip_cache, cap, scene_enabled, last_frame, scaled_display, scaled_version, playing, use_backdrop_scene, backdrop_master_bgr, saved_backdrop_master_bgr, saved_backdrop_app_logo_letterbox_fit, backdrop_app_logo_letterbox_fit, brightness_current, brightness_from, brightness_target, brightness_t0, active_tmdb_title_key, active_tmdb_display_title, tmdb_logo_patch_bgra, tmdb_logo_app_fallback_active
+                apple_tv_auto_state["tmdb_fetch_in_flight"] = False
                 sys.stderr.write(f"pigeon: tmdb → {msg_m}\n")
                 sys.stderr.flush()
                 try:
@@ -8420,7 +8427,7 @@ def main() -> int:
                     end_apple_tv_operation(suffix="title detected")
                     sys.stderr.write(f"pigeon: {msg_w}\n")
                     sys.stderr.flush()
-                    spawn_tmdb_poster_fetch(title_w, prefer="auto")
+                    spawn_tmdb_poster_fetch(title_w, prefer="auto", force=True)
 
                 root.after(0, finish)
 
@@ -8440,12 +8447,55 @@ def main() -> int:
                 query = str(metadata.get("query") or "").strip()
             if not query:
                 return None
-            media_type = str(metadata.get("media_type") or "")
-            title = str(metadata.get("title") or "")
-            series_name = str(metadata.get("series_name") or "")
-            artist = str(metadata.get("artist") or "")
-            total_time = str(metadata.get("total_time") or "")
-            return "|".join((query, media_type, title, series_name, artist, total_time))
+            prefer = _tmdb_pref_from_metadata(metadata)
+            title = str(metadata.get("title") or "").strip()
+            return "|".join((query, prefer, title))
+
+        def _tmdb_spawn_identity(query: str, prefer: str) -> tuple[str, str]:
+            try:
+                from pigeon.tmdb_poster import refine_tmdb_search_query
+
+                refined = refine_tmdb_search_query(query) or str(query or "").strip()
+            except ImportError:
+                refined = str(query or "").strip()
+            pref = str(prefer or "auto").strip().lower()
+            if pref not in ("auto", "tv", "movie"):
+                pref = "auto"
+            return (refined, pref)
+
+        def _tmdb_spawn_identity_changed(
+            query: str, prefer: str, metadata: dict[str, object] | None = None
+        ) -> bool:
+            """True when this poll should start a new TMDb worker (equivalent-aware)."""
+            new_id = _tmdb_spawn_identity(query, prefer)
+            prev = apple_tv_auto_state.get("tmdb_key")
+            if prev == new_id:
+                return False
+            if prev and isinstance(prev, tuple) and len(prev) == 2:
+                try:
+                    from pigeon.tmdb_poster import equivalent_tmdb_search_queries
+
+                    pq, pp = str(prev[0]), str(prev[1])
+                    if pp == new_id[1] and equivalent_tmdb_search_queries(new_id[0], pq):
+                        return False
+                    # HBO/Max: pyatv query may alternate show name vs episode title while
+                    # candidates still cover the same series — do not re-fetch every poll.
+                    if metadata is not None:
+                        from pigeon.raw_title import tmdb_query_candidates_from_metadata
+
+                        for cand in tmdb_query_candidates_from_metadata(metadata):
+                            if equivalent_tmdb_search_queries(cand, pq):
+                                return False
+                        prev_ck = str(apple_tv_auto_state.get("content_key") or "")
+                        new_ck = _content_key_from_metadata(metadata) or ""
+                        if prev_ck and new_ck:
+                            pt = prev_ck.rsplit("|", 1)[-1]
+                            nt = new_ck.rsplit("|", 1)[-1]
+                            if pt and pt == nt:
+                                return False
+                except ImportError:
+                    pass
+            return True
 
         def _tmdb_pref_from_metadata(metadata: dict[str, object]) -> str:
             prefer = str(metadata.get("prefer") or "auto").strip().lower()
@@ -9283,11 +9333,11 @@ def main() -> int:
                         ):
                             pyatv_tmdb_eligible = True
                             prev_key = apple_tv_auto_state.get("content_key")
-                            prev_query = str(apple_tv_auto_state.get("query") or "").strip()
-                            if content_key and (
-                                content_key != prev_key or query != prev_query
-                            ):
+                            if content_key and content_key != prev_key:
                                 apple_tv_auto_state["content_key"] = content_key
+                            if _tmdb_spawn_identity_changed(query, prefer, metadata_w):
+                                spawn_id = _tmdb_spawn_identity(query, prefer)
+                                apple_tv_auto_state["tmdb_key"] = spawn_id
                                 apple_tv_auto_state["query"] = query
                                 apple_tv_auto_state["prefer"] = prefer
                                 spawn_tmdb_poster_fetch(query, prefer=prefer)
@@ -9327,11 +9377,14 @@ def main() -> int:
                                 r_ck = r_md.get("content_key")
                                 if r_ck and r_ck != prev_rk:
                                     apple_tv_auto_state["content_key"] = r_ck
-                                    apple_tv_auto_state["query"] = str(rtitle).strip()
-                                    apple_tv_auto_state["prefer"] = "auto"
-                                    spawn_tmdb_poster_fetch(
-                                        str(rtitle).strip(), prefer="auto"
+                                r_q = str(rtitle).strip()
+                                if _tmdb_spawn_identity_changed(r_q, "auto"):
+                                    apple_tv_auto_state["tmdb_key"] = _tmdb_spawn_identity(
+                                        r_q, "auto"
                                     )
+                                    apple_tv_auto_state["query"] = r_q
+                                    apple_tv_auto_state["prefer"] = "auto"
+                                    spawn_tmdb_poster_fetch(r_q, prefer="auto")
                                 if not pyatv_ok:
                                     apple_tv_dashboard_track["last_poll_ok"] = True
                                     apple_tv_dashboard_track["consecutive_fail"] = 0
@@ -9467,7 +9520,7 @@ def main() -> int:
                     "alternate_query": alt,
                 }
             )
-            spawn_tmdb_poster_fetch(q, prefer=prefer)
+            spawn_tmdb_poster_fetch(q, prefer=prefer, force=True)
             sys.stderr.write(
                 f"pigeon: tmdb error-flag retry ({rule_id}) prefer={prefer} q={q!r}\n"
             )
@@ -9525,7 +9578,7 @@ def main() -> int:
             ts = time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime())
             was = active_tmdb_display_title or "—"
             _append_tmdb_retry_log_ui(f"{ts}  {rule_id}  prefer={prefer}  q={q!r}  was={was!r}")
-            spawn_tmdb_poster_fetch(q, prefer=prefer)
+            spawn_tmdb_poster_fetch(q, prefer=prefer, force=True)
             sys.stderr.write(f"pigeon: tmdb retry ({rule_id}) prefer={prefer} q={q!r}\n")
             sys.stderr.flush()
 
@@ -9713,7 +9766,7 @@ def main() -> int:
                     if qrest:
                         q2, pref = parse_tmdb_command_phrase(qrest)
                         if q2:
-                            spawn_tmdb_poster_fetch(q2, prefer=pref)
+                            spawn_tmdb_poster_fetch(q2, prefer=pref, force=True)
                     else:
                         sys.stderr.write("pigeon: tmdb: empty query (use: tmdb Movie Title)\n")
                         sys.stderr.flush()
@@ -9721,7 +9774,7 @@ def main() -> int:
                     # Plain title or tv/movie hint — TMDb (auto picks movie vs TV by popularity)
                     q2, pref = parse_tmdb_command_phrase(text)
                     if q2:
-                        spawn_tmdb_poster_fetch(q2, prefer=pref)
+                        spawn_tmdb_poster_fetch(q2, prefer=pref, force=True)
             elif text:
                 sys.stderr.write(f"pigeon: command: {text}\n")
                 sys.stderr.flush()
@@ -9903,6 +9956,7 @@ def main() -> int:
             if ch == "1" and display_view_holder[0] == DisplayView.ONE:
                 st_key = int(getattr(event, "state", 0))
                 sh_key = bool(st_key & 0x0001)
+                opt_key = bool(st_key & 0x0008) or bool(st_key & 0x20000)
                 if sh_key:
                     # Shift+1: cycle view-one layout (full / simple / poster).
                     _vv_now = _current_view_one_variant()
@@ -9924,11 +9978,18 @@ def main() -> int:
                     _bump_pigeon_user_activity(event)
                     _capture_last_view_one_layout_from_live_view()
                     return "break"
-                # 1: toggle new (070326) vs classic now-playing chrome on View 1.
-                new_now_playing_ui_holder[0] = not bool(new_now_playing_ui_holder[0])
-                if now_playing_screen_widget is not None:
-                    now_playing_screen_widget.clear_cache()
-                skip_cache = None
+                if opt_key:
+                    # Option+1: toggle new (070326) vs classic now-playing chrome on View 1.
+                    new_now_playing_ui_holder[0] = not bool(new_now_playing_ui_holder[0])
+                    if now_playing_screen_widget is not None:
+                        now_playing_screen_widget.clear_cache()
+                    if new_now_playing_ui_holder[0]:
+                        _enable_now_playing_screen()
+                    skip_cache = None
+                    render_once()
+                    _bump_pigeon_user_activity(event)
+                    return "break"
+                # Plain 1 on View 1: already on view one — do not flip UI mode.
                 _bump_pigeon_user_activity(event)
                 return "break"
             if ch == "6" and _use_new_now_playing_ui():
@@ -10189,7 +10250,7 @@ def main() -> int:
                     sys.stderr.flush()
                     tw.destroy()
                     if q_sp:
-                        spawn_tmdb_poster_fetch(q_sp, prefer=str(apple_tv_auto_state.get("prefer") or "auto"))
+                        spawn_tmdb_poster_fetch(q_sp, prefer=str(apple_tv_auto_state.get("prefer") or "auto"), force=True)
                 else:
                     messagebox.showerror("Series title training", msg_h, parent=tw)
 

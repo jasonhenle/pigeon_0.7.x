@@ -1160,10 +1160,12 @@ async def _async_fetch_now_playing_info_for_device(
                 try:
                     from pigeon.raw_title import resolve_metadata_tmdb_query
 
+                    pyatv_q = str(metadata.get("query") or "").strip()
                     resolved_q = resolve_metadata_tmdb_query(metadata)
-                    if resolved_q:
+                    merged_q = pyatv_q or resolved_q
+                    if merged_q:
                         metadata = dict(metadata)
-                        metadata["query"] = resolved_q
+                        metadata["query"] = merged_q
                 except Exception:
                     pass
                 last_metadata = metadata
