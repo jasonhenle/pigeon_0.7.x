@@ -495,47 +495,92 @@ def metadata_has_playback_title(metadata: Mapping[str, Any] | None) -> bool:
     return False
 
 
+def _title_looks_like_episode_in_metadata(
+    metadata: Mapping[str, Any],
+    rt: RawTitle,
+) -> bool:
+    """True when ``title`` is probably an episode line and another field carries the series (HBO/Max)."""
+    title = (rt.raw_title or "").strip()
+    if not title:
+        return False
+    try:
+        from pigeon.tmdb_poster import _guest_on_show_canonical_query
+
+        if _guest_on_show_canonical_query(title):
+            return False
+    except ImportError:
+        pass
+    t_cf = title.casefold()
+    for key in ("series_name", "album"):
+        val = str(metadata.get(key) or "").strip()
+        if val and val.casefold() != t_cf:
+            try:
+                from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+                if not is_degenerate_tmdb_query(val):
+                    return True
+            except ImportError:
+                return True
+    artist = str(metadata.get("artist") or "").strip()
+    if artist and artist.casefold() != t_cf:
+        try:
+            from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+            if not is_degenerate_tmdb_query(artist):
+                return True
+        except ImportError:
+            return True
+    return False
+
+
 def resolve_metadata_tmdb_query(metadata: Mapping[str, Any] | None) -> str:
-    """Best TMDb search string from a poll metadata dict (``title`` / rawTitle first, then ``query``)."""
+    """Canonical TMDb/playback query — pyatv ``query`` first, then rawTitle field fallbacks."""
     if not metadata:
         return ""
+    q = str(metadata.get("query") or "").strip()
+    if q:
+        try:
+            from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+            if not is_degenerate_tmdb_query(q):
+                return q
+        except ImportError:
+            return q
     try:
-        from pigeon.tmdb_poster import is_degenerate_tmdb_query, refine_tmdb_search_query
+        derived = tmdb_query_from_raw_title(
+            raw_title_from_metadata_dict(metadata),
+            base_query=None,
+        )
+        if derived and str(derived).strip():
+            return str(derived).strip()
+    except Exception:
+        pass
+    try:
+        from pigeon.tmdb_poster import refine_tmdb_search_query
     except ImportError:
 
         def refine_tmdb_search_query(x: str | None) -> str | None:  # type: ignore[misc]
             return (str(x).strip() or None) if x else None
 
-        def is_degenerate_tmdb_query(x: str) -> bool:  # type: ignore[misc]
-            return not (x or "").strip()
-
-    rt = raw_title_from_metadata_dict(metadata)
-    raw_title = (rt.raw_title or "").strip()
-    if raw_title:
-        refined = refine_tmdb_search_query(raw_title) or raw_title
-        if refined.strip() and not is_degenerate_tmdb_query(refined):
-            return refined.strip()
-    q = str(metadata.get("query") or "").strip()
-    if q:
-        return q
-    try:
-        derived = tmdb_query_from_raw_title(rt, base_query=None)
-        if derived and str(derived).strip():
-            return str(derived).strip()
-    except Exception:
-        pass
     for key in ("series_name", "title", "artist", "album"):
         raw = str(metadata.get(key) or "").strip()
         if not raw:
             continue
         refined = refine_tmdb_search_query(raw) or raw
         if refined.strip():
+            try:
+                from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+                if is_degenerate_tmdb_query(refined):
+                    continue
+            except ImportError:
+                pass
             return refined.strip()
     return ""
 
 
 def tmdb_query_candidates_from_metadata(metadata: Mapping[str, Any] | None) -> list[str]:
-    """Ordered unique TMDb search strings — raw ``title`` first, then derived alternates."""
+    """Ordered unique TMDb search strings for API retries (smart raw-title vs pyatv ordering)."""
     if not metadata:
         return []
     try:
@@ -565,10 +610,16 @@ def tmdb_query_candidates_from_metadata(metadata: Mapping[str, Any] | None) -> l
         out.append(r.strip())
 
     rt = raw_title_from_metadata_dict(metadata)
-    add(rt.raw_title)
-    add(str(metadata.get("query") or ""))
+    pyatv_q = str(metadata.get("query") or "").strip()
+    episode_like = _title_looks_like_episode_in_metadata(metadata, rt)
+    if episode_like:
+        add(pyatv_q)
+        add(rt.raw_title)
+    else:
+        add(rt.raw_title)
+        add(pyatv_q)
     try:
-        add(tmdb_query_from_raw_title(rt, base_query=None))
+        add(tmdb_query_from_raw_title(rt, base_query=pyatv_q or None))
     except Exception:
         pass
     for key in ("series_name", "artist", "album", "title"):

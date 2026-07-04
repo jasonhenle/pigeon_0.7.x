@@ -9200,12 +9200,13 @@ def main() -> int:
                             _ppm = "auto"
                         # Keep full poll dict for view-4 diagnostics; normalize the fields Pigeon logic relies on.
                         merged_md: dict[str, object] = dict(metadata_w)
+                        pyatv_query = str(metadata_w.get("query") or "").strip()
                         resolved_query = (
                             resolve_metadata_tmdb_query(metadata_w)
                             if resolve_metadata_tmdb_query is not None
-                            else str(metadata_w.get("query") or "").strip()
+                            else pyatv_query
                         )
-                        merged_md["query"] = resolved_query
+                        merged_md["query"] = pyatv_query or resolved_query
                         merged_md["title"] = str(metadata_w.get("title") or "").strip()
                         merged_md["artist"] = str(metadata_w.get("artist") or "").strip()
                         merged_md["series_name"] = str(metadata_w.get("series_name") or "").strip()
