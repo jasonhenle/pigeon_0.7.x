@@ -121,4 +121,34 @@ bash "${INSTALL_DIR}/installer/run_pigeon_0_7.sh" --bootstrap-only || die "pip b
 VER="$(python3 -c "import importlib.util; p='${INSTALL_DIR}/pigeonSystem/pigeon/version.py'; s=importlib.util.spec_from_file_location('pv', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.version_string())")"
 log "finished — Pigeon ${VER}"
 echo ""
-echo "Pigeon ${VER} installed. Restarting Pigeon…"
+echo "Pigeon ${VER} installed."
+
+if [[ "${PIGEON_UPDATE_IN_APP:-}" == "1" ]]; then
+  log "in-app update — Pigeon will restart from the running app"
+  echo "Restarting Pigeon…"
+  exit 0
+fi
+
+log "restarting pigeon"
+if command -v systemctl >/dev/null 2>&1; then
+  if sudo -n systemctl restart pigeon.service 2>/dev/null \
+    || systemctl restart pigeon.service 2>/dev/null \
+    || sudo -n systemctl restart pigeon 2>/dev/null \
+    || systemctl restart pigeon 2>/dev/null; then
+    log "systemd restart ok"
+    echo "Pigeon restarted via systemd."
+    exit 0
+  fi
+fi
+
+LAUNCHER="${INSTALL_DIR}/installer/run_pigeon_0_7.sh"
+if [[ ! -x "${LAUNCHER}" ]]; then
+  LAUNCHER="${INSTALL_DIR}/installer/click_run_pigeon_pi.sh"
+fi
+if [[ -x "${LAUNCHER}" ]]; then
+  log "detached relaunch via ${LAUNCHER}"
+  nohup bash "${LAUNCHER}" >/dev/null 2>&1 &
+  echo "Pigeon relaunched."
+else
+  echo "Restart manually: bash ${INSTALL_DIR}/installer/run_pigeon_0_7.sh"
+fi

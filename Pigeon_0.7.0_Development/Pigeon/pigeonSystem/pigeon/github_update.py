@@ -30,7 +30,13 @@ _BOOTSTRAP_SCRIPT_RAW = (
     "https://raw.githubusercontent.com/jasonhenle/pigeon_0.7.x/main/"
     "Pigeon_0.7.0_Development/Pigeon/installer/pigeon_github_update.sh"
 )
-_LAUNCHER_NAMES = ("run_pigeon_0_7.sh", "run_pigeon_0_6.sh", "Run-Pigeon", "run-pigeon.sh")
+_LAUNCHER_NAMES = (
+    "run_pigeon_0_7.command",  # macOS double-click
+    "run_pigeon_0_7.sh",
+    "run_pigeon_0_6.sh",
+    "Run-Pigeon",
+    "run-pigeon.sh",
+)
 _INSTALLER_DIR = "installer"
 _MAIN_PY_NAMES = ("pigeon_0_7.py", "pigeon_0_6.py")
 
@@ -52,7 +58,103 @@ def _find_launcher_script(install_root: Path) -> Path | None:
     return None
 
 
-def restart_pigeon_after_update(install_root: Path) -> tuple[bool, str]:
+def _try_systemd_restart() -> tuple[bool, str]:
+    """Restart the pigeon systemd unit when installed (Pi autostart)."""
+    if not sys.platform.startswith("linux"):
+        return False, ""
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return False, ""
+    sudo = shutil.which("sudo")
+    env = _minimal_subprocess_env()
+    for unit in ("pigeon.service", "pigeon"):
+        for cmd in (
+            [sudo, "-n", systemctl, "restart", unit] if sudo else None,
+            [systemctl, "restart", unit],
+        ):
+            if not cmd:
+                continue
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=20.0,
+                    env=env,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if proc.returncode == 0:
+                return True, " ".join(cmd)
+    return False, ""
+
+
+def _schedule_delayed_launch(
+    launcher: Path,
+    install_root: Path,
+    *,
+    parent_pid: int,
+) -> tuple[bool, str]:
+    """
+    Detach a tiny helper that waits for ``parent_pid`` to exit, then relaunches Pigeon.
+
+    Used on macOS and when systemd restart is unavailable (manual Pi/desktop launch).
+    """
+    install_root = Path(safe_subprocess_path(install_root.resolve()))
+    launcher = Path(safe_subprocess_path(launcher.resolve()))
+    bash = shutil.which("bash") or "/bin/bash"
+
+    if sys.platform == "darwin" and launcher.suffix == ".command":
+        open_bin = shutil.which("open") or "/usr/bin/open"
+        launch_body = f'exec "{open_bin}" "{launcher}"'
+    else:
+        launch_body = (
+            f'cd "{install_root}" && exec "{bash}" "{launcher}"'
+        )
+
+    script = "\n".join(
+        (
+            "#!/bin/bash",
+            "set -euo pipefail",
+            f"PID={int(parent_pid)}",
+            "sleep 0.5",
+            'while kill -0 "$PID" 2>/dev/null; do sleep 0.15; done',
+            "sleep 0.35",
+            launch_body,
+        )
+    )
+    try:
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".sh",
+            prefix="pigeon-restart-",
+            delete=False,
+            encoding="utf-8",
+        )
+        tmp.write(script)
+        tmp.flush()
+        tmp.close()
+        script_path = Path(tmp.name)
+        script_path.chmod(0o700)
+        subprocess.Popen(
+            [bash, safe_subprocess_path(script_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=_minimal_subprocess_env(),
+        )
+    except OSError as e:
+        return False, str(e)
+    return True, f"delayed launcher ({launcher.name})"
+
+
+def restart_pigeon_after_update(
+    install_root: Path,
+    *,
+    parent_pid: int | None = None,
+) -> tuple[bool, str]:
     """
     Schedule a post-update restart (systemd on Pi/Linux, else relaunch installer script).
 
@@ -60,68 +162,18 @@ def restart_pigeon_after_update(install_root: Path) -> tuple[bool, str]:
     instance starts after this one exits (or systemd replaces the service).
     """
     install_root = Path(safe_subprocess_path(install_root.resolve()))
+    pid = int(parent_pid if parent_pid is not None else os.getpid())
 
     if sys.platform.startswith("linux"):
-        systemctl = shutil.which("systemctl")
-        if systemctl:
-            for unit in ("pigeon.service", "pigeon"):
-                for cmd in (
-                    [systemctl, "--user", "restart", unit],
-                    [systemctl, "restart", unit],
-                ):
-                    try:
-                        subprocess.Popen(
-                            cmd,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            start_new_session=True,
-                            env=_minimal_subprocess_env(),
-                        )
-                        return True, f"systemd restart ({unit})"
-                    except OSError:
-                        continue
-                sudo = shutil.which("sudo")
-                if sudo:
-                    try:
-                        subprocess.Popen(
-                            [sudo, "-n", systemctl, "restart", unit],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            start_new_session=True,
-                            env=_minimal_subprocess_env(),
-                        )
-                        return True, f"sudo systemctl restart ({unit})"
-                    except OSError:
-                        continue
+        ok, msg = _try_systemd_restart()
+        if ok:
+            return True, msg
 
     launcher = _find_launcher_script(install_root)
     if launcher is None:
         return False, "no launcher script found"
 
-    try:
-        if sys.platform == "darwin" and launcher.suffix == ".command":
-            open_bin = shutil.which("open") or "/usr/bin/open"
-            subprocess.Popen(
-                [open_bin, safe_subprocess_path(launcher)],
-                cwd=safe_subprocess_path(install_root),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                env=_minimal_subprocess_env(),
-            )
-        else:
-            bash = shutil.which("bash") or "/bin/bash"
-            subprocess.Popen(
-                [bash, safe_subprocess_path(launcher)],
-                cwd=safe_subprocess_path(install_root),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                env=_minimal_subprocess_env(),
-            )
-    except OSError as e:
-        return False, str(e)
-    return True, f"launcher ({launcher.name})"
+    return _schedule_delayed_launch(launcher, install_root, parent_pid=pid)
 
 
 def _has_launcher(root: Path) -> bool:
@@ -313,6 +365,7 @@ def _apply_linux_shell_update(install_root: Path) -> ApplyUpdateResult:
     env = _minimal_subprocess_env()
     env["PIGEON_UPDATE_URL"] = _BOOTSTRAP_SCRIPT_RAW
     env["PIGEON_INSTALL_ROOT"] = root
+    env["PIGEON_UPDATE_IN_APP"] = "1"
     try:
         proc = subprocess.run(
             [

@@ -1766,10 +1766,16 @@ def main() -> int:
                             try:
                                 from pigeon.github_update import restart_pigeon_after_update
 
-                                restart_pigeon_after_update(install_root)
+                                restart_pigeon_after_update(
+                                    install_root, parent_pid=os.getpid()
+                                )
                             except Exception:
                                 pass
-                            root.quit()
+                            try:
+                                root.destroy()
+                            except tk.TclError:
+                                pass
+                            os._exit(0)
 
                         root.after(400, _restart_and_exit)
                         return
