@@ -32,6 +32,9 @@ class ReceiverPollResult:
     config: str
     # Snapshot of Telnet-only richer fields (SI/MS/DC/PS_*/_raw) when available.
     telnet_debug: dict[str, str] = field(default_factory=dict)
+    # True when the receiver answered but reports OFF/STANDBY power — callers
+    # should treat this the same as an absent receiver (no metadata shown).
+    standby: bool = False
 
 
 def _normalize_host(host: str) -> str:
@@ -529,7 +532,7 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
 
     power = _denon_field_ci(d, "Power", "ZonePower", "PW", "ZM").upper()
     if power in ("OFF", "STANDBY"):
-        return ReceiverPollResult(True, "", "", "", telnet_state)
+        return ReceiverPollResult(True, "", "", "", telnet_state, standby=True)
 
     # Mute comes from HTTP ``Mute`` or telnet ``MU``; firmware truthy forms vary.
     mute = _denon_field_ci(d, "Mute", "MU").strip().lower()

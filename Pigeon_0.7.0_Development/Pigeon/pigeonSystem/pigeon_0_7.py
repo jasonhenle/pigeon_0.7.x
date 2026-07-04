@@ -2441,6 +2441,9 @@ def main() -> int:
             "effective": "",
             "mono_usable": 0.0,
         }
+        # True when the last Denon poll answered but reported OFF/STANDBY — hide all
+        # receiver metadata and treat the receiver indicator as inactive.
+        receiver_standby_holder: list[bool] = [False]
         streaming_badge_state: dict[str, object] = {
             "show": False,
             "filename": "",
@@ -2516,34 +2519,38 @@ def main() -> int:
                     remaining_text = _format_hmmss(int(pair[1]))
             lm_np = apple_tv_auto_state.get("last_metadata")
             atv_live = isinstance(lm_np, dict) and not _atv_metadata_is_content_idle(lm_np)
-            inc = str(receiver_overlay_state.get("incoming") or "").strip()
-            cfg = str(receiver_overlay_state.get("config") or "").strip()
-            # With player data live, idle/placeholder audio text stays hidden; without a
-            # player (rv_ck layouts) the receiver info is the content, so keep it.
-            if atv_live and not _receiver_audio_lines_eligible():
-                inc = ""
-                cfg = ""
+            rx_standby = bool(receiver_standby_holder[0])
+            inc = ""
+            cfg = ""
             vol = ""
-            if compose_playback_volume_widget_line is not None:
-                vol = compose_playback_volume_widget_line(
-                    stream_row=streaming_slot_holder[0],
-                    apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
-                    if isinstance(apple_tv_auto_state.get("last_metadata"), dict)
-                    else None,
-                    denon_vol_effective=str(denon_vol_cache.get("effective") or ""),
-                    roku_tv_volume_percent="",
-                )
-            if not vol:
-                raw_vol = str(receiver_overlay_state.get("volume") or "").strip()
-                # Bare 0–100 with no dB/% is usually stale Apple TV percent, not AVR readout.
-                if raw_vol and not (
-                    raw_vol.isdigit() and 0 <= int(raw_vol) <= 100
-                ):
-                    vol = raw_vol
-                elif raw_vol and (
-                    "db" in raw_vol.lower() or raw_vol.endswith("%") or raw_vol.lower() == "mute"
-                ):
-                    vol = raw_vol
+            if not rx_standby:
+                inc = str(receiver_overlay_state.get("incoming") or "").strip()
+                cfg = str(receiver_overlay_state.get("config") or "").strip()
+                # With player data live, idle/placeholder audio text stays hidden; without a
+                # player (rv_ck layouts) the receiver info is the content, so keep it.
+                if atv_live and not _receiver_audio_lines_eligible():
+                    inc = ""
+                    cfg = ""
+                if compose_playback_volume_widget_line is not None:
+                    vol = compose_playback_volume_widget_line(
+                        stream_row=streaming_slot_holder[0],
+                        apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
+                        if isinstance(apple_tv_auto_state.get("last_metadata"), dict)
+                        else None,
+                        denon_vol_effective=str(denon_vol_cache.get("effective") or ""),
+                        roku_tv_volume_percent="",
+                    )
+                if not vol:
+                    raw_vol = str(receiver_overlay_state.get("volume") or "").strip()
+                    # Bare 0–100 with no dB/% is usually stale Apple TV percent, not AVR readout.
+                    if raw_vol and not (
+                        raw_vol.isdigit() and 0 <= int(raw_vol) <= 100
+                    ):
+                        vol = raw_vol
+                    elif raw_vol and (
+                        "db" in raw_vol.lower() or raw_vol.endswith("%") or raw_vol.lower() == "mute"
+                    ):
+                        vol = raw_vol
             badge_bgra = None
             fn = str(streaming_badge_state.get("filename") or "").strip()
             if fn:
@@ -9027,11 +9034,12 @@ def main() -> int:
                                     denon_vol_cache.get("mono_usable") or 0.0
                                 )
                                 denon_staleness_s = time.monotonic() - last_denon_usable
-                                denon_authoritative = bool(
-                                    denon_vol_cache.get("effective")
-                                ) and denon_staleness_s < (
-                                    RECEIVER_POLL_MS / 1000.0
-                                ) * 6
+                                denon_authoritative = (
+                                    not receiver_standby_holder[0]
+                                    and bool(denon_vol_cache.get("effective"))
+                                    and denon_staleness_s
+                                    < (RECEIVER_POLL_MS / 1000.0) * 6
+                                )
                                 if v_line and not denon_authoritative:
                                     old_v = str(receiver_overlay_state.get("volume", ""))
                                     if old_v != v_line:
@@ -10457,7 +10465,13 @@ def main() -> int:
 
                 def _apply_body(rpl: object) -> None:
                     denon_ok = r is not None and r.ok
-                    if denon_ok and denon_vol_effective:
+                    denon_standby = bool(r is not None and getattr(r, "standby", False))
+                    receiver_standby_holder[0] = denon_standby
+                    if denon_standby:
+                        # Standby is treated as off: drop cached volume and overlay text.
+                        denon_vol_cache["effective"] = ""
+                        denon_vol_cache["mono_usable"] = 0.0
+                    elif denon_ok and denon_vol_effective:
                         denon_vol_cache["effective"] = denon_vol_effective
                         denon_vol_cache["mono_usable"] = time.monotonic()
                     try:
@@ -10472,19 +10486,30 @@ def main() -> int:
                         update_observed_capabilities_from_receiver_poll(
                             str(read_current_location_id() or ""),
                             read_saved_av_receiver(),
-                            denon_reachable=denon_ok,
-                            denon_volume_usable=bool(denon_vol_effective),
+                            denon_reachable=denon_ok and not denon_standby,
+                            denon_volume_usable=bool(denon_vol_effective) and not denon_standby,
                             denon_has_incoming=bool(
-                                r is not None and str(r.incoming or "").strip()
+                                r is not None
+                                and not denon_standby
+                                and str(r.incoming or "").strip()
                             ),
                             denon_has_config=bool(
-                                r is not None and str(r.config or "").strip()
+                                r is not None
+                                and not denon_standby
+                                and str(r.config or "").strip()
                             ),
                         )
                     except Exception:
                         pass
                     _refresh_observed_pairing_led_rows()
-                    if r is not None and r.ok:
+                    if denon_standby:
+                        receiver_telnet_debug_holder[0] = dict(
+                            getattr(r, "telnet_debug", {}) or {}
+                        ) if r is not None else {}
+                        apply_overlay("", "", "")
+                        if rpl is not None:
+                            _paint_boolean_led(rpl, False)
+                    elif r is not None and r.ok:
                         receiver_telnet_debug_holder[0] = dict(
                             getattr(r, "telnet_debug", {}) or {}
                         )
