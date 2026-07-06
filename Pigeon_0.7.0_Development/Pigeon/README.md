@@ -65,5 +65,15 @@ Pigeon is a full-screen media display and control surface. It can show playback 
 
 ## Build notes
 
-- This build version is defined in `pigeonSystem/pigeon/version.py` (currently 0.7.5).
+- This build version is defined in `pigeonSystem/pigeon/version.py`.
 - Changelog lives at `Desktop/Pigeon/pigeonChangelog/CHANGELOG.md`.
+
+## Releasing updates
+
+Develop on branch **`experiment`**. The in-app **Updates** button only sees **`main`** on GitHub.
+
+See **[RELEASE.md](RELEASE.md)** for the full workflow, or run from the git repo root:
+
+```bash
+./Pigeon_0.7.0_Development/Pigeon/installer/ship_to_main.sh
+```
