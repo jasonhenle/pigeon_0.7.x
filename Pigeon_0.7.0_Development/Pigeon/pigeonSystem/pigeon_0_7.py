@@ -1610,31 +1610,53 @@ def main() -> int:
                 return False
             return "Paused" in ds or "Pause" in ds
 
-        def _receiver_audio_lines_eligible() -> bool:
-            """True when substantive playback (playing, paused, or live) warrants AVR audio lines."""
-            from pigeon.widgets.playback_overlay import _receiver_audio_display_line
+        def _denon_telnet_audio_fallback() -> tuple[str, str]:
+            """Telnet snapshot when HTTP/XML left incoming/config empty."""
+            dbg = receiver_telnet_debug_holder[0]
+            if not isinstance(dbg, dict) or not dbg:
+                return "", ""
+            inc = str(
+                dbg.get("SYSDA") or dbg.get("SSINFAISFOR") or dbg.get("DC") or ""
+            ).strip()
+            cfg = str(dbg.get("MS") or "").strip()
+            if inc:
+                inc = inc.lower()
+            if cfg:
+                cfg = cfg.lower()
+            return inc, cfg
 
+        def _resolve_receiver_lines_for_now_playing() -> tuple[str, str, str]:
+            """Incoming/config/volume for View 1, with Denon telnet fallback."""
+            if bool(receiver_standby_holder[0]):
+                return "", "", ""
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
-            if _receiver_audio_display_line(inc) or _receiver_audio_display_line(cfg):
-                return True
-            lm_raw = apple_tv_auto_state.get("last_metadata")
-            lm = lm_raw if isinstance(lm_raw, dict) else None
-            if lm is None:
-                return False
-            if _atv_metadata_is_content_idle(lm):
-                return False
-            clk = apple_tv_playback_clock
-            if clk.get("live_mode"):
-                return True
-            ds = str(lm.get("device_state") or "")
-            if "Playing" in ds:
-                return True
-            if _show_paused_row_overlay():
-                return True
-            if clk.get("has_sync") and clk.get("playing"):
-                return True
-            return False
+            if not inc and not cfg:
+                fb_inc, fb_cfg = _denon_telnet_audio_fallback()
+                inc, cfg = fb_inc, fb_cfg
+            vol = ""
+            if compose_playback_volume_widget_line is not None:
+                vol = compose_playback_volume_widget_line(
+                    stream_row=streaming_slot_holder[0],
+                    apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
+                    if isinstance(apple_tv_auto_state.get("last_metadata"), dict)
+                    else None,
+                    denon_vol_effective=str(denon_vol_cache.get("effective") or ""),
+                    roku_tv_volume_percent="",
+                )
+            if not vol:
+                raw_vol = str(receiver_overlay_state.get("volume") or "").strip()
+                if raw_vol and not (
+                    raw_vol.isdigit() and 0 <= int(raw_vol) <= 100
+                ):
+                    vol = raw_vol
+                elif raw_vol and (
+                    "db" in raw_vol.lower()
+                    or raw_vol.endswith("%")
+                    or raw_vol.lower() == "mute"
+                ):
+                    vol = raw_vol
+            return inc, cfg, vol
 
         apple_tv_dashboard_track: dict[str, object] = {"last_poll_ok": None, "consecutive_fail": 0}
         content_indicator_cv_holder: list[tk.Canvas | None] = [None]
@@ -2531,38 +2553,7 @@ def main() -> int:
                     remaining_text = _format_hmmss(int(pair[1]))
             lm_np = apple_tv_auto_state.get("last_metadata")
             atv_live = isinstance(lm_np, dict) and not _atv_metadata_is_content_idle(lm_np)
-            rx_standby = bool(receiver_standby_holder[0])
-            inc = ""
-            cfg = ""
-            vol = ""
-            if not rx_standby:
-                inc = str(receiver_overlay_state.get("incoming") or "").strip()
-                cfg = str(receiver_overlay_state.get("config") or "").strip()
-                # With player data live, idle/placeholder audio text stays hidden; without a
-                # player (rv_ck layouts) the receiver info is the content, so keep it.
-                if atv_live and not _receiver_audio_lines_eligible():
-                    inc = ""
-                    cfg = ""
-                if compose_playback_volume_widget_line is not None:
-                    vol = compose_playback_volume_widget_line(
-                        stream_row=streaming_slot_holder[0],
-                        apple_tv_last_metadata=apple_tv_auto_state.get("last_metadata")
-                        if isinstance(apple_tv_auto_state.get("last_metadata"), dict)
-                        else None,
-                        denon_vol_effective=str(denon_vol_cache.get("effective") or ""),
-                        roku_tv_volume_percent="",
-                    )
-                if not vol:
-                    raw_vol = str(receiver_overlay_state.get("volume") or "").strip()
-                    # Bare 0–100 with no dB/% is usually stale Apple TV percent, not AVR readout.
-                    if raw_vol and not (
-                        raw_vol.isdigit() and 0 <= int(raw_vol) <= 100
-                    ):
-                        vol = raw_vol
-                    elif raw_vol and (
-                        "db" in raw_vol.lower() or raw_vol.endswith("%") or raw_vol.lower() == "mute"
-                    ):
-                        vol = raw_vol
+            inc, cfg, vol = _resolve_receiver_lines_for_now_playing()
             badge_bgra = None
             fn = str(streaming_badge_state.get("filename") or "").strip()
             if fn:
@@ -10416,12 +10407,14 @@ def main() -> int:
 
         def _receiver_poll_tick() -> None:
             root.after(RECEIVER_POLL_MS, _receiver_poll_tick)
-            if not _PIGEON_EXT or playback_overlay_widget is None:
+            if not _PIGEON_EXT:
                 return
             if receiver_poll_busy["active"]:
                 return
 
             host = str(receiver_http_host.get("host") or "").strip()
+            if not host:
+                return
 
             def apply_overlay(incoming: str, config: str, volume: str) -> None:
                 nonlocal skip_cache, last_device_interaction_mono
@@ -10576,7 +10569,11 @@ def main() -> int:
                         receiver_telnet_debug_holder[0] = dict(
                             getattr(r, "telnet_debug", {}) or {}
                         )
-                        apply_overlay(r.incoming, r.config, merged_volume)
+                        poll_inc = str(r.incoming or "").strip()
+                        poll_cfg = str(r.config or "").strip()
+                        if not poll_inc and not poll_cfg:
+                            poll_inc, poll_cfg = _denon_telnet_audio_fallback()
+                        apply_overlay(poll_inc, poll_cfg, merged_volume)
                         if rpl is not None:
                             _paint_boolean_led(rpl, True)
                     elif merged_volume:
