@@ -1612,6 +1612,12 @@ def main() -> int:
 
         def _receiver_audio_lines_eligible() -> bool:
             """True when substantive playback (playing, paused, or live) warrants AVR audio lines."""
+            from pigeon.widgets.playback_overlay import _receiver_audio_display_line
+
+            inc = str(receiver_overlay_state.get("incoming") or "").strip()
+            cfg = str(receiver_overlay_state.get("config") or "").strip()
+            if _receiver_audio_display_line(inc) or _receiver_audio_display_line(cfg):
+                return True
             lm_raw = apple_tv_auto_state.get("last_metadata")
             lm = lm_raw if isinstance(lm_raw, dict) else None
             if lm is None:
@@ -5299,6 +5305,16 @@ def main() -> int:
             playing = False
             backdrop_master_bgr = saved_backdrop_master_bgr.copy()
             backdrop_app_logo_letterbox_fit = saved_backdrop_app_logo_letterbox_fit
+            if _view_one_uses_now_playing_screen():
+                use_backdrop_scene = False
+                scaled_version += 1
+                _warm_tmdb_logo_patch()
+                if now_playing_screen_widget is not None:
+                    now_playing_screen_widget.clear_cache()
+                _sync_now_playing_screen_state()
+                skip_cache = None
+                render_once()
+                return
             use_backdrop_scene = True
             scene_enabled = True
             last_frame = None
@@ -5692,35 +5708,46 @@ def main() -> int:
                     bd_use = _backdrop_master_from_streaming_app_logo()
                     from_app_logo = bd_use is not None
                 if bd_use is not None:
-                    if cap is not None:
-                        try:
-                            cap.release()
-                        except Exception:
-                            pass
-                        cap = None
                     backdrop_master_bgr = bd_use
                     saved_backdrop_master_bgr = np.asarray(bd_use, dtype=np.uint8).copy()
                     saved_backdrop_app_logo_letterbox_fit = from_app_logo
                     backdrop_app_logo_letterbox_fit = from_app_logo
-                    use_backdrop_scene = True
-                    scene_enabled = True
-                    playing = False
-                    last_frame = None
-                    if not _PIGEON_EXT:
-                        scaled_display = None
-                    else:
-                        scaled_display = None
                     scaled_version += 1
-                    _save_persisted_scene_enabled(True)
-                    # Backdrop is static image — not paused-video 0.3; use dedicated backdrop level.
-                    brightness_current = brightness_from = brightness_target = BACKDROP_BRIGHTNESS
-                    brightness_t0 = time.monotonic()
-                    if not _apply_netflix_backdrop_when_running():
+                    if _view_one_uses_now_playing_screen():
+                        # View 1 paints TMDB in the now-playing bar only. Keep scene off so
+                        # render_once always takes the chrome compose path (skip-cache there
+                        # omits TMDB bar state and would freeze the bar empty).
+                        use_backdrop_scene = False
                         if status_bar_widget is not None:
                             bd_arr = np.asarray(backdrop_master_bgr, dtype=np.uint8)
                             if status_bar_widget.set_accent_from_backdrop_bgr(bd_arr):
                                 _warm_status_bar_blits()
                                 skip_cache = None
+                    else:
+                        if cap is not None:
+                            try:
+                                cap.release()
+                            except Exception:
+                                pass
+                            cap = None
+                        use_backdrop_scene = True
+                        scene_enabled = True
+                        playing = False
+                        last_frame = None
+                        if not _PIGEON_EXT:
+                            scaled_display = None
+                        else:
+                            scaled_display = None
+                        _save_persisted_scene_enabled(True)
+                        # Backdrop is static image — not paused-video 0.3; use dedicated backdrop level.
+                        brightness_current = brightness_from = brightness_target = BACKDROP_BRIGHTNESS
+                        brightness_t0 = time.monotonic()
+                        if not _apply_netflix_backdrop_when_running():
+                            if status_bar_widget is not None:
+                                bd_arr = np.asarray(backdrop_master_bgr, dtype=np.uint8)
+                                if status_bar_widget.set_accent_from_backdrop_bgr(bd_arr):
+                                    _warm_status_bar_blits()
+                                    skip_cache = None
                 # Match-quality counters: score only when TMDb material changes to a
                 # new content event key (not on same-content retries/refetches).
                 if active_tmdb_title_key:
@@ -8738,7 +8765,26 @@ def main() -> int:
             nonlocal tmdb_logo_app_fallback_active
             if not _atv_metadata_is_content_idle(metadata):
                 return
+            if _view_one_uses_now_playing_screen():
+                # Layout falls back to rv_ck/ck when idle; keep cached TMDB so a brief
+                # idle poll does not wipe art and block re-fetch (tmdb_key unchanged).
+                clk = apple_tv_playback_clock
+                clk["has_sync"] = False
+                clk["playing"] = False
+                clk["live_mode"] = False
+                clk["latched_content_key"] = None
+                clk["latched_total"] = None
+                clk["display_played_sec"] = None
+                clk["trt_next_fire_mono"] = None
+                clk["sync_position"] = 0.0
+                clk["sync_mono"] = time.monotonic()
+                _sync_status_bar_visibility_for_playback(metadata)
+                _sync_now_playing_screen_state()
+                skip_cache = None
+                render_once()
+                return
             apple_tv_auto_state["content_key"] = None
+            apple_tv_auto_state["tmdb_key"] = None
             apple_tv_auto_state["query"] = None
             apple_tv_auto_state["prefer"] = "auto"
             apple_tv_auto_state["last_tmdb_fetch_input"] = None
@@ -9081,6 +9127,17 @@ def main() -> int:
                                 apple_tv_auto_state["query"] = query
                                 apple_tv_auto_state["prefer"] = prefer
                                 spawn_tmdb_poster_fetch(query, prefer=prefer)
+                            elif (
+                                active_tmdb_title_key is None
+                                and backdrop_master_bgr is None
+                                and saved_backdrop_master_bgr is None
+                                and not apple_tv_auto_state.get("tmdb_fetch_in_flight")
+                            ):
+                                spawn_id = _tmdb_spawn_identity(query, prefer)
+                                apple_tv_auto_state["tmdb_key"] = spawn_id
+                                apple_tv_auto_state["query"] = query
+                                apple_tv_auto_state["prefer"] = prefer
+                                spawn_tmdb_poster_fetch(query, prefer=prefer, force=True)
                         if ok_w:
                             _return_to_landing_if_atv_idle(md_for_spawn)
                     if not pyatv_tmdb_eligible and wk_roku_title is not None:

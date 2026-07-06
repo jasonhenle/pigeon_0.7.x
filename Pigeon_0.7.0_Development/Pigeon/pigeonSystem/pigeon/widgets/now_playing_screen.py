@@ -38,6 +38,7 @@ from pigeon.widgets.playback_overlay import (
     _receiver_audio_display_line,
     _receiver_volume_display_line,
     _text_patch_bgra,
+    receiver_audio_config_display_line,
 )
 from pigeon.widgets.status_bar import DesignPatch
 
@@ -801,10 +802,8 @@ def _clock_text(now: datetime | None = None) -> str:
 
 
 def _audio_config_line(incoming: str, config: str) -> str:
-    """Incoming codec/format only — Denon ``MS`` surround mode stays off this row."""
-    _ = config
-    line = _receiver_audio_display_line(incoming)
-    return line.upper() if line else ""
+    """Source format and surround/output mode (e.g. ``MULTI-IN > AURO3D``)."""
+    return receiver_audio_config_display_line(incoming, config)
 
 
 def _paste_text_on_baseline(
