@@ -77,3 +77,13 @@ See **[RELEASE.md](RELEASE.md)** for the full workflow, or run from the git repo
 ```bash
 ./Pigeon_0.7.0_Development/Pigeon/installer/ship_to_main.sh
 ```
+
+### Two Desktop launchers (Mac)
+
+Run once to create/update:
+
+```bash
+./Pigeon_0.7.0_Development/Pigeon/installer/setup_desktop_launchers.sh
+```
+
+This adds **`Pigeon (experiment).command`** and **`Pigeon (main).command`** on your Desktop — separate folders so each branch can run without switching git.

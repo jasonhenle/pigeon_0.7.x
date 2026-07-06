@@ -51,6 +51,25 @@ After merge, wait ~1 minute for GitHub’s cache, then **Updates** in Pigeon sho
 
 ---
 
+## Test both branches on your Mac (Desktop launchers)
+
+Run once from the git repo root:
+
+```bash
+./Pigeon_0.7.0_Development/Pigeon/installer/setup_desktop_launchers.sh
+```
+
+This creates two double-click icons on your Desktop:
+
+| Icon | Folder | Branch |
+|------|--------|--------|
+| **Pigeon (experiment).command** | `~/Desktop/Pigeon/…` | `experiment` (dev) |
+| **Pigeon (main).command** | `~/Desktop/Pigeon-main/…` | `main` (what Updates ships) |
+
+Each uses a **separate copy** of the repo (git worktree), so you can run either without switching branches. The Terminal window prints the branch and version before Pigeon starts.
+
+Re-run the setup script after moving the repo or to refresh the main copy from GitHub.
+
 ## Ship manually (step by step)
 
 ### 1. Push your branch
