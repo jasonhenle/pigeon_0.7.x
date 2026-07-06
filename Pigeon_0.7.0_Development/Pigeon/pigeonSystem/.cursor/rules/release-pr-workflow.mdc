@@ -1,0 +1,44 @@
+---
+description: Ship Pigeon changes via experiment branch and PR into main (in-app Updates reads main)
+alwaysApply: true
+---
+
+# Release & PR workflow
+
+Pigeon’s in-app **Updates** button compares local `version.py` to **`main`** on GitHub (`pigeon/update_check.py`). Pushing only to `experiment` does **not** ship to devices.
+
+## Branches
+
+| Branch | Purpose |
+|--------|---------|
+| `experiment` | Day-to-day development; push freely |
+| `main` | Release line — must match what Updates distributes |
+
+## When the user asks to **push** or **ship** or **release**
+
+1. Ensure `pigeonSystem/pigeon/version.py` `PATCH` was bumped for the code changes.
+2. Commit on the working branch (usually `experiment`).
+3. `git push -u origin HEAD` for that branch.
+4. **If not already on `main`:** open or update a PR into `main`, then merge it (see `RELEASE.md` or run `installer/ship_to_main.sh`).
+5. Confirm `main` on GitHub has the new `PATCH` before telling the user Updates will see it.
+
+## Creating the PR (preferred)
+
+From repo root (`/Users/jasonhenley/Desktop/Pigeon`):
+
+```bash
+./Pigeon_0.7.0_Development/Pigeon/installer/ship_to_main.sh
+```
+
+Or manually:
+
+```bash
+gh pr create --base main --head experiment --title "Release 0.7.NN" --body "…"
+gh pr merge --merge --delete-branch=false
+```
+
+## Do not
+
+- Tell the user Updates will pick up a build that only exists on `experiment`.
+- Force-push `main` unless explicitly requested.
+- Skip merging to `main` after a release push unless the user only wanted a feature-branch backup.
