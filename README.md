@@ -2,15 +2,23 @@
 
 **Pigeon** is a full-screen media display and control surface (Apple TV / Roku metadata, TMDb artwork, clocks, status bar, remotes).
 
-This repository is the **canonical source** for the app — fresh installs and in-app updates both pull from here. You do not need a Mac to build or distribute Pigeon.
+This repository is the **canonical source** for the app — fresh installs and in-app updates both pull from here.
+
+## Active development
+
+| Version | Folder |
+|---------|--------|
+| **0.8 (current)** | [`Pigeon_0.8.0_Development/Pigeon/`](Pigeon_0.8.0_Development/Pigeon/) |
+| 0.7 (archived) | [`Archive/Pigeon_0.70_Development/`](Archive/Pigeon_0.70_Development/) |
 
 ## Quick links
 
 | Goal | Where |
 |------|--------|
-| **Install from scratch (Pi, Mac, Linux)** | [`Pigeon_0.7.0_Development/Pigeon/GITHUB.md`](Pigeon_0.7.0_Development/Pigeon/GITHUB.md) |
-| **Raspberry Pi** | [`Pigeon_0.7.0_Development/Pigeon/raspberryPi/README_RASPBERRY_PI.md`](Pigeon_0.7.0_Development/Pigeon/raspberryPi/README_RASPBERRY_PI.md) |
-| **App folder (code + assets)** | [`Pigeon_0.7.0_Development/Pigeon/`](Pigeon_0.7.0_Development/Pigeon/) |
+| **Install from scratch (Pi, Mac, Linux)** | [`Pigeon_0.8.0_Development/Pigeon/GITHUB.md`](Pigeon_0.8.0_Development/Pigeon/GITHUB.md) |
+| **Raspberry Pi** | [`Pigeon_0.8.0_Development/Pigeon/raspberryPi/README_RASPBERRY_PI.md`](Pigeon_0.8.0_Development/Pigeon/raspberryPi/README_RASPBERRY_PI.md) |
+| **App folder (code + assets)** | [`Pigeon_0.8.0_Development/Pigeon/`](Pigeon_0.8.0_Development/Pigeon/) |
+| **0.8 settings instructions** | [`Pigeon_0.8.0_Development/docs/settingInstructions_0.8.0.numbers`](Pigeon_0.8.0_Development/docs/settingInstructions_0.8.0.numbers) |
 | **GitHub Releases** (Pi tarballs) | https://github.com/jasonhenle/pigeon_0.7.x/releases |
 
 ## One-command install
@@ -19,13 +27,13 @@ This repository is the **canonical source** for the app — fresh installs and i
 
 ```bash
 curl -fsSL -o /tmp/pigeon-install.sh \
-  "https://raw.githubusercontent.com/jasonhenle/pigeon_0.7.x/main/Pigeon_0.7.0_Development/Pigeon/installer/install_from_github.sh"
+  "https://raw.githubusercontent.com/jasonhenle/pigeon_0.7.x/main/Pigeon_0.8.0_Development/Pigeon/installer/install_from_github.sh"
 bash /tmp/pigeon-install.sh
 ```
 
 **macOS:** same script (downloads the main-branch zip and runs the Mac installer).
 
-**Already installed:** open Pigeon → Settings → **Updates** (or `installer/pi_update_from_github.sh` on Pi).
+**Already installed:** open Pigeon → Settings → **Updates**.
 
 ## What is in git
 
