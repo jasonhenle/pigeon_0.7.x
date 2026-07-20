@@ -1,0 +1,5 @@
+# Launch Pigeon on the Pi
+ssh jasonhenle@10.0.7.15 'cd ~/Pigeon_0.7.23 && ./installer/run_pigeon_0_7.sh'
+
+# Update later
+ssh jasonhenle@10.0.7.15 'curl -fsSL "https://raw.githubusercontent.com/jasonhenle/pigeon_0.7.x/main/Pigeon_0.7.0_Development/Pigeon/installer/pigeon_github_update.sh" | bash -s -- ~/Pigeon_0.7.23'
