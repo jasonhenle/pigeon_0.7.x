@@ -89,6 +89,7 @@ from pigeon.app_state import (
     write_last_receiver,
     write_saved_av_receiver,
     write_saved_streaming_device,
+    write_location_wifi,
     advance_delegation_active,
     append_delegation_log_line,
 )
@@ -7468,6 +7469,280 @@ def main() -> int:
 
             threading.Thread(target=worker_remote_begin, daemon=True).start()
 
+        def _save_box_pair_device_row(box_num: int, row: dict[str, str]) -> None:
+            from pigeon.app_state import (
+                append_device_to_location_slot,
+                read_current_location_id,
+                read_saved_av_receiver,
+                read_saved_streaming_device,
+                write_saved_av_receiver,
+                write_saved_streaming_device,
+            )
+
+            saved = dict(row)
+            saved["device_role"] = "player" if box_num == 2 else "receiver"
+            lid = read_current_location_id() or None
+            if box_num == 2:
+                append_device_to_location_slot(
+                    "streaming",
+                    saved,
+                    for_location_id=lid,
+                    new_location_name=None,
+                )
+                write_saved_streaming_device(saved, for_location_id=lid)
+                streaming_slot_holder[0] = read_saved_streaming_device()
+            else:
+                append_device_to_location_slot(
+                    "av_receiver",
+                    saved,
+                    for_location_id=lid,
+                    new_location_name=None,
+                )
+                write_saved_av_receiver(saved, for_location_id=lid)
+                avr_slot_holder[0] = read_saved_av_receiver()
+            describe_current_apple_tv()
+            _rebuild_paired_devices_panel()
+
+        def _handle_main_settings_action(action: str) -> None:
+            nonlocal skip_cache
+            if main_settings_widget is None:
+                return
+            st = main_settings_widget.state
+
+            if action == "keyboard_pin_incomplete":
+                messagebox.showwarning("Pairing", "Enter the 4-digit code from the TV.", parent=root)
+                return
+
+            if action == "keyboard_go:network":
+                ssid = str(st.pending_wifi_ssid or "").strip()
+                password = str(st.pending_network_password or "")
+                if not ssid:
+                    return
+
+                st.wifi_connecting = True
+                st.wifi_connect_started_mono = time.monotonic()
+                st.wifi_scan_angle_deg = 0.0
+                st.network_password_error = False
+                main_settings_widget.invalidate()
+                skip_cache = None
+
+                def worker_wifi_join() -> None:
+                    try:
+                        from pigeon.wifi_connect import try_join_wifi_network
+
+                        ok_w, _msg_w = try_join_wifi_network(ssid, password)
+                    except Exception:
+                        ok_w, _msg_w = False, "incorrect password"
+
+                    def finish_wifi() -> None:
+                        nonlocal skip_cache
+                        st.wifi_connecting = False
+                        if ok_w:
+                            st.selected_wifi_ssid = ssid
+                            st.wifi_password = password
+                            st.pending_wifi_ssid = ""
+                            st.pending_network_password = ""
+                            st.network_password_error = False
+                            st.wifi_onboarding = False
+                            st.show_instructions = False
+                            st.ensure_focus_ring()
+                            try:
+                                write_location_wifi(ssid, password)
+                            except Exception:
+                                pass
+                            try:
+                                from pigeon.local_ip import clear_local_ipv4_cache
+
+                                clear_local_ipv4_cache()
+                            except Exception:
+                                pass
+                        else:
+                            st.network_password_error = True
+                            st.pending_network_password = ""
+                            st.open_keyboard(
+                                "network",
+                                assets_dir=main_settings_widget._assets_dir,
+                                trigger_button="main_dual_network_button",
+                            )
+                        main_settings_widget.invalidate()
+                        skip_cache = None
+
+                    root.after(0, finish_wifi)
+
+                threading.Thread(target=worker_wifi_join, daemon=True).start()
+                return
+
+            if action == "keyboard_go:location":
+                nm = str(st.location_name or "").strip() or "Room"
+                lid = read_current_location_id()
+                if lid:
+                    rename_location_v2(lid, nm)
+                main_settings_widget.invalidate()
+                skip_cache = None
+                return
+
+            if action == "box3_pair_start":
+                sess = st.box_pairing
+                if sess is None or int(sess.box_num) != 3:
+                    return
+                _save_box_pair_device_row(3, sess.row)
+                st.clear_box_pairing()
+                main_settings_widget.invalidate()
+                skip_cache = None
+                _schedule_refresh_pairing_leds()
+                _rebuild_paired_devices_panel()
+                return
+
+            if action == "box2_pair_start":
+                sess = st.box_pairing
+                if sess is None or int(sess.box_num) != 2:
+                    return
+                row = dict(sess.row)
+                if not begin_apple_tv_operation("starting AppleTV Remote"):
+                    return
+
+                def worker_remote_begin_settings() -> None:
+                    try:
+                        from pigeon.apple_tv_now_playing import begin_companion_pairing_for_device
+
+                        ok_w, msg_w, session_key_w, _rev = begin_companion_pairing_for_device(
+                            device_identifier=row["identifier"],
+                            device_address=row["address"],
+                            tv_displays_pin=True,
+                        )
+                    except ImportError:
+                        ok_w, msg_w, session_key_w = False, _pyatv_install_hint(), None
+                    except Exception as e:
+                        ok_w, msg_w, session_key_w = False, str(e), None
+
+                    def finish_rb_settings() -> None:
+                        nonlocal skip_cache
+                        if not ok_w or not session_key_w:
+                            end_apple_tv_operation()
+                            st.clear_box_pairing()
+                            main_settings_widget.invalidate()
+                            skip_cache = None
+                            messagebox.showerror("AppleTV Remote", msg_w or "Pairing failed to start.")
+                            return
+                        if st.box_pairing is not None:
+                            st.box_pairing.session_key = str(session_key_w)
+                            st.box_pairing.step = "remote_pin"
+                        st.open_keyboard("pin", assets_dir=main_settings_widget._assets_dir)
+                        main_settings_widget.invalidate()
+                        skip_cache = None
+                        describe_current_apple_tv(suffix="enter Remote PIN")
+
+                    root.after(0, finish_rb_settings)
+
+                threading.Thread(target=worker_remote_begin_settings, daemon=True).start()
+                return
+
+            if action.startswith("keyboard_pin:"):
+                pin = action.split(":", 1)[1].strip()
+                pin = "".join(c for c in pin if c.isdigit())
+                if len(pin) != 4:
+                    messagebox.showwarning("Pairing", "Enter the 4-digit code from the TV.", parent=root)
+                    return
+                sess = st.box_pairing
+                if sess is None or not sess.session_key:
+                    return
+                row = dict(sess.row)
+                dn = sess.device_name
+
+                if sess.step == "remote_pin":
+
+                    def worker_remote_finish_settings() -> None:
+                        try:
+                            from pigeon.apple_tv_now_playing import begin_airplay_pairing_for_device, finish_companion_pairing_for_device
+
+                            ok_f, msg_f = finish_companion_pairing_for_device(
+                                session_key=sess.session_key, pin_code=pin
+                            )
+                        except ImportError:
+                            ok_f, msg_f = False, _pyatv_install_hint()
+                        except Exception as e:
+                            ok_f, msg_f = False, str(e)
+
+                        if ok_f:
+                            time.sleep(1.5)
+
+                        def done_rf_settings() -> None:
+                            nonlocal skip_cache
+                            if not ok_f:
+                                end_apple_tv_operation()
+                                st.clear_box_pairing()
+                                main_settings_widget.invalidate()
+                                skip_cache = None
+                                messagebox.showerror("AppleTV Remote", msg_f)
+                                _schedule_refresh_pairing_leds()
+                                return
+                            try:
+                                ok_a, msg_a, sk_a, _r2 = begin_airplay_pairing_for_device(
+                                    device_identifier=row["identifier"],
+                                    device_address=row["address"],
+                                    tv_displays_pin=True,
+                                )
+                            except ImportError:
+                                ok_a, msg_a, sk_a = False, _pyatv_install_hint(), None
+                            except Exception as e:
+                                ok_a, msg_a, sk_a = False, str(e), None
+                            if not ok_a or not sk_a:
+                                end_apple_tv_operation()
+                                st.clear_box_pairing()
+                                main_settings_widget.invalidate()
+                                skip_cache = None
+                                messagebox.showerror("AppleTV AirPlay", msg_a or "AirPlay pairing failed to start.")
+                                _schedule_refresh_pairing_leds()
+                                return
+                            if st.box_pairing is not None:
+                                st.box_pairing.session_key = str(sk_a)
+                                st.box_pairing.step = "airplay_pin"
+                            st.open_keyboard("pin", assets_dir=main_settings_widget._assets_dir)
+                            main_settings_widget.invalidate()
+                            skip_cache = None
+                            describe_current_apple_tv(suffix="enter AirPlay PIN")
+
+                        root.after(0, done_rf_settings)
+
+                    threading.Thread(target=worker_remote_finish_settings, daemon=True).start()
+                    return
+
+                if sess.step == "airplay_pin":
+
+                    def worker_air_finish_settings() -> None:
+                        try:
+                            from pigeon.apple_tv_now_playing import finish_companion_pairing_for_device
+
+                            ok_af, msg_af = finish_companion_pairing_for_device(
+                                session_key=sess.session_key, pin_code=pin
+                            )
+                        except ImportError:
+                            ok_af, msg_af = False, _pyatv_install_hint()
+                        except Exception as e:
+                            ok_af, msg_af = False, str(e)
+
+                        def done_air_settings() -> None:
+                            nonlocal skip_cache
+                            end_apple_tv_operation()
+                            if ok_af:
+                                _save_box_pair_device_row(2, row)
+                            st.clear_box_pairing()
+                            main_settings_widget.invalidate()
+                            skip_cache = None
+                            if ok_af:
+                                messagebox.showinfo(
+                                    "Apple TV",
+                                    f"{msg_af}\n\nPlayer “{dn}” is paired for this location.",
+                                )
+                            else:
+                                messagebox.showerror("AppleTV AirPlay", msg_af)
+                            _schedule_refresh_pairing_leds()
+                            _rebuild_paired_devices_panel()
+
+                        root.after(0, done_air_settings)
+
+                    threading.Thread(target=worker_air_finish_settings, daemon=True).start()
+
         def _force_advanced_feature_try(feature_id: str) -> None:
             """Advanced matrix refresh: re-run the probe path relevant to this feature row."""
             try:
@@ -9776,6 +10051,7 @@ def main() -> int:
                     skip_cache = None
                     sync_developer_chrome()
                 else:
+                    _handle_main_settings_action(action)
                     skip_cache = None
                 return "break"
             if _send_player_play_pause_hotkey():
@@ -9891,7 +10167,6 @@ def main() -> int:
                     main_settings_widget.navigate(forward=False)
                     skip_cache = None
                     return "break"
-                # Up/Down reserved for future 4-way nav instructions.
                 return "break"
             from pigeon.player_remote import queue_player_remote_action
 
@@ -10206,6 +10481,18 @@ def main() -> int:
             def _next_render_ms() -> int:
                 if playing:
                     return frame_interval_ms
+                # WiFi scan spinner: smooth 60 FPS while scanning.
+                if (
+                    dev_phase == DevPhase.MAIN_SETTINGS
+                    and main_settings_widget is not None
+                    and (
+                        main_settings_widget.state.wifi_scanning
+                        or main_settings_widget.state.wifi_connecting
+                        or main_settings_widget.state.box2_devices.scanning
+                        or main_settings_widget.state.box3_devices.scanning
+                    )
+                ):
+                    return 16
                 # Audio meter sim animates continuously; keep ~30 FPS while active.
                 if _audio_sim_active() and _view_one_uses_now_playing_screen():
                     return 33

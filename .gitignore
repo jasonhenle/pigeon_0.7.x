@@ -74,6 +74,7 @@ Pigeon_0.8.0_Development/**/installer/setup/tmdb_api_key
 Pigeon_0.8.0_Development/**/installer/setup/tmdb_read_token
 Pigeon_0.8.0_Development/**/installer/setup/pyatv_credentials
 Pigeon_0.8.0_Development/**/Pigeon0.8_GFX/
+Pigeon_0.8.0_Development/**/pigeonSystem/_kb_debug/
 
 # Local archives and full GFX tree (not required for app download path)
 Archive/

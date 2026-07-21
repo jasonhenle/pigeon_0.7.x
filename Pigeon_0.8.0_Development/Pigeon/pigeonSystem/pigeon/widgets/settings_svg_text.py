@@ -118,6 +118,13 @@ def _parse_font_size(el: ET.Element, *, vb_h: float, out_h: int) -> int:
 
 def _parse_text_anchor(el: ET.Element) -> str:
     raw = (el.get("text-anchor") or _style_prop(el.get("style"), "text-anchor") or "start").lower()
+    baseline = (
+        el.get("dominant-baseline")
+        or _style_prop(el.get("style"), "dominant-baseline")
+        or ""
+    ).lower()
+    if raw == "middle" and baseline == "middle":
+        return "mm"
     return {"middle": "ms", "end": "rs", "start": "ls"}.get(raw, "ls")
 
 

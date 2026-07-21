@@ -13,6 +13,7 @@ Navigation is linear Left/Right. Physical Spacebar activates the focused key.
 
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -203,9 +204,31 @@ class KeyboardState:
     def set_mode(self, mode: KeyboardMode, *, assets_dir: Path | str | None = None) -> None:
         if mode == self.mode:
             return
+        prev_action: KeyAction | None = None
+        prev_button = ""
+        prev_char = ""
+        if self.focus_ring:
+            prev = self.focused
+            prev_action = prev.action
+            prev_button = prev.button_id
+            prev_char = prev.char
         self.mode = mode
-        self.focus_index = 0
         self.rebuild_focus_ring(assets_dir=assets_dir)
+        if prev_action is not None:
+            for i, key in enumerate(self.focus_ring):
+                if key.action != prev_action:
+                    continue
+                if prev_action == KeyAction.CHAR and key.char != prev_char:
+                    continue
+                self.focus_index = i
+                return
+            if prev_button:
+                for i, key in enumerate(self.focus_ring):
+                    if key.button_id == prev_button:
+                        self.focus_index = i
+                        return
+        if mode in (KeyboardMode.NUMERIC_ALL, KeyboardMode.NUMERIC_PIN):
+            focus_numeric_one(self, assets_dir=assets_dir)
 
 
 def _button_xy(el: ET.Element) -> tuple[float, float]:
@@ -229,6 +252,10 @@ def _button_xy(el: ET.Element) -> tuple[float, float]:
 
 def _pair_icon_id(button_id: str) -> str:
     """Best-effort button → icon id (handles known typos in exports)."""
+    if button_id == "keyboard_numeric_full__button":
+        return "keyboard_numeric_full_1_icon"
+    if button_id == "keyboard_numeric_full_0_button":
+        return "keyboard_numeric_full__icon"
     if button_id.endswith("_button"):
         base = button_id[: -len("_button")]
         return f"{base}_icon"
@@ -319,7 +346,9 @@ def discover_char_keys(
             if len(parts) == 2 and len(parts[1]) == 1:
                 icon_candidates.insert(0, f"{parts[0]}_{parts[1].upper()}_icon")
         if logical == "keyboard_numeric_full__button":
-            icon_candidates = ["keyboard_numeric_full_1_icon", "keyboard_numeric_full__icon"]
+            icon_candidates = ["keyboard_numeric_full_1_icon"]
+        elif logical == "keyboard_numeric_full_0_button":
+            icon_candidates = ["keyboard_numeric_full__icon"]
         if logical.endswith("_2_button"):
             icon_candidates.append(logical.replace("_button", "_ico"))
         if logical.endswith("_3_button"):
@@ -393,6 +422,8 @@ def _paint_kb_button_shape(
     style = node.get("style") or ""
     style = _rewrite_style_prop(style, "stroke-width", _KB_STROKE_WIDTH)
     node.set("stroke-width", _KB_STROKE_WIDTH)
+    node.set("stroke-linejoin", "round")
+    node.set("stroke-linecap", "round")
     if style:
         node.set("style", style)
 
@@ -444,7 +475,8 @@ def apply_keyboard_selection(
 
         icons = list(icon_map.get(logical, ()))
         paired_icon = _pair_icon_id(logical)
-        icons.append(paired_icon)
+        if paired_icon not in icons:
+            icons.append(paired_icon)
         seen_icons: set[str] = set()
         for icon_logical in icons:
             if icon_logical in seen_icons:
@@ -480,27 +512,157 @@ def _bottom_row_icons(root: ET.Element, group_logical: str, *icon_logicals: str)
     return hits
 
 
-# Pill-button centers on the bottom-row artboard (725×42 SVG units).
-_BOTTOM_ROW_BTN1_CX = 22.25
-_BOTTOM_ROW_BTN2_CX = 88.55
-_BOTTOM_ROW_BTN3_CX = 164.25
-_BOTTOM_ROW_LABEL_BASELINE = 28.73
+# Bottom-row artboard + margin for PyMuPDF stroke rasterization (SVG user units).
+_BOTTOM_ROW_CONTENT_VB = (0.0, 0.0, 725.4, 42.15)
+# Half of the 3px keyboard stroke plus anti-alias slack.
+_BOTTOM_ROW_STROKE_PAD_SVG = float(_KB_STROKE_WIDTH) * 0.5 + 1.5
+
+
+@dataclass(frozen=True)
+class _BottomRowLayout:
+    padded_vb: tuple[float, float, float, float]
+    out_w: int
+    out_h: int
+    pad_px: int
+    content_w: int
+    content_h: int
+
+
+def _bottom_row_layout() -> _BottomRowLayout:
+    """Map content 1:1 to legacy pixels; add transparent margin for uncropped strokes."""
+    vb_x, vb_y, vb_w, vb_h = _BOTTOM_ROW_CONTENT_VB
+    pad = _BOTTOM_ROW_STROKE_PAD_SVG
+    content_w = int(round(725 * (DESIGN_W / 800)))
+    content_h = max(1, int(round(vb_h * content_w / vb_w)))
+    px_per_unit = content_w / vb_w
+    pad_px = max(1, int(math.ceil(pad * px_per_unit)))
+    out_w = content_w + 2 * pad_px
+    out_h = content_h + 2 * pad_px
+    padded_vb = (vb_x - pad, vb_y - pad, vb_w + 2.0 * pad, vb_h + 2.0 * pad)
+    return _BottomRowLayout(padded_vb, out_w, out_h, pad_px, content_w, content_h)
+
+
+def _blit_bottom_row(canvas: np.ndarray, row: np.ndarray, *, dest_x: int, dest_y: int) -> None:
+    """Alpha-blend a padded bottom-row strip onto the keyboard canvas without cropping strokes."""
+    rh, rw = row.shape[:2]
+    src_x0 = 0
+    src_y0 = 0
+    dest_x0 = dest_x
+    dest_y0 = dest_y
+    if dest_x0 < 0:
+        src_x0 = -dest_x0
+        dest_x0 = 0
+    if dest_y0 < 0:
+        src_y0 = -dest_y0
+        dest_y0 = 0
+    dest_x1 = min(DESIGN_W, dest_x0 + rw - src_x0)
+    dest_y1 = min(DESIGN_H, dest_y0 + rh - src_y0)
+    out_w = dest_x1 - dest_x0
+    out_h = dest_y1 - dest_y0
+    if out_w <= 0 or out_h <= 0:
+        return
+    src_x1 = src_x0 + out_w
+    src_y1 = src_y0 + out_h
+    region = canvas[dest_y0:dest_y1, dest_x0:dest_x1]
+    strip = row[src_y0:src_y1, src_x0:src_x1]
+    base_bgr = region[:, :, :3]
+    blended = alpha_blend_bgra_over_bgr(base_bgr, strip)
+    alpha = strip[:, :, 3:4].astype(np.float32) / 255.0
+    out_a = np.clip(
+        alpha * 255.0 + (1.0 - alpha) * region[:, :, 3:4].astype(np.float32),
+        0,
+        255,
+    ).astype(np.uint8)
+    canvas[dest_y0:dest_y1, dest_x0:dest_x1, :3] = blended
+    canvas[dest_y0:dest_y1, dest_x0:dest_x1, 3:4] = out_a
+
+_PATH_TOKENS_RE = re.compile(r"[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+)")
+
+
+def _path_bbox(d: str) -> tuple[float, float, float, float]:
+    """Loose SVG path bbox for Illustrator-export pill buttons (M/h/v/c only)."""
+    tokens = _PATH_TOKENS_RE.findall(d or "")
+    idx = 0
+    x = y = 0.0
+    xs: list[float] = []
+    ys: list[float] = []
+    cmd = ""
+
+    def _read() -> float:
+        nonlocal idx
+        value = float(tokens[idx])
+        idx += 1
+        return value
+
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token.isalpha():
+            cmd = token
+            idx += 1
+            continue
+        rel = cmd.islower()
+        if cmd in ("M", "m"):
+            nx, ny = _read(), _read()
+            x, y = ((x + nx, y + ny) if rel else (nx, ny))
+            xs.append(x)
+            ys.append(y)
+            cmd = "L" if cmd == "M" else "l"
+        elif cmd in ("L", "l"):
+            nx, ny = _read(), _read()
+            x, y = ((x + nx, y + ny) if rel else (nx, ny))
+            xs.append(x)
+            ys.append(y)
+        elif cmd in ("H", "h"):
+            nx = _read()
+            x = (x + nx) if rel else nx
+            xs.append(x)
+            ys.append(y)
+        elif cmd in ("V", "v"):
+            ny = _read()
+            y = (y + ny) if rel else ny
+            xs.append(x)
+            ys.append(y)
+        elif cmd in ("C", "c"):
+            vals = [_read() for _ in range(6)]
+            if rel:
+                x += vals[4]
+                y += vals[5]
+            else:
+                x, y = vals[4], vals[5]
+            xs.append(x)
+            ys.append(y)
+        else:
+            idx += 1
+    if not xs or not ys:
+        return 0.0, 0.0, 0.0, 0.0
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bottom_row_button_center(root: ET.Element, button_path_id: str) -> tuple[float, float]:
+    path = _find_by_logical_id(root, button_path_id)
+    if path is None:
+        return 0.0, 0.0
+    x0, y0, x1, y1 = _path_bbox(path.get("d") or "")
+    return (x0 + x1) * 0.5, (y0 + y1) * 0.5
 
 
 def _layout_bottom_row_label(
-    el: ET.Element | None,
+    root: ET.Element,
+    text_id: str,
+    button_path_id: str,
     text: str,
     *,
-    center_x: float,
     font_size: str = "20",
-    baseline_y: float = _BOTTOM_ROW_LABEL_BASELINE,
 ) -> None:
-    """Center a bottom-row mode label on its pill and normalize font metrics."""
+    """Center a bottom-row mode label inside its pill button."""
+    el = _find_by_logical_id(root, text_id)
     if el is None:
         return
+    cx, cy = _bottom_row_button_center(root, button_path_id)
     el.set("font-size", font_size)
     el.set("text-anchor", "middle")
-    el.set("transform", f"translate({center_x:.2f} {baseline_y:.2f})")
+    el.set("dominant-baseline", "middle")
+    el.set("transform", f"translate({cx:.2f} {cy:.2f})")
     _set_text_content(el, text)
     for tspan in el.iter():
         if tspan.tag.endswith("tspan"):
@@ -545,18 +707,19 @@ def apply_bottom_row_mode_icons(
     if uppercase_only:
         _remove_bottom_row_button1(root)
         _layout_bottom_row_label(
-            _find_by_logical_id(root, "keyboard_bottom_row_button2_abc"),
+            root,
+            "keyboard_bottom_row_button2_abc",
+            "keyboard_bottom_row_button2_button",
             "123",
-            center_x=_BOTTOM_ROW_BTN2_CX,
         )
         for el in btn2_abc:
             _set_visible(el, True)
         _layout_bottom_row_label(
-            _find_by_logical_id(root, "keyboard_bottom_row_button3_sym_icon"),
+            root,
+            "keyboard_bottom_row_button3_sym_icon",
+            "keyboard_bottom_row_button3_button",
             "sym",
-            center_x=_BOTTOM_ROW_BTN3_CX,
             font_size="25",
-            baseline_y=28.01,
         )
         for el in btn3_sym:
             _set_visible(el, True)
@@ -568,16 +731,17 @@ def apply_bottom_row_mode_icons(
         _set_visible(el, False)
 
     _layout_bottom_row_label(
-        _find_by_logical_id(root, "keyboard_bottom_row_button2_abc"),
+        root,
+        "keyboard_bottom_row_button2_abc",
+        "keyboard_bottom_row_button2_button",
         "123",
-        center_x=_BOTTOM_ROW_BTN2_CX,
     )
     _layout_bottom_row_label(
-        _find_by_logical_id(root, "keyboard_bottom_row_button3_sym_icon"),
+        root,
+        "keyboard_bottom_row_button3_sym_icon",
+        "keyboard_bottom_row_button3_button",
         "sym",
-        center_x=_BOTTOM_ROW_BTN3_CX,
         font_size="25",
-        baseline_y=28.01,
     )
 
     for el in btn2_abc:
@@ -595,12 +759,15 @@ def apply_bottom_row_mode_icons(
     btn1_label = _find_by_logical_id(root, "keyboard_bottom_row_button1_ABC_icon-2")
     if btn1_label is None:
         btn1_label = _find_by_logical_id(root, "keyboard_bottom_row_button1_ABC_icon")
+    label_id = _normalize_logical(btn1_label.get("id") or "") if btn1_label is not None else ""
+    if not label_id:
+        label_id = "keyboard_bottom_row_button1_ABC_icon-2"
     _layout_bottom_row_label(
-        btn1_label,
+        root,
+        label_id,
+        "keyboard_bottom_row_button1_buton",
         case_label,
-        center_x=_BOTTOM_ROW_BTN1_CX,
         font_size="22",
-        baseline_y=28.73,
     )
     for el in btn1_abc[:1] or btn1_abc:
         _set_visible(el, True)
@@ -693,11 +860,18 @@ def _rasterize_bottom_row(
     )
     _prune_display_none(root)
 
-    vb = viewbox_from_root(root)
-    target_w = int(round(725 * (DESIGN_W / 800)))
-    target_h = max(1, int(round(vb[3] * target_w / max(vb[2], 1.0))))
+    layout = _bottom_row_layout()
+    root.set(
+        "viewBox",
+        f"{layout.padded_vb[0]} {layout.padded_vb[1]} {layout.padded_vb[2]} {layout.padded_vb[3]}",
+    )
+    root.set("overflow", "visible")
     return rasterize_settings_svg_bgra(
-        root, width=target_w, height=target_h, view_box=vb, font_mode="keyboard"
+        root,
+        width=layout.out_w,
+        height=layout.out_h,
+        view_box=layout.padded_vb,
+        font_mode="keyboard",
     )
 
 
@@ -713,28 +887,14 @@ def render_keyboard_bgra(
     canvas = _rasterize_keyboard_chars(state, assets_dir=assets_dir)
     row = _rasterize_bottom_row(state, assets_dir=assets_dir)
     if row is not None and row.size:
-        x0 = int(_BOTTOM_ROW_X * (DESIGN_W / 800))
-        y0 = int(_BOTTOM_ROW_Y * (DESIGN_H / 480))
+        layout = _bottom_row_layout()
+        dest_x = int(_BOTTOM_ROW_X * (DESIGN_W / 800)) - layout.pad_px
+        dest_y = int(_BOTTOM_ROW_Y * (DESIGN_H / 480)) - layout.pad_px
         # PIN: park bottom actions under the centered pad.
         if state.mode == KeyboardMode.NUMERIC_PIN:
-            y0 = min(DESIGN_H - row.shape[0] - 8, DESIGN_H - 60)
-            x0 = max(0, (DESIGN_W - row.shape[1]) // 2)
-        y1 = min(DESIGN_H, y0 + row.shape[0])
-        x1 = min(DESIGN_W, x0 + row.shape[1])
-        rh, rw = y1 - y0, x1 - x0
-        if rh > 0 and rw > 0:
-            region = canvas[y0:y1, x0:x1]
-            strip = row[:rh, :rw]
-            base_bgr = region[:, :, :3]
-            blended = alpha_blend_bgra_over_bgr(base_bgr, strip)
-            alpha = strip[:, :, 3:4].astype(np.float32) / 255.0
-            out_a = np.clip(
-                alpha * 255.0 + (1.0 - alpha) * region[:, :, 3:4].astype(np.float32),
-                0,
-                255,
-            ).astype(np.uint8)
-            canvas[y0:y1, x0:x1, :3] = blended
-            canvas[y0:y1, x0:x1, 3:4] = out_a
+            dest_y = min(DESIGN_H - row.shape[0] - 8, DESIGN_H - 60)
+            dest_x = max(0, (DESIGN_W - row.shape[1]) // 2)
+        _blit_bottom_row(canvas, row, dest_x=dest_x, dest_y=dest_y)
     return canvas
 
 
@@ -754,7 +914,14 @@ def activate_key(state: KeyboardState, *, assets_dir: Path | str | None = None) 
     if act == KeyAction.CHAR:
         if key.char:
             ch = key.char
-            if not state.supports_lowercase:
+            if state.target == "pin":
+                if not ch.isdigit():
+                    return "typing"
+                cur = "".join(c for c in state.buffer if c.isdigit())
+                if len(cur) >= 4:
+                    return "typing"
+                ch = ch
+            elif not state.supports_lowercase:
                 ch = ch.upper()
             state.buffer += ch
         return "typing"
@@ -778,6 +945,8 @@ def activate_key(state: KeyboardState, *, assets_dir: Path | str | None = None) 
                 state.set_mode(KeyboardMode.QWERTY_UPPER, assets_dir=assets_dir)
             elif state.mode == KeyboardMode.QWERTY_UPPER:
                 state.set_mode(KeyboardMode.QWERTY_LOWER, assets_dir=assets_dir)
+            elif state.mode in (KeyboardMode.NUMERIC_ALL, KeyboardMode.NUMERIC_PIN):
+                state.set_mode(KeyboardMode.QWERTY_UPPER, assets_dir=assets_dir)
             else:
                 state.set_mode(KeyboardMode.QWERTY_LOWER, assets_dir=assets_dir)
         else:
@@ -814,6 +983,27 @@ def activate_key(state: KeyboardState, *, assets_dir: Path | str | None = None) 
     if act == KeyAction.GO:
         return "go"
     return "typing"
+
+
+def focus_numeric_one(state: KeyboardState, *, assets_dir: Path | str | None = None) -> None:
+    """Move focus to the ``1`` key on numeric layouts."""
+    if not state.focus_ring:
+        state.rebuild_focus_ring(assets_dir=assets_dir)
+    for i, key in enumerate(state.focus_ring):
+        if key.action == KeyAction.CHAR and key.char == "1":
+            state.focus_index = i
+            return
+    focus_first_letter(state, assets_dir=assets_dir)
+
+
+def focus_keyboard_go(state: KeyboardState, *, assets_dir: Path | str | None = None) -> None:
+    """Move focus to the GO key on the bottom row."""
+    if not state.focus_ring:
+        state.rebuild_focus_ring(assets_dir=assets_dir)
+    for i, key in enumerate(state.focus_ring):
+        if key.action == KeyAction.GO:
+            state.focus_index = i
+            return
 
 
 def focus_first_letter(state: KeyboardState, *, assets_dir: Path | str | None = None) -> None:
@@ -871,6 +1061,8 @@ __all__ = [
     "activate_key",
     "discover_char_keys",
     "focus_first_letter",
+    "focus_keyboard_go",
+    "focus_numeric_one",
     "open_keyboard",
     "render_keyboard_bgra",
 ]
