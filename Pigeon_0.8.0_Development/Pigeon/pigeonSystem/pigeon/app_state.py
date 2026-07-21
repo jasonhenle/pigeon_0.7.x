@@ -137,7 +137,43 @@ def filter_discovery_for_streaming(rows: list[dict[str, object]]) -> list[dict[s
 
 def filter_discovery_for_receiver(rows: list[dict[str, object]]) -> list[dict[str, str]]:
     """Discovery rows that are AirPlay-only / non-tvOS (typical AVR advertisement)."""
-    return [dict(r) for r in rows if not row_is_playback_apple_tv(r)]
+    return [dict(r) for r in rows if row_is_av_receiver_candidate(r)]
+
+
+_NON_AV_NAME_MARKERS: tuple[str, ...] = (
+    "printer",
+    "bridge",
+    "bulb",
+    "light",
+    "thermostat",
+    "camera",
+    "sensor",
+    "lock",
+    "doorbell",
+    "hub",
+    "router",
+    "nas",
+    "server",
+    "macbook",
+    "mac mini",
+    "imac",
+    "iphone",
+    "ipad",
+    "homepod mini",
+)
+
+
+def row_is_av_receiver_candidate(row: dict[str, object]) -> bool:
+    """True for likely AV receivers / speakers; excludes tvOS players and obvious non-AV gear."""
+    if row_is_playback_apple_tv(row):
+        return False
+    name = str(row.get("name") or row.get("label") or "").strip().lower()
+    if any(marker in name for marker in _NON_AV_NAME_MARKERS):
+        return False
+    services = str(row.get("services") or "").lower()
+    if services and "airplay" not in services and "protocol.airplay" not in services:
+        return False
+    return True
 
 
 def row_is_playback_apple_tv(row: dict[str, object]) -> bool:
@@ -492,6 +528,15 @@ def _normalize_slot_list(raw: Any, sk: str) -> list[dict[str, str]]:
     return rows
 
 
+def _normalize_wifi_dict(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    ssid = str(raw.get("ssid") or "").strip()
+    if not ssid:
+        return None
+    return {"ssid": ssid, "password": str(raw.get("password") or "")}
+
+
 def _normalize_location_dict(item: dict[str, Any]) -> dict[str, Any] | None:
     lid = str(item.get("id") or "").strip()
     if not lid:
@@ -502,6 +547,9 @@ def _normalize_location_dict(item: dict[str, Any]) -> dict[str, Any] | None:
     }
     for sk in _LOCATION_SLOT_KEYS:
         loc[sk] = _normalize_slot_list(item.get(sk), sk)
+    wifi = _normalize_wifi_dict(item.get("wifi"))
+    if wifi is not None:
+        loc["wifi"] = wifi
     return loc
 
 
@@ -516,6 +564,9 @@ def _loc_serializable(loc: dict[str, Any]) -> dict[str, Any]:
             out[sk] = [dict(r) for r in raw if isinstance(r, dict)]
         else:
             out[sk] = []
+    wifi = _normalize_wifi_dict(loc.get("wifi"))
+    if wifi is not None:
+        out["wifi"] = dict(wifi)
     return out
 
 
@@ -729,6 +780,51 @@ def read_current_location_id() -> str:
     cur = read_app_state()
     locs = _v2_copy_locations_from_state(cur)
     return _v2_resolve_effective_location_id(locs, cur)
+
+
+def read_current_location_name() -> str:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    lid = _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    if loc is None:
+        return "Room"
+    return str(loc.get("name") or "Room").strip() or "Room"
+
+
+def read_location_wifi(*, for_location_id: str | None = None) -> dict[str, str] | None:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    lid = str(for_location_id or "").strip() or _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    if loc is None:
+        return None
+    return _normalize_wifi_dict(loc.get("wifi"))
+
+
+def write_location_wifi(
+    ssid: str,
+    password: str,
+    *,
+    for_location_id: str | None = None,
+) -> None:
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    lid = str(for_location_id or "").strip() or _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    if loc is None:
+        return
+    ssid_clean = str(ssid or "").strip()
+    if not ssid_clean:
+        return
+    loc["wifi"] = {"ssid": ssid_clean, "password": str(password or "")}
+    _v2_persist_locations_and_mirror_legacy(locs)
 
 
 def set_current_location_id(lid: str) -> bool:
