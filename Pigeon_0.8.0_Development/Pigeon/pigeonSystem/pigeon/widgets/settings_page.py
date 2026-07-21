@@ -170,55 +170,18 @@ class _TextDrawOp:
     sharp_semibold: bool
 
 
-def _resolve_settings_digital7_font() -> Path | None:
-    """Digital-7 Regular for settings labels (non-italic)."""
-    env = os.environ.get("PIGEON_FONT_CLOCK_SAVER", "").strip()
-    if env:
-        p = Path(env).expanduser()
-        if p.is_file():
-            return p
-
-    roots = (
-        Path.home() / "Library/Fonts",
-        Path("/Library/Fonts"),
-        Path("/System/Library/Fonts/Supplemental"),
-    )
-    exact = ("digital-7.ttf", "Digital-7.ttf")
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for name in exact:
-            p = root / name
-            if p.is_file():
-                return p
-    return None
-
-
 def _resolve_settings_sharp_semibold_font() -> Path | None:
-    env = os.environ.get("PIGEON_FONT_SEMIBOLD", "").strip()
-    if env:
-        p = Path(env).expanduser()
-        if p.is_file():
-            return p
+    from pigeon.font_paths import resolve_ui_font_semibold
 
-    roots = (
-        Path.home() / "Library/Fonts",
-        Path("/Library/Fonts"),
-        Path("/System/Library/Fonts/Supplemental"),
-    )
-    globs = (
-        "*Sharp*Sans*Semibold*.otf",
-        "*Sharp*Sans*Semibold*.ttf",
-        "*SharpSans*Semibold*.otf",
-    )
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for pattern in globs:
-            for p in sorted(root.glob(pattern)):
-                if p.is_file() and "italic" not in p.name.lower():
-                    return p
-    return None
+    p = resolve_ui_font_semibold()
+    return Path(p) if p else None
+
+
+def _resolve_settings_digital7_font() -> Path | None:
+    from pigeon.font_paths import resolve_digital7_font
+
+    p = resolve_digital7_font()
+    return Path(p) if p else None
 
 
 @lru_cache(maxsize=32)
@@ -618,11 +581,10 @@ def render_settings_page_bgra(
     st = state if state is not None else SettingsPageState()
     root = _svg_tree_from_path(path)
     apply_settings_page_state(root, st)
-    text_ops = _collect_text_draw_ops(root)
-    _remove_svg_text(root)
     _remove_svg_wifi_icons(root)
-    bgra = _rasterize_svg_tree(root)
-    _draw_text_ops_bgra(bgra, text_ops)
+    from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
+
+    bgra = rasterize_settings_svg_bgra(root, width=DESIGN_W, height=DESIGN_H)
     _draw_wifi_icon_overlay(bgra, st)
     return bgra
 

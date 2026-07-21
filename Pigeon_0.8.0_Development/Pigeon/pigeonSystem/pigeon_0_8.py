@@ -5275,6 +5275,14 @@ def main() -> int:
                 return None
             _bump_pigeon_user_activity(event)
             nonlocal dev_phase, skip_cache
+            # Leaving main_settings closes any open text keyboard without commit.
+            if (
+                dev_phase == DevPhase.MAIN_SETTINGS
+                and main_settings_widget is not None
+                and main_settings_widget.state.keyboard_open
+            ):
+                main_settings_widget.state.close_keyboard(commit=False)
+                main_settings_widget.invalidate()
             if dev_phase == DevPhase.OFF or dev_phase == DevPhase.GRID:
                 dev_phase = DevPhase.MAIN_SETTINGS
             elif dev_phase == DevPhase.MAIN_SETTINGS:

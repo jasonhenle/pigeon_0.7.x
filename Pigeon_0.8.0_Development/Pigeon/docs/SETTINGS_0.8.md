@@ -10,7 +10,7 @@
 
 Never enters the design grid via Tab (grid remains key 5 / Shift+Tab / F9 paths).
 
-While in **main_settings**: Left/Right move focus; Spacebar activates the focused control (`exit` returns to OFF).
+While in **main_settings**: Left/Right move focus; Spacebar activates the focused control (`exit` returns to OFF). Activating **location** or **network** opens the text keyboard overlay (same Left/Right/Space controls).
 
 ## Legacy vs main
 
@@ -23,15 +23,21 @@ While in **main_settings**: Left/Right move focus; Spacebar activates the focuse
 
 ## Assets
 
-Runtime SVGs live in `pigeonAssets/settings_0.8/`:
+## Keyboards
 
-- `settings_main.svg` — main settings menu
-- `keyboard_bottom_row.svg` — shared bottom row
+Runtime SVGs under `settings_0.8/`:
+
+- `keyboard_bottom_row.svg` — shared ABC / abc / sym / space / delete / cancel / go
 - `keyboard_qwerty_lower.svg` / `keyboard_qwerty_upper.svg`
-- `keyboard_numeric_all.svg`
+- `keyboard_numeric_all.svg` (layer ids use `keyboard_numeric_full_*`)
 - `keyboard_numeric_pin.svg` — Apple TV pairing PIN
 - `keyboard_symbolic.svg`
-- `settingInstructions_0.8.0.numbers` — layer / navigation instructions
+
+Module: `pigeon/widgets/settings_keyboard.py`.
+
+**Open:** Space on location or network in main_settings opens the qwerty keyboard overlay.
+**Nav:** Left/Right move key focus; Space activates (type / mode switch / delete / cancel / go).
+**Close:** cancel discards; go commits text back into location/network.
 
 `keyboard_numeric_ip` is specified in instructions but not yet in the GFX export set.
 
@@ -61,5 +67,7 @@ Illustrator ids encode `_` as `_x5F_` and leading `0` as `_x30_`. Use `decode_sv
 Selected button → green fill, black contrasting text/icons.  
 Deselected button → black fill, green contrasting text/icons.  
 `text_pigeonVersion` stays black when present.
+
+**Fonts:** layers under `main_instructions` and all keyboard text use **Sharp Sans Semibold**; other UI text (device names, IPs, EXIT, location/network labels, etc.) uses **Digital-7 Regular**.
 
 Design source of truth: `settingInstructions_0.8.0.numbers` (under `pigeonAssets/settings_0.8/` and optionally `docs/`).

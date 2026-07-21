@@ -184,6 +184,41 @@ def resolve_ui_font_extrabold() -> str | None:
     return None
 
 
+def resolve_ui_font_semibold() -> str | None:
+    """
+    Return path to Sharp Sans Semibold for settings / keyboard SVG labels.
+
+    Set ``PIGEON_FONT_SEMIBOLD`` to a ``.ttf``/``.otf`` path to override.
+    Falls back to Medium when Semibold is not installed.
+    """
+    env = os.environ.get("PIGEON_FONT_SEMIBOLD")
+    if env and Path(env).is_file():
+        return env
+
+    bundled_names = (
+        "Sharp Sans Semibold.otf",
+        "SharpSansSemibold.otf",
+        "SharpSans-Semibold.otf",
+    )
+    bundled = _first_bundled_font(bundled_names)
+    if bundled:
+        return bundled
+
+    roots = _font_search_roots()
+    globs = (
+        "*Sharp*Sans*Semibold*.otf",
+        "*Sharp*Sans*Semibold*.ttf",
+        "*SharpSans*Semibold*.otf",
+        "*SharpSans*Semibold*.ttf",
+    )
+    for root in roots:
+        for pattern in globs:
+            for p in sorted(root.glob(pattern)):
+                if p.is_file() and "italic" not in p.name.lower():
+                    return str(p)
+    return resolve_ui_font_medium()
+
+
 def resolve_ui_font_bold() -> str | None:
     """
     Return path to Sharp Sans Bold, or None to use Pillow fallback.
@@ -248,10 +283,16 @@ def resolve_digital7_font() -> str | None:
             if p.is_file():
                 return str(p)
         for p in sorted(assets.glob("*Digital*7*.ttf")) + sorted(assets.glob("*digital*7*.ttf")):
-            if p.is_file():
+            if p.is_file() and "italic" not in p.name.lower():
                 return str(p)
 
     roots = _font_search_roots()
+    exact = ("Digital-7.ttf", "digital-7.ttf")
+    for root in roots:
+        for name in exact:
+            p = root / name
+            if p.is_file():
+                return str(p)
     globs = (
         "*Digital*7*.ttf",
         "*digital*7*.ttf",
@@ -260,6 +301,6 @@ def resolve_digital7_font() -> str | None:
     for root in roots:
         for pattern in globs:
             for p in sorted(root.glob(pattern)):
-                if p.is_file():
+                if p.is_file() and "italic" not in p.name.lower() and "mono" not in p.name.lower():
                     return str(p)
     return None
