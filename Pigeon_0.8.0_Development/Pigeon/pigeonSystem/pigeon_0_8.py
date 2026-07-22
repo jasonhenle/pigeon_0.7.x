@@ -1841,19 +1841,29 @@ def main() -> int:
             if update_check_state.get("applying") or update_check_state.get("checking"):
                 return
             local = version_string()
+            github_target = "0.8 on GitHub main"
+            try:
+                from pigeon.update_check import fetch_remote_version_tuple, format_version_tuple
+
+                remote_t, _, _, _ = fetch_remote_version_tuple(timeout_s=10.0)
+                if remote_t is not None:
+                    github_target = format_version_tuple(remote_t)
+            except Exception:
+                pass
             if not messagebox.askyesno(
                 "Updates",
                 f"Download, install, and restart Pigeon from GitHub?\n\n"
-                f"Installed: {local}\n\n"
+                f"Installed: {local}\n"
+                f"GitHub:    {github_target}\n\n"
                 f"• Uses curl only (public repo — no GitHub token)\n"
-                f"• App code and pigeonAssets are updated\n"
+                f"• App code and pigeonAssets are updated to 0.8\n"
                 f"• Settings in ~/.pigeon_0_6 are kept\n"
-                f"• Pigeon will restart automatically when finished — no further steps\n\n"
+                f"• Pigeon will restart as 0.8 when finished — no further steps\n\n"
                 f"Continue?",
                 parent=root,
             ):
                 return
-            _run_github_apply_worker()
+            _run_github_apply_worker(remote=github_target)
 
         def _begin_apply_update(*, remote: str, branch: object) -> None:
             local = version_string()

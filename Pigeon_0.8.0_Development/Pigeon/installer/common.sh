@@ -70,6 +70,35 @@ pigeon_install_bundled_fonts() {
 }
 
 # Passwordless ``systemctl restart pigeon`` for in-app GitHub updates (Pi autostart).
+# Rewrite an existing Pi autostart unit to launch run_pigeon_0_8.sh (0.7 -> 0.8 migration).
+pigeon_refresh_systemd_service() {
+  local install_dir="${1:-}"
+  local install_user="${2:-$(id -un)}"
+  local install_home="${3:-${HOME}}"
+  local service="/etc/systemd/system/pigeon.service"
+  local template="${install_dir}/installer/pigeon.service"
+  if [[ -z "${install_dir}" || ! -f "${template}" || ! -f "${service}" ]]; then
+    return 0
+  fi
+  if grep -q "run_pigeon_0_8.sh" "${service}" 2>/dev/null; then
+    return 0
+  fi
+  local version tmp
+  version="$(pigeon_version_string "${install_dir}")"
+  tmp="$(mktemp)"
+  sed \
+    -e "s|@PIGEON_USER@|${install_user}|g" \
+    -e "s|@PIGEON_HOME@|${install_home}|g" \
+    -e "s|@PIGEON_DIR@|${install_dir}|g" \
+    -e "s|@PIGEON_VERSION@|${version}|g" \
+    "${template}" > "${tmp}"
+  if sudo -n cp "${tmp}" "${service}" 2>/dev/null \
+    && sudo -n systemctl daemon-reload 2>/dev/null; then
+    echo "pigeon: refreshed ${service} for Pigeon ${version}"
+  fi
+  rm -f "${tmp}"
+}
+
 pigeon_install_systemd_restart_sudoers() {
   local install_user="${1:-}"
   local systemctl_bin=""

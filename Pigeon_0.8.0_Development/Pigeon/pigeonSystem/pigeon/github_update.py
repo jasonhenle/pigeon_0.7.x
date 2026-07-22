@@ -60,6 +60,39 @@ def _find_launcher_script(install_root: Path) -> Path | None:
     return None
 
 
+def _preferred_launcher_script(install_root: Path) -> Path | None:
+    """Prefer the 0.8 entry point after a 0.7 -> 0.8 GitHub update."""
+    installer = install_root / _INSTALLER_DIR
+    for name in (
+        "run_pigeon_0_8.sh",
+        "run_pigeon_0_8.command",
+        "click_run_pigeon_pi.sh",
+        "Run-Pigeon",
+        "run-pigeon.sh",
+    ):
+        for base in (installer, install_root):
+            p = base / name
+            if p.is_file():
+                return p
+    return _find_launcher_script(install_root)
+
+
+def _systemd_unit_path() -> Path:
+    return Path("/etc/systemd/system/pigeon.service")
+
+
+def _systemd_points_to_launcher(install_root: Path, launcher_name: str) -> bool:
+    unit = _systemd_unit_path()
+    if not unit.is_file():
+        return False
+    try:
+        text = unit.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    root = str(install_root.resolve())
+    return launcher_name in text and root in text
+
+
 def _try_systemd_restart() -> tuple[bool, str]:
     """Restart the pigeon systemd unit when installed (Pi autostart)."""
     if not sys.platform.startswith("linux"):
@@ -165,13 +198,18 @@ def restart_pigeon_after_update(
     """
     install_root = Path(safe_subprocess_path(install_root.resolve()))
     pid = int(parent_pid if parent_pid is not None else os.getpid())
+    launcher = _preferred_launcher_script(install_root)
 
     if sys.platform.startswith("linux"):
-        ok, msg = _try_systemd_restart()
-        if ok:
-            return True, msg
+        launcher_08 = install_root / _INSTALLER_DIR / "run_pigeon_0_8.sh"
+        if launcher_08.is_file():
+            # Never systemd-restart back into a legacy 0.7 entry point after updating files.
+            if _systemd_points_to_launcher(install_root, "run_pigeon_0_8.sh"):
+                ok, msg = _try_systemd_restart()
+                if ok:
+                    return True, msg
+            return _schedule_delayed_launch(launcher_08, install_root, parent_pid=pid)
 
-    launcher = _find_launcher_script(install_root)
     if launcher is None:
         return False, "no launcher script found"
 
@@ -391,6 +429,7 @@ def _apply_linux_shell_update(install_root: Path) -> ApplyUpdateResult:
     env["PIGEON_UPDATE_URL"] = _BOOTSTRAP_SCRIPT_RAW
     env["PIGEON_INSTALL_ROOT"] = root
     env["PIGEON_UPDATE_IN_APP"] = "1"
+    env["PIGEON_UPDATE_PARENT_PID"] = str(os.getpid())
     try:
         proc = subprocess.run(
             [
