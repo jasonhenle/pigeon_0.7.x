@@ -2,6 +2,9 @@
 Pigeon device settings menu — ``settings_0.8/settings_pigeon.svg``.
 
 Opened from main settings box1 (device panel). Five icon tabs + BACK.
+Foreground art from ``settings_pigeon.svg``; diagonal stripe background uses
+``menu_container_*`` geometry composited in code (all columns, static — not
+focus-driven). The black canvas rect is hidden before rasterize.
 """
 
 from __future__ import annotations
@@ -11,16 +14,20 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.widgets.main_settings import (
     MainSettingsState,
     _composite_bgra_over_bgra,
+    _ContainerStripeSpec,
     _discover_container_stripe_specs,
-    _draw_container_background_bgra,
     _find_by_logical_id,
+    _hex_to_bgr,
     _hide_container_stripe_rects,
+    _composite_stroke_mask,
+    _transform_rect_corners_svg,
     _prune_display_none,
     _rasterize_svg_tree,
     _set_text_content,
@@ -40,14 +47,9 @@ _PIGEON_FOCUS_RING: tuple[str, ...] = (
     "update_button",
 )
 
-_PIGEON_FOCUS_CONTAINER: dict[str, str] = {
-    "pigeon_back": "menu_container_1",
-    "prefs_button": "menu_container_1",
-    "color_button": "menu_container_2",
-    "audio_button": "menu_container_3",
-    "music_button": "menu_container_4",
-    "update_button": "menu_container_5",
-}
+_PIGEON_BACKGROUND_CONTAINERS: tuple[str, ...] = tuple(
+    f"menu_container_{i}" for i in range(1, 7)
+)
 
 _PIGEON_BACK_LAYERS: dict[str, tuple[str, ...]] = {
     "selected": (
@@ -76,7 +78,7 @@ _PIGEON_MENU_LAYERS: dict[str, dict[str, object]] = {
         ),
     },
     "audio_button": {
-        "title": "sync",
+        "title": "audio",
         "selected": ("_05_settingsicon_audio_selected", "_05_button_audio_selected"),
         "deselected": (
             "_05_settingsicon_audio_deselected",
@@ -84,7 +86,7 @@ _PIGEON_MENU_LAYERS: dict[str, dict[str, object]] = {
         ),
     },
     "music_button": {
-        "title": "dmx",
+        "title": "music",
         "selected": ("_06_settingsicon_music_selected", "_06_button_music_selected"),
         "deselected": (
             "_06_settingsicon_music_deselected",
@@ -129,6 +131,16 @@ def _pigeon_svg_tree_from_path(path: Path) -> ET.Element:
     root.set("width", str(DESIGN_W))
     root.set("height", str(DESIGN_H))
     return root
+
+
+def _ensure_back_selected_text_contrast(root: ET.Element) -> None:
+    """Selected BACK sits on a white pill; GFX export omits fill so text defaults to white."""
+    back_text = _find_by_logical_id(root, "_01_button_back_text_selected")
+    if back_text is None:
+        return
+    for node in back_text.iter():
+        if node.tag.endswith("text") or node.tag.endswith("tspan"):
+            node.set("fill", "#000")
 
 
 def _ensure_update_deselected_layers(root: ET.Element) -> None:
@@ -194,21 +206,67 @@ def _set_heading_text(el: ET.Element | None, text: str) -> None:
         tspan.text = text
 
 
-def _active_pigeon_container(focused: str) -> str:
-    return _PIGEON_FOCUS_CONTAINER.get(focused, "menu_container_1")
+def _svg_to_pigeon_px(x_svg: float, y_svg: float) -> tuple[int, int]:
+    vx, vy, vw, vh = _PIGEON_VIEWBOX
+    x = int(round((x_svg - vx) * DESIGN_W / vw))
+    y = int(round((y_svg - vy) * DESIGN_H / vh))
+    return x, y
+
+
+def _discover_pigeon_stripe_specs(root: ET.Element) -> tuple[_ContainerStripeSpec, ...]:
+    specs: list[_ContainerStripeSpec] = []
+    for cid in _PIGEON_BACKGROUND_CONTAINERS:
+        specs.extend(_discover_container_stripe_specs(root, cid))
+    return tuple(specs)
+
+
+_PIGEON_MENU_RADIUS_PX = 20
+
+
+def _pigeon_menu_container_mask() -> np.ndarray:
+    """Full-panel rounded clip (pigeon is box1 zoomed to 800×480; black outside corners)."""
+    from PIL import Image, ImageDraw
+
+    mask = Image.new("L", (DESIGN_W, DESIGN_H), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle(
+        (0, 0, DESIGN_W - 1, DESIGN_H - 1),
+        radius=_PIGEON_MENU_RADIUS_PX,
+        fill=255,
+    )
+    return np.asarray(mask, dtype=np.uint8)
+
+
+def _draw_pigeon_container_background_bgra(
+    bgra: np.ndarray,
+    stripes: tuple[_ContainerStripeSpec, ...],
+) -> None:
+    """Paint all pigeon menu stripe columns (static background, not focus-driven)."""
+    if not stripes:
+        return
+    mask = _pigeon_menu_container_mask()
+    for stripe in stripes:
+        corners = _transform_rect_corners_svg(
+            stripe.x_svg,
+            stripe.y_svg,
+            stripe.width_svg,
+            stripe.height_svg,
+            stripe.matrix,
+        )
+        pts = np.array([_svg_to_pigeon_px(x, y) for x, y in corners], dtype=np.int32)
+        poly_mask = np.zeros(bgra.shape[:2], dtype=np.uint8)
+        cv2.fillConvexPoly(poly_mask, pts, 255)
+        poly_mask = cv2.bitwise_and(poly_mask, mask)
+        _composite_stroke_mask(bgra, poly_mask, _hex_to_bgr(stripe.fill_hex))
 
 
 def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
     focused = state.pigeon_focused_id
+    _ensure_back_selected_text_contrast(root)
     _ensure_update_deselected_layers(root)
 
     for lid in _HIDE_ALWAYS:
         _set_visible(_find_by_logical_id(root, lid), False)
-
-    active_container = _active_pigeon_container(focused)
-    for i in range(1, 7):
-        cid = f"menu_container_{i}"
-        _set_visible(_find_by_logical_id(root, cid), cid == active_container)
 
     back_selected = focused == "pigeon_back"
     for lid in _PIGEON_BACK_LAYERS["selected"]:
@@ -249,9 +307,8 @@ def render_pigeon_settings_bgra(
     st = state if state is not None else MainSettingsState()
     root = _pigeon_svg_tree_from_path(path)
     apply_pigeon_settings_svg_state(root, st)
-    active = _active_pigeon_container(st.pigeon_focused_id)
-    stripe_specs = _discover_container_stripe_specs(root, active)
-    _hide_container_stripe_rects(root)
+    stripe_specs = _discover_pigeon_stripe_specs(root)
+    _hide_container_stripe_rects(root, _PIGEON_BACKGROUND_CONTAINERS)
     bg = _find_by_logical_id(root, "background")
     if bg is not None:
         _set_visible(bg, False)
@@ -260,7 +317,7 @@ def render_pigeon_settings_bgra(
     bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     bg_bgra[:, :, :3] = 0
     bg_bgra[:, :, 3] = 255
-    _draw_container_background_bgra(bg_bgra, stripe_specs)
+    _draw_pigeon_container_background_bgra(bg_bgra, stripe_specs)
     return _composite_bgra_over_bgra(bg_bgra, ui_bgra)
 
 
