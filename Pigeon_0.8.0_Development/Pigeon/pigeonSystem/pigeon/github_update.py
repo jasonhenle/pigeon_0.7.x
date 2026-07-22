@@ -40,6 +40,7 @@ _LAUNCHER_NAMES = (
 )
 _INSTALLER_DIR = "installer"
 _MAIN_PY_NAMES = ("pigeon_0_8.py", "pigeon_0_7.py", "pigeon_0_6.py")
+_PREFERRED_APP_REL = Path("Pigeon_0.8.0_Development") / "Pigeon"
 
 
 @dataclass(frozen=True)
@@ -229,11 +230,34 @@ def github_full_download_page_url() -> str:
 
 
 def _find_app_root_in_tree(root: Path) -> Path | None:
-    if any((root / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and _has_launcher(root):
-        return root
+    """Locate the Pigeon app folder inside a GitHub zip extract (prefer 0.8 layout)."""
+    bases: list[Path] = [root]
+    if root.is_dir():
+        bases.extend(p for p in root.iterdir() if p.is_dir())
+
+    for base in bases:
+        preferred = base / _PREFERRED_APP_REL
+        if (preferred / "pigeonSystem" / "pigeon_0_8.py").is_file() and _has_launcher(preferred):
+            return preferred
+        if any((preferred / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and _has_launcher(
+            preferred
+        ):
+            return preferred
+        if any((base / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and _has_launcher(base):
+            if (base / "pigeonSystem" / "pigeon_0_8.py").is_file():
+                return base
+            return base
+
     try:
-        for pattern in ("run_pigeon_0_8.sh", "run_pigeon_0_6.sh"):
-            for launcher in root.rglob(pattern):
+        for pattern in ("run_pigeon_0_8.sh", "run_pigeon_0_7.sh", "run_pigeon_0_6.sh"):
+            for launcher in sorted(root.rglob(pattern)):
+                parent = launcher.parent
+                if parent.name == _INSTALLER_DIR:
+                    parent = parent.parent
+                if (parent / "pigeonSystem" / "pigeon_0_8.py").is_file():
+                    return parent
+        for pattern in ("run_pigeon_0_8.sh", "run_pigeon_0_7.sh", "run_pigeon_0_6.sh"):
+            for launcher in sorted(root.rglob(pattern)):
                 parent = launcher.parent
                 if parent.name == _INSTALLER_DIR:
                     parent = parent.parent

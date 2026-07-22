@@ -1760,7 +1760,7 @@ def main() -> int:
                 pass
             return install_root
 
-        def _run_github_apply_worker(*, remote: str = "?") -> None:
+        def _run_github_apply_worker(*, remote: str = "?", branch: str | None = None) -> None:
             install_root = _resolve_install_root_for_update()
             progress = tk.Toplevel(root)
             progress.title("Updating Pigeon")
@@ -1775,7 +1775,12 @@ def main() -> int:
                 try:
                     from pigeon.github_update import apply_github_update
 
-                    result = apply_github_update(install_root, branch=None)
+                    apply_branch = branch
+                    if apply_branch is None:
+                        cached = update_check_state.get("github_branch")
+                        if isinstance(cached, str) and cached.strip():
+                            apply_branch = cached.strip()
+                    result = apply_github_update(install_root, branch=apply_branch)
                 except Exception as e:
                     from pigeon.github_update import ApplyUpdateResult
 
@@ -1866,7 +1871,7 @@ def main() -> int:
             ):
                 return
 
-            _run_github_apply_worker(remote=str(remote))
+            _run_github_apply_worker(remote=str(remote), branch=str(branch) if branch else None)
 
         def _on_updates_button() -> None:
             if sys.platform.startswith("linux"):

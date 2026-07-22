@@ -311,7 +311,7 @@ def _branch_candidates() -> list[str]:
     env_branch = _ascii_only(os.environ.get("PIGEON_UPDATE_GITHUB_BRANCH", "").strip())
     if env_branch:
         out.append(env_branch)
-    for b in (_DEFAULT_GITHUB_BRANCH, "main", "master"):
+    for b in (_DEFAULT_GITHUB_BRANCH, "main", "experiment", "0.8", "master"):
         if b and b not in out:
             out.append(b)
     return out
@@ -412,6 +412,9 @@ def fetch_remote_version_tuple(*, timeout_s: float = 12.0) -> tuple[tuple[int, i
     token = github_token()
     saw_404 = False
     saw_auth_fail = False
+    best: tuple[int, int, int] | None = None
+    best_url: str | None = None
+    best_branch: str | None = None
     for branch in _branch_candidates():
         for path in _path_candidates():
             attempts: list[tuple[str, bool]] = []
@@ -429,7 +432,12 @@ def fetch_remote_version_tuple(*, timeout_s: float = 12.0) -> tuple[tuple[int, i
                 remote = parse_version_py(body)
                 if remote is None:
                     continue
-                return remote, None, url, branch
+                if best is None or remote > best:
+                    best = remote
+                    best_url = url
+                    best_branch = branch
+    if best is not None:
+        return best, None, best_url, best_branch
     if not token and saw_404:
         return None, _private_repo_hint(), version_py_raw_url(), None
     if saw_auth_fail:

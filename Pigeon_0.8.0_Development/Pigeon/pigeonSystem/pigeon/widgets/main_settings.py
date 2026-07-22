@@ -44,11 +44,16 @@ _BOX_RESULT_ROW_Y_SVG: tuple[float, ...] = (264.0, 290.0, 316.0, 342.0, 368.0)
 _BOX_RESULT_ROW_FONT_SIZE_SVG = 20.0
 _BOX_RESULT_ROW_GAP_SVG = 6.0
 _BOX_COLUMN_INNER_SVG: dict[int, tuple[float, float]] = {
+    1: (60.0, 250.0),
     2: (310.0, 495.0),
     3: (555.0, 740.0),
 }
 _BOX_LOCATION_TEXT_Y_SVG: dict[int, float] = {2: 325.704, 3: 325.6104}
 _BOX_LOCATION_TEXT_FONT_SVG = 48.0
+_BOX_DEVICE_NAME_Y_SVG = 319.8984
+_BOX_DEVICE_IP_Y_SVG = 359.6094
+_BOX_DEVICE_NAME_FONT_SVG = 48.1346
+_BOX_DEVICE_IP_FONT_SVG = 42.1177
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -1396,6 +1401,75 @@ def _find_by_logical_id(root: ET.Element, logical_id: str) -> ET.Element | None:
         if raw.startswith(encoded + "_") and _AI_SUFFIX_RE.search("_" + raw[len(encoded) + 1 :]):
             return el
     return None
+
+
+def _set_svg_text_font_size_px(el: ET.Element, size_px: int) -> None:
+    targets = [el] if el.tag.endswith("text") else [n for n in el.iter() if n.tag.endswith("text")]
+    for node in targets:
+        style = node.get("style") or ""
+        node.set("style", _rewrite_style_prop(style, "font-size", f"{max(6, int(size_px))}px"))
+
+
+def _box_column_inner_svg(box_num: int) -> tuple[float, float]:
+    return _BOX_COLUMN_INNER_SVG.get(box_num, (310.0, 495.0))
+
+
+def _layout_box_device_label(
+    el: ET.Element | None,
+    *,
+    text: str,
+    box_num: int,
+    kind: str,
+) -> None:
+    """Center device name/IP inside a box column and shrink to fit."""
+    raw = str(text or "").strip()
+    if el is None or not raw:
+        return
+    x0, x1 = _box_column_inner_svg(box_num)
+    center_svg = (x0 + x1) * 0.5
+    y_svg = _BOX_DEVICE_NAME_Y_SVG if kind == "name" else _BOX_DEVICE_IP_Y_SVG
+    font_svg = _BOX_DEVICE_NAME_FONT_SVG if kind == "name" else _BOX_DEVICE_IP_FONT_SVG
+    max_w = max(24, int(round((x1 - x0 - 8.0) * DESIGN_W / 800.0)))
+    start_px = _field_font_size_px(font_svg)
+    size_px, font = _fit_text_font_size(
+        raw,
+        lambda px: _field_font({"font": "digital7"}, px),
+        max_width_px=max_w,
+        start_px=start_px,
+    )
+    display = _truncate_text_to_width(raw, max_width_px=max_w, font=font)
+    _set_text_content(el, display)
+    for node in el.iter():
+        if not node.tag.endswith("text"):
+            continue
+        _set_svg_text_horiz_centered(node, center_svg, y_svg)
+        _set_svg_text_font_size_px(node, size_px)
+
+
+def _apply_box_device_group_layout(
+    root: ET.Element,
+    box_num: int,
+    *,
+    name: str = "",
+    ip: str = "",
+) -> None:
+    group = _find_box_device_group(root, box_num)
+    if group is None:
+        return
+    name_el: ET.Element | None = None
+    ip_el: ET.Element | None = None
+    for el in group.iter():
+        logical = _normalize_logical(el.get("id") or "")
+        if not _is_device_label_logical(logical):
+            continue
+        if logical.endswith("_device_name_text"):
+            name_el = el
+        elif logical.endswith("_device_ip_text"):
+            ip_el = el
+    if name:
+        _layout_box_device_label(name_el, text=name, box_num=box_num, kind="name")
+    if ip:
+        _layout_box_device_label(ip_el, text=ip, box_num=box_num, kind="ip")
 
 
 def _dual_location_text_bounds_svg(root: ET.Element | None = None) -> tuple[float, float]:
@@ -2973,18 +3047,8 @@ def _apply_box1_host_device_labels(root: ET.Element) -> None:
     """Show this Pigeon host name + LAN IP in box1 device chrome."""
     from pigeon.local_ip import local_ipv4_address
 
-    group = _find_box_device_group(root, 1)
-    if group is None:
-        return
-    ip = local_ipv4_address()
-    for el in group.iter():
-        logical = _normalize_logical(el.get("id") or "")
-        if _is_device_label_logical(logical) and logical.endswith("_device_ip_text"):
-            if ip:
-                _set_text_content(el, ip)
-            continue
-        if _is_device_label_logical(logical) and logical.endswith("_device_name_text"):
-            _set_text_content(el, "pigeon")
+    ip = local_ipv4_address() or ""
+    _apply_box_device_group_layout(root, 1, name="pigeon", ip=ip)
 
 
 def _apply_box_device_group_labels(
@@ -3001,18 +3065,14 @@ def _apply_box_device_group_labels(
         return
     name, ip = picked
     ip_invalid = state.box2_ip_invalid if box_num == 2 else state.box3_ip_invalid
+    _apply_box_device_group_layout(root, box_num, name=name, ip=ip)
     group = _find_box_device_group(root, box_num)
     if group is None:
         return
-    for el in group.iter():
-        logical = _normalize_logical(el.get("id") or "")
-        if not _is_device_label_logical(logical):
-            continue
-        if logical.endswith("_device_name_text"):
-            _set_text_content(el, name)
-        elif logical.endswith("_device_ip_text"):
-            _set_text_content(el, ip)
-            if ip_invalid:
+    if ip_invalid:
+        for el in group.iter():
+            logical = _normalize_logical(el.get("id") or "")
+            if logical.endswith("_device_ip_text"):
                 for node in el.iter():
                     if node.tag.endswith("text"):
                         _set_paint(node, fill=COLOR_UI_DEFAULT)
@@ -3065,7 +3125,7 @@ def _box_shows_location_group(
 
 
 def _box_location_text_bounds_svg(box_num: int) -> tuple[float, float]:
-    return _BOX_COLUMN_INNER_SVG.get(box_num, (310.0, 495.0))
+    return _box_column_inner_svg(box_num)
 
 
 def _apply_box_location_group_labels(
