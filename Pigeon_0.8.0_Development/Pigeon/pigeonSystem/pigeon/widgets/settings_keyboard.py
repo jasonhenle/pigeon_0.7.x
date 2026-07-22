@@ -54,6 +54,8 @@ class KeyboardMode(str, Enum):
     SYMBOLIC = "symbolic"
     NUMERIC_ALL = "numeric_all"
     NUMERIC_PIN = "numeric_pin"
+    NUMERIC_IP = "numeric_ip"
+    YES_NO = "yes_no"
 
 
 class KeyAction(str, Enum):
@@ -67,6 +69,8 @@ class KeyAction(str, Enum):
     MODE_123 = "mode_123"
     CANCEL = "cancel"
     GO = "go"
+    YES = "yes"
+    NO = "no"
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,8 @@ _MODE_SVG: dict[KeyboardMode, str] = {
     KeyboardMode.SYMBOLIC: "keyboard_symbolic.svg",
     KeyboardMode.NUMERIC_ALL: "keyboard_numeric_all.svg",
     KeyboardMode.NUMERIC_PIN: "keyboard_numeric_pin.svg",
+    KeyboardMode.NUMERIC_IP: "keyboard_numeric_ip.svg",
+    KeyboardMode.YES_NO: "keyboard_yes_no.svg",
 }
 
 _BOTTOM_ROW_SVG = "keyboard_bottom_row.svg"
@@ -92,6 +98,10 @@ _BOTTOM_ROW_SVG = "keyboard_bottom_row.svg"
 # Bottom-row strip on the 800×480 artboard.
 _BOTTOM_ROW_X = 37  # (800 - 725) / 2
 _BOTTOM_ROW_Y = 378
+
+# Self-contained numeric pads (IP / PIN) — align with ``keyboard_numeric_all`` grid.
+_INTEGRATED_PAD_TOP_Y = 225
+_INTEGRATED_PAD_CONTENT_W = 320
 
 # Linear focus order — mode keys differ for uppercase-only fields (Digital-7).
 _BOTTOM_ROW_TAIL: tuple[KeySpec, ...] = (
@@ -170,22 +180,29 @@ class KeyboardState:
     include_bottom_row: bool = True
 
     def rebuild_focus_ring(self, *, assets_dir: Path | str | None = None) -> None:
-        char_keys = discover_char_keys(self.mode, assets_dir=assets_dir)
-        bottom = _BOTTOM_ROW_NETWORK if self.supports_lowercase else _BOTTOM_ROW_UPPERCASE
-        if self.include_bottom_row and self.mode != KeyboardMode.NUMERIC_PIN:
-            self.focus_ring = tuple(char_keys) + bottom
-        elif self.mode == KeyboardMode.NUMERIC_PIN:
-            pin_bottom = tuple(
-                k
-                for k in _BOTTOM_ROW_TAIL
-                if k.action in (KeyAction.DELETE, KeyAction.CANCEL, KeyAction.GO)
+        if self.mode == KeyboardMode.YES_NO:
+            self.focus_ring = discover_yes_no_keys(assets_dir=assets_dir)
+            self.include_bottom_row = False
+        elif self.mode == KeyboardMode.NUMERIC_IP:
+            self.focus_ring = discover_integrated_pad_keys(
+                KeyboardMode.NUMERIC_IP, assets_dir=assets_dir
             )
-            self.focus_ring = tuple(char_keys) + pin_bottom
-            self.include_bottom_row = True
+            self.include_bottom_row = False
+        elif self.mode == KeyboardMode.NUMERIC_PIN:
+            self.focus_ring = discover_integrated_pad_keys(self.mode, assets_dir=assets_dir)
+            self.include_bottom_row = False
         else:
-            self.focus_ring = tuple(char_keys)
+            char_keys = discover_char_keys(self.mode, assets_dir=assets_dir)
+            if self.mode == KeyboardMode.QWERTY_UPPER and not self.supports_lowercase:
+                char_keys = tuple(k for k in char_keys if k.action != KeyAction.SHIFT)
+            bottom = _BOTTOM_ROW_NETWORK if self.supports_lowercase else _BOTTOM_ROW_UPPERCASE
+            if self.include_bottom_row:
+                self.focus_ring = tuple(char_keys) + bottom
+            else:
+                self.focus_ring = tuple(char_keys)
         if not self.focus_ring:
-            self.focus_ring = bottom
+            fallback = _BOTTOM_ROW_NETWORK if self.supports_lowercase else _BOTTOM_ROW_UPPERCASE
+            self.focus_ring = fallback
         self.focus_index = int(self.focus_index) % len(self.focus_ring)
 
     @property
@@ -409,6 +426,105 @@ def discover_char_keys(
     return keys
 
 
+def discover_yes_no_keys(*, assets_dir: Path | str | None = None) -> tuple[KeySpec, ...]:
+    """Build focus ring for the WiFi logout confirmation pad."""
+    path = keyboard_svg_path(_MODE_SVG[KeyboardMode.YES_NO], assets_dir=assets_dir)
+    if not path.is_file():
+        return ()
+    root = ET.parse(path).getroot()
+    icon_nodes: dict[str, ET.Element] = {}
+    for el in root.iter():
+        raw = el.get("id") or ""
+        if not raw:
+            continue
+        logical = _normalize_logical(raw)
+        if logical.endswith("_icon"):
+            icon_nodes[logical] = el
+
+    buttons: list[tuple[float, float, str]] = []
+    for el in root.iter():
+        raw = el.get("id") or ""
+        if not raw:
+            continue
+        logical = _normalize_logical(raw)
+        if not logical.endswith("_button"):
+            continue
+        x, y = _button_xy(el)
+        buttons.append((y, x, logical))
+
+    buttons.sort(key=lambda t: (round(t[0], 1), round(t[1], 1)))
+    keys: list[KeySpec] = []
+    for _y, _x, logical in buttons:
+        icon_id = _pair_icon_id(logical)
+        icon_ids = tuple(
+            cand
+            for cand in (icon_id, logical.replace("_button", "_icon"))
+            if cand in icon_nodes or any(k.startswith(cand) for k in icon_nodes)
+        )
+        if logical.endswith("_yes_button") or "_yes_button" in logical:
+            keys.append(KeySpec(logical, KeyAction.YES, icon_ids=icon_ids))
+        elif logical.endswith("_no_button") or "_no_button" in logical:
+            keys.append(KeySpec(logical, KeyAction.NO, icon_ids=icon_ids))
+    return tuple(keys)
+
+
+def discover_integrated_pad_keys(
+    mode: KeyboardMode,
+    *,
+    assets_dir: Path | str | None = None,
+) -> tuple[KeySpec, ...]:
+    """Build focus ring for self-contained pads (IP / PIN) with no bottom-row SVG."""
+    path = keyboard_svg_path(_MODE_SVG[mode], assets_dir=assets_dir)
+    if not path.is_file():
+        return ()
+    root = ET.parse(path).getroot()
+    icon_nodes: dict[str, ET.Element] = {}
+    for el in root.iter():
+        raw = el.get("id") or ""
+        if not raw:
+            continue
+        logical = _normalize_logical(raw)
+        if logical.endswith("_icon"):
+            icon_nodes[logical] = el
+
+    buttons: list[tuple[float, float, str]] = []
+    for el in root.iter():
+        raw = el.get("id") or ""
+        if not raw:
+            continue
+        logical = _normalize_logical(raw)
+        if not logical.endswith("_button"):
+            continue
+        x, y = _button_xy(el)
+        buttons.append((y, x, logical))
+
+    buttons.sort(key=lambda t: (round(t[0], 1), round(t[1], 1)))
+    keys: list[KeySpec] = []
+    for _y, _x, logical in buttons:
+        icon_id = _pair_icon_id(logical)
+        icon_ids = tuple(
+            cand
+            for cand in (icon_id, logical.replace("_button", "_icon"))
+            if cand in icon_nodes or any(k.startswith(cand) for k in icon_nodes)
+        )
+        if "cancel" in logical:
+            keys.append(KeySpec(logical, KeyAction.CANCEL, icon_ids=icon_ids))
+        elif "delete" in logical:
+            keys.append(KeySpec(logical, KeyAction.DELETE, icon_ids=icon_ids))
+        elif logical.endswith("_go_button") or "_go_button" in logical:
+            keys.append(KeySpec(logical, KeyAction.GO, icon_ids=icon_ids))
+        elif "dot" in logical:
+            keys.append(KeySpec(logical, KeyAction.CHAR, char=".", icon_ids=icon_ids))
+        else:
+            ch = ""
+            for part in logical.split("_"):
+                if len(part) == 1 and part.isdigit():
+                    ch = part
+                    break
+            keys.append(KeySpec(logical, KeyAction.CHAR, char=ch, icon_ids=icon_ids))
+    return tuple(keys)
+
+
 def _paint_kb_button_shape(
     node: ET.Element,
     *,
@@ -470,6 +586,15 @@ def apply_keyboard_selection(
             if cur_fill in ("none", "transparent"):
                 continue
             if cur_fill is None or cur_fill in fill_ok:
+                if tag == "rect":
+                    try:
+                        rx = float(node.get("rx") or 0.0)
+                    except (TypeError, ValueError):
+                        rx = 0.0
+                    if rx >= 8.0:
+                        fill = theme.selected if selected else theme.deselected
+                        _set_paint(node, fill=fill, stroke="none")
+                        continue
                 _paint_kb_button_shape(node, selected=selected, theme=theme)
         _apply_button_fill(el, selected=selected, theme=theme)
 
@@ -516,6 +641,8 @@ def _bottom_row_icons(root: ET.Element, group_logical: str, *icon_logicals: str)
 _BOTTOM_ROW_CONTENT_VB = (0.0, 0.0, 725.4, 42.15)
 # Half of the 3px keyboard stroke plus anti-alias slack.
 _BOTTOM_ROW_STROKE_PAD_SVG = float(_KB_STROKE_WIDTH) * 0.5 + 1.5
+# Integrated numeric pads use large corner radii (rx≈19); need extra margin for PyMuPDF.
+_INTEGRATED_PAD_STROKE_PAD_SVG = 8.0
 
 
 @dataclass(frozen=True)
@@ -535,6 +662,25 @@ def _bottom_row_layout() -> _BottomRowLayout:
     content_w = int(round(725 * (DESIGN_W / 800)))
     content_h = max(1, int(round(vb_h * content_w / vb_w)))
     px_per_unit = content_w / vb_w
+    pad_px = max(1, int(math.ceil(pad * px_per_unit)))
+    out_w = content_w + 2 * pad_px
+    out_h = content_h + 2 * pad_px
+    padded_vb = (vb_x - pad, vb_y - pad, vb_w + 2.0 * pad, vb_h + 2.0 * pad)
+    return _BottomRowLayout(padded_vb, out_w, out_h, pad_px, content_w, content_h)
+
+
+def _integrated_pad_layout(
+    vb: tuple[float, float, float, float],
+    *,
+    content_w: int | None = None,
+) -> _BottomRowLayout:
+    """Padded raster layout for compact numeric / yes-no pads."""
+    vb_x, vb_y, vb_w, vb_h = vb
+    pad = _INTEGRATED_PAD_STROKE_PAD_SVG
+    if content_w is None:
+        content_w = max(1, int(round(vb_w * (DESIGN_W / 800.0))))
+    content_h = max(1, int(round(vb_h * content_w / max(vb_w, 1.0))))
+    px_per_unit = content_w / max(vb_w, 1.0)
     pad_px = max(1, int(math.ceil(pad * px_per_unit)))
     out_w = content_w + 2 * pad_px
     out_h = content_h + 2 * pad_px
@@ -681,6 +827,18 @@ def _remove_bottom_row_button1(root: ET.Element) -> None:
         parent.remove(btn1)
 
 
+def _remove_qwerty_shift_key(root: ET.Element) -> None:
+    """Drop the shift key from uppercase QWERTY (Digital-7 fields never need it)."""
+    for logical in ("keyboard_qwerty_upper_shift_button", "keyboard_qwerty_upper_SHIFT_icon"):
+        el = _find_by_logical_id(root, logical)
+        if el is None:
+            continue
+        parents = _parent_map(root)
+        parent = parents.get(el)
+        if parent is not None:
+            parent.remove(el)
+
+
 def apply_bottom_row_mode_icons(
     root: ET.Element,
     mode: KeyboardMode,
@@ -780,6 +938,29 @@ def _fit_full_artboard(root: ET.Element) -> None:
     root.set("height", str(DESIGN_H))
 
 
+def _center_integrated_pad_labels(root: ET.Element) -> None:
+    """Center key labels inside their pill buttons (PyMuPDF baseline quirks)."""
+    for el in root.iter():
+        if not el.tag.endswith("rect"):
+            continue
+        logical = _normalize_logical(el.get("id") or "")
+        if not logical.endswith("_button"):
+            continue
+        cx = float(el.get("x", 0)) + float(el.get("width", 0)) * 0.5
+        cy = float(el.get("y", 0)) + float(el.get("height", 0)) * 0.5
+        icon_el = _find_by_logical_id(root, logical.replace("_button", "_icon"))
+        if icon_el is None:
+            continue
+        icon_el.set("text-anchor", "middle")
+        icon_el.set("dominant-baseline", "middle")
+        icon_el.set("alignment-baseline", "middle")
+        icon_el.set("transform", f"translate({cx:.2f} {cy:.2f})")
+        for tspan in icon_el.iter():
+            if tspan.tag.endswith("tspan"):
+                tspan.set("x", "0")
+                tspan.set("y", "0")
+
+
 def _rasterize_keyboard_chars(
     state: KeyboardState,
     *,
@@ -790,10 +971,13 @@ def _rasterize_keyboard_chars(
         return np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
 
     root = ET.parse(path).getroot()
+    if state.mode == KeyboardMode.QWERTY_UPPER and not state.supports_lowercase:
+        _remove_qwerty_shift_key(root)
+    pad_mode = state.mode in (KeyboardMode.NUMERIC_PIN, KeyboardMode.NUMERIC_IP, KeyboardMode.YES_NO)
     button_ids: set[str] = set()
     icon_map: dict[str, tuple[str, ...]] = {}
     for k in state.focus_ring:
-        if k.action in (KeyAction.CHAR, KeyAction.SHIFT):
+        if pad_mode or k.action in (KeyAction.CHAR, KeyAction.SHIFT):
             button_ids.add(k.button_id)
             if k.icon_ids:
                 icon_map[k.button_id] = k.icon_ids
@@ -808,23 +992,30 @@ def _rasterize_keyboard_chars(
         icon_ids_by_button=icon_map,
     )
 
-    if state.mode == KeyboardMode.NUMERIC_PIN:
+    if state.mode in (KeyboardMode.NUMERIC_PIN, KeyboardMode.NUMERIC_IP, KeyboardMode.YES_NO):
+        _center_integrated_pad_labels(root)
         vb = viewbox_from_root(root)
-        target_w = 320
-        target_h = max(1, int(round(vb[3] * target_w / max(vb[2], 1.0))))
+        content_w = (
+            _INTEGRATED_PAD_CONTENT_W
+            if state.mode in (KeyboardMode.NUMERIC_PIN, KeyboardMode.NUMERIC_IP)
+            else max(1, int(round(vb[2] * (DESIGN_W / 800.0))))
+        )
+        layout = _integrated_pad_layout(vb, content_w=content_w)
+        root.set("overflow", "visible")
         pad = rasterize_settings_svg_bgra(
             root,
-            width=target_w,
-            height=target_h,
-            view_box=vb,
+            width=layout.out_w,
+            height=layout.out_h,
+            view_box=layout.padded_vb,
             font_mode="keyboard",
         )
         canvas = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
-        y0 = max(0, (DESIGN_H - pad.shape[0]) // 2)
-        x0 = max(0, (DESIGN_W - pad.shape[1]) // 2)
-        y1 = min(DESIGN_H, y0 + pad.shape[0])
-        x1 = min(DESIGN_W, x0 + pad.shape[1])
-        canvas[y0:y1, x0:x1] = pad[: y1 - y0, : x1 - x0]
+        dest_x = max(0, (DESIGN_W - layout.out_w) // 2)
+        if state.mode == KeyboardMode.YES_NO:
+            dest_y = max(0, (DESIGN_H - layout.out_h) // 2)
+        else:
+            dest_y = int(_INTEGRATED_PAD_TOP_Y * (DESIGN_H / 480)) - layout.pad_px
+        _blit_bottom_row(canvas, pad, dest_x=dest_x, dest_y=dest_y)
         return canvas
 
     _fit_full_artboard(root)
@@ -890,10 +1081,6 @@ def render_keyboard_bgra(
         layout = _bottom_row_layout()
         dest_x = int(_BOTTOM_ROW_X * (DESIGN_W / 800)) - layout.pad_px
         dest_y = int(_BOTTOM_ROW_Y * (DESIGN_H / 480)) - layout.pad_px
-        # PIN: park bottom actions under the centered pad.
-        if state.mode == KeyboardMode.NUMERIC_PIN:
-            dest_y = min(DESIGN_H - row.shape[0] - 8, DESIGN_H - 60)
-            dest_x = max(0, (DESIGN_W - row.shape[1]) // 2)
         _blit_bottom_row(canvas, row, dest_x=dest_x, dest_y=dest_y)
     return canvas
 
@@ -921,6 +1108,9 @@ def activate_key(state: KeyboardState, *, assets_dir: Path | str | None = None) 
                 if len(cur) >= 4:
                     return "typing"
                 ch = ch
+            elif state.target == "device_ip":
+                if ch not in "0123456789.":
+                    return "typing"
             elif not state.supports_lowercase:
                 ch = ch.upper()
             state.buffer += ch
@@ -980,9 +1170,23 @@ def activate_key(state: KeyboardState, *, assets_dir: Path | str | None = None) 
     if act == KeyAction.CANCEL:
         state.buffer = state.initial_text
         return "cancel"
+    if act == KeyAction.YES:
+        return "yes"
+    if act == KeyAction.NO:
+        return "no"
     if act == KeyAction.GO:
         return "go"
     return "typing"
+
+
+def focus_yes_no_yes(state: KeyboardState, *, assets_dir: Path | str | None = None) -> None:
+    """Move focus to the YES key on the logout confirmation pad."""
+    if not state.focus_ring:
+        state.rebuild_focus_ring(assets_dir=assets_dir)
+    for i, key in enumerate(state.focus_ring):
+        if key.action == KeyAction.YES:
+            state.focus_index = i
+            return
 
 
 def focus_numeric_one(state: KeyboardState, *, assets_dir: Path | str | None = None) -> None:
@@ -1025,6 +1229,7 @@ def open_keyboard(
     *,
     target: str,
     initial_text: str = "",
+    buffer: str = "",
     mode: KeyboardMode | None = None,
     theme: SettingsTheme | None = None,
     assets_dir: Path | str | None = None,
@@ -1035,13 +1240,17 @@ def open_keyboard(
     if mode is None:
         if target == "pin":
             mode = KeyboardMode.NUMERIC_PIN
+        elif target == "device_ip":
+            mode = KeyboardMode.NUMERIC_IP
+        elif target == "wifi_logout":
+            mode = KeyboardMode.YES_NO
         elif target == "location":
             mode = KeyboardMode.QWERTY_UPPER
         else:
             mode = KeyboardMode.QWERTY_LOWER
     st = KeyboardState(
         mode=mode,
-        buffer="",
+        buffer=str(buffer or ""),
         initial_text=initial_text,
         target=target,
         theme=theme if theme is not None else SettingsTheme(),
@@ -1049,7 +1258,12 @@ def open_keyboard(
         password_mask=password_mask,
     )
     st.rebuild_focus_ring(assets_dir=assets_dir)
-    focus_first_letter(st, assets_dir=assets_dir)
+    if target == "wifi_logout":
+        focus_yes_no_yes(st, assets_dir=assets_dir)
+    elif target in ("pin", "device_ip"):
+        focus_numeric_one(st, assets_dir=assets_dir)
+    else:
+        focus_first_letter(st, assets_dir=assets_dir)
     return st
 
 
@@ -1060,7 +1274,10 @@ __all__ = [
     "KeyboardState",
     "activate_key",
     "discover_char_keys",
+    "discover_integrated_pad_keys",
+    "discover_yes_no_keys",
     "focus_first_letter",
+    "focus_yes_no_yes",
     "focus_keyboard_go",
     "focus_numeric_one",
     "open_keyboard",

@@ -806,6 +806,20 @@ def read_location_wifi(*, for_location_id: str | None = None) -> dict[str, str] 
     return _normalize_wifi_dict(loc.get("wifi"))
 
 
+def clear_location_wifi(*, for_location_id: str | None = None) -> None:
+    """Remove saved WiFi credentials for a location (logout / forget network)."""
+    migrate_device_slots_from_legacy_if_needed()
+    _ensure_locations_v2_migrated()
+    cur = read_app_state()
+    locs = _v2_copy_locations_from_state(cur)
+    lid = str(for_location_id or "").strip() or _v2_resolve_effective_location_id(locs, cur)
+    loc = _v2_find_loc(locs, lid)
+    if loc is None:
+        return
+    loc.pop("wifi", None)
+    _v2_persist_locations_and_mirror_legacy(locs)
+
+
 def write_location_wifi(
     ssid: str,
     password: str,

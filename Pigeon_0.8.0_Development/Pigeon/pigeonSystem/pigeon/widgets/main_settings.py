@@ -26,6 +26,7 @@ from pigeon.compositing import alpha_blend_bgra_over_bgr
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.font_paths import resolve_digital7_font, resolve_ui_font_medium
 from pigeon.widgets.box_device_search import (
+    BOX_DEVICE_ROW_CANCEL,
     BOX_DEVICE_ROW_ENTER_IP,
     BoxDevicePanelState,
     ManualDeviceEntry,
@@ -34,10 +35,11 @@ from pigeon.widgets.box_device_search import (
     _BOX_SCAN_ROTATION_DPS,
     box_devices_with_special_rows,
     box_search_center_svg,
+    device_row_from_pick,
     is_special_device_row,
     scan_lan_devices,
 )
-from pigeon.widgets.box_device_pairing import BoxPairingSession, device_row_from_pick
+from pigeon.widgets.box_device_pairing import BoxPairingSession
 
 # Illustrator export quirk: row 2 device art is named ``device1_text_<suffix>`` at y≈290.
 _BOX_RESULT_ROW_Y_SVG: tuple[float, ...] = (264.0, 290.0, 316.0, 342.0, 368.0)
@@ -48,8 +50,9 @@ _BOX_COLUMN_INNER_SVG: dict[int, tuple[float, float]] = {
     2: (310.0, 495.0),
     3: (555.0, 740.0),
 }
-_BOX_LOCATION_TEXT_Y_SVG: dict[int, float] = {2: 325.704, 3: 325.6104}
+_BOX_LOCATION_TEXT_Y_SVG: dict[int, float] = {1: 325.6104, 2: 325.704, 3: 325.6104}
 _BOX_LOCATION_TEXT_FONT_SVG = 48.0
+_LOCATION_SLOT_DEFAULT_NAMES: tuple[str, ...] = ("nest 1", "nest 2", "nest 3")
 _BOX_DEVICE_NAME_Y_SVG = 319.8984
 _BOX_DEVICE_IP_Y_SVG = 359.6094
 _BOX_DEVICE_NAME_FONT_SVG = 48.1346
@@ -78,6 +81,7 @@ COLOR_INACTIVE = "#404040"
 COLOR_VERSION_TEXT = "#000000"
 COLOR_LEGACY_GREEN = "#02e900"
 _SEARCH_GLYPH_BGR = (0, 0, 0)
+_WIFI_SEARCH_GLYPH_BGR = (255, 255, 255)
 
 _ARTBOARD_H = 480.0
 _WIFI_RADII_SVG: tuple[float, float, float] = (18.668, 29.008, 39.145)
@@ -102,22 +106,63 @@ _TEXT_ENTRY_FIELDS: dict[str, dict[str, float | str | bool]] = {
         "x1_svg": 717.8,
         "baseline_y_svg": 184.05,
         "font_size_svg": 35.0,
-        "font": "digital7",
+        "font": "sharp_medium",
         "uppercase_only": False,
         "password_mask": True,
         "placeholder": "password",
         "placeholder_font_size_svg": 30.0,
         "placeholder_baseline_offset_px": -1,
     },
+    "pin": {
+        "text_id": "main_dual_network_name_text",
+        "x0_svg": 417.0,
+        "x1_svg": 717.8,
+        "baseline_y_svg": 184.05,
+        "font_size_svg": 35.0,
+        "font": "digital7",
+        "uppercase_only": True,
+        "password_mask": False,
+        "placeholder": "ENTER PIN",
+    },
+    "device_ip": {
+        "text_id": "main_dual_network_name_text",
+        "x0_svg": 417.0,
+        "x1_svg": 717.8,
+        "baseline_y_svg": 184.05,
+        "font_size_svg": 35.0,
+        "font": "digital7",
+        "uppercase_only": False,
+        "password_mask": False,
+    },
+    "device_name": {
+        "text_id": "main_dual_location_text",
+        "x0_svg": 82.0,
+        "x1_svg": 383.5,
+        "baseline_y_svg": 184.05,
+        "font_size_svg": 35.0,
+        "font": "digital7",
+        "uppercase_only": True,
+        "password_mask": False,
+        "placeholder": "NEW DEVICE",
+    },
 }
 _KEYBOARD_HIDE_WHEN_OPEN: tuple[str, ...] = (
     "main_exit_group",
+    "main_box1",
+    "main_box2",
+    "main_box3",
     "main_box1_device_group",
     "main_box2_device_group",
     "main_box3_device_group",
+    "main_box1_location_group",
+    "main_box2_location_group",
+    "main_box3_location_group",
     "main_box1_container",
     "main_box2_container",
     "main_box3_container",
+    "main_box1_search_icon",
+    "main_box2_search_icon",
+    "main_box3_search_icon",
 )
 
 # Keyboard SVG stubs (full systems not implemented yet).
@@ -127,6 +172,8 @@ KEYBOARD_SVG_NAMES: tuple[str, ...] = (
     "keyboard_qwerty_upper.svg",
     "keyboard_numeric_all.svg",
     "keyboard_numeric_pin.svg",
+    "keyboard_numeric_ip.svg",
+    "keyboard_yes_no.svg",
     "keyboard_symbolic.svg",
 )
 # Specified in instructions but not in the current GFX export set.
@@ -151,6 +198,8 @@ _ACTIVATE_ACTIONS: dict[str, str] = {
     "main_box1_button": "focus_box1",
     "main_box2_button": "focus_box2",
     "main_box3_button": "focus_box3",
+    "main_box2_device_results": "pick_box2_device",
+    "main_box3_device_results": "pick_box3_device",
     "main_exit_button": "exit",
     "main_network_picker_button": "focus_network_picker",
     "main_box2_add_search_icon": "wifi_search",
@@ -340,6 +389,7 @@ class _WifiIconLayout:
     fail_text_xy_svg: tuple[float, float] | None = None
     focus_logical: str = "main_dual_network_button"
     picker_row: bool = False
+    picker_slot: int | None = None
 
 
 @dataclass(frozen=True)
@@ -389,6 +439,11 @@ class MainSettingsState:
     show_box1_panel: bool = False
     show_box2_panel: bool = False
     show_box3_panel: bool = False
+    show_location_picker: bool = False
+    # Up to three (id, name) slots shown in box1–3 while picking/renaming.
+    location_slots: tuple[tuple[str, str], ...] = ()
+    renaming_location_id: str = ""
+    renaming_location_slot: int = 0  # 1–3 while keyboard is open for a slot
     box2_devices: BoxDevicePanelState = field(default_factory=BoxDevicePanelState)
     box3_devices: BoxDevicePanelState = field(default_factory=BoxDevicePanelState)
     box_pairing: BoxPairingSession | None = None
@@ -419,8 +474,60 @@ class MainSettingsState:
         return self.box2_devices if box_num == 2 else self.box3_devices
 
     def box_has_saved_device(self, box_num: int) -> bool:
+        return self.saved_box_device(box_num) is not None
+
+    def saved_box_device(self, box_num: int) -> tuple[str, str] | None:
+        """Return the currently paired device for a box column, if any."""
         panel = self._box_panel(box_num)
-        return panel.picked is not None
+        if panel.picked is not None:
+            return panel.picked
+        try:
+            from pigeon.app_state import read_saved_av_receiver, read_saved_streaming_device
+
+            row = read_saved_streaming_device() if box_num == 2 else read_saved_av_receiver()
+            if not row:
+                return None
+            name = str(row.get("name") or row.get("label") or "Device").strip()
+            ip = str(row.get("address") or "").strip()
+            if name or ip:
+                return (name or ip, ip or name)
+        except Exception:
+            pass
+        return None
+
+    def restore_box_device_panel(self, box_num: int) -> None:
+        """Leave search/results and return the column to its last idle/device state."""
+        panel = self._box_panel(box_num)
+        saved = self.saved_box_device(box_num)
+        panel.active = False
+        panel.phase = "idle"
+        panel.scanning = False
+        panel.scan_angle_deg = 0.0
+        panel.devices = ()
+        panel.device_rows = ()
+        panel.scroll = 0
+        panel.row = 0
+        panel.arrow = ""
+        panel.picked = saved
+        if box_num == 2:
+            self.show_box2_panel = False
+        elif box_num == 3:
+            self.show_box3_panel = False
+        self.ensure_focus_ring()
+        btn = f"main_box{box_num}_button"
+        if btn in self.focus_ring:
+            self.focus_index = self.focus_ring.index(btn)
+
+    def device_row_matches_saved(self, box_num: int, row: dict[str, str]) -> bool:
+        saved = self.saved_box_device(box_num)
+        if saved is None:
+            return False
+        saved_name, saved_ip = saved
+        row_name = str(row.get("name") or row.get("label") or "").strip()
+        row_ip = str(row.get("address") or "").strip()
+        if row_ip and saved_ip and row_ip == saved_ip:
+            return True
+        return bool(row_name) and row_name.lower() == saved_name.lower() and row_ip == saved_ip
 
     def load_saved_box_devices(self) -> None:
         try:
@@ -446,15 +553,16 @@ class MainSettingsState:
         panel.active = False
         panel.phase = "idle"
         panel.scanning = False
+        panel.scan_angle_deg = 0.0
         panel.devices = ()
         panel.device_rows = ()
         panel.scroll = 0
         panel.row = 0
         panel.arrow = ""
         if box_num == 2:
-            self.show_box2_panel = bool(self.box2_devices.picked)
+            self.show_box2_panel = False
         elif box_num == 3:
-            self.show_box3_panel = bool(self.box3_devices.picked)
+            self.show_box3_panel = False
 
     def start_manual_device_entry(self, box_num: int) -> None:
         panel = self._box_panel(box_num)
@@ -510,6 +618,69 @@ class MainSettingsState:
             if self._box_panel(box).results_locked:
                 return box
         return None
+
+    def refresh_location_slots(self) -> None:
+        """Load (and pad to three) location slots for the dual-location picker."""
+        from pigeon.app_state import add_empty_location_v2, read_all_locations_v2
+
+        locs = read_all_locations_v2()
+        while len(locs) < 3:
+            add_empty_location_v2(_LOCATION_SLOT_DEFAULT_NAMES[len(locs)])
+            locs = read_all_locations_v2()
+        slots: list[tuple[str, str]] = []
+        for i, loc in enumerate(locs[:3]):
+            lid = str(loc.get("id") or "").strip()
+            name = str(loc.get("name") or "").strip() or _LOCATION_SLOT_DEFAULT_NAMES[i]
+            if lid:
+                slots.append((lid, name))
+        self.location_slots = tuple(slots)
+
+    def location_slot(self, box_num: int) -> tuple[str, str] | None:
+        idx = int(box_num) - 1
+        if 0 <= idx < len(self.location_slots):
+            return self.location_slots[idx]
+        return None
+
+    def enter_location_picker(self) -> None:
+        self.show_network_picker = False
+        self.show_pigeon_settings = False
+        self.show_location_picker = True
+        self.renaming_location_id = ""
+        self.renaming_location_slot = 0
+        self.show_box1_panel = False
+        self.show_box2_panel = False
+        self.show_box3_panel = False
+        for box_num in (2, 3):
+            panel = self._box_panel(box_num)
+            panel.active = False
+            panel.scanning = False
+            if panel.phase == "scanning":
+                panel.phase = "idle"
+        self.refresh_location_slots()
+        self.ensure_focus_ring()
+        if "main_dual_location_button" in self.focus_ring:
+            self.focus_index = self.focus_ring.index("main_dual_location_button")
+
+    def exit_location_picker(self) -> None:
+        self.show_location_picker = False
+        self.renaming_location_id = ""
+        self.renaming_location_slot = 0
+        self.ensure_focus_ring()
+        if "main_dual_location_button" in self.focus_ring:
+            self.focus_index = self.focus_ring.index("main_dual_location_button")
+
+    def begin_rename_location_slot(self, box_num: int) -> bool:
+        slot = self.location_slot(box_num)
+        if slot is None:
+            self.refresh_location_slots()
+            slot = self.location_slot(box_num)
+        if slot is None:
+            return False
+        lid, name = slot
+        self.renaming_location_id = lid
+        self.renaming_location_slot = int(box_num)
+        self.location_name = name
+        return True
 
     def ensure_focus_ring(self) -> None:
         locked_box = self.box_device_results_locked()
@@ -626,11 +797,19 @@ class MainSettingsState:
         panel.scroll = 0
         panel.row = 0
         panel.arrow = ""
-        panel.picked = None
+        # Keep panel.picked so abort/cancel can restore the prior device view.
         if box_num == 2:
             self.show_box2_panel = True
         elif box_num == 3:
             self.show_box3_panel = True
+
+    def abort_box_device_scan_ui(self, box_num: int) -> bool:
+        """Instantly dismiss the scanning UI and restore the prior idle/device screen."""
+        panel = self._box_panel(box_num)
+        if not panel.scanning:
+            return False
+        self.restore_box_device_panel(box_num)
+        return True
 
     def complete_box_device_scan(
         self,
@@ -641,8 +820,29 @@ class MainSettingsState:
         panel.scanning = False
         panel.phase = "results"
         if scan_result and len(scan_result) == 2:
-            panel.devices = box_devices_with_special_rows(scan_result[0])
-            panel.device_rows = scan_result[1]
+            devices, device_rows = scan_result
+            saved = self.saved_box_device(box_num)
+            if saved and devices:
+                dev_list = list(devices)
+                row_list = list(device_rows)
+                match_idx: int | None = None
+                saved_name, saved_ip = saved
+                for i, (name, ip) in enumerate(dev_list):
+                    if ip == saved_ip or (
+                        name.lower() == saved_name.lower() and ip == saved_ip
+                    ):
+                        match_idx = i
+                        break
+                if match_idx is not None and match_idx > 0:
+                    dev_item = dev_list.pop(match_idx)
+                    dev_list.insert(0, dev_item)
+                    if match_idx < len(row_list):
+                        row_item = row_list.pop(match_idx)
+                        row_list.insert(0, row_item)
+                devices = tuple(dev_list)
+                device_rows = tuple(row_list)
+            panel.devices = box_devices_with_special_rows(devices)
+            panel.device_rows = device_rows
         else:
             panel.devices = box_devices_with_special_rows(())
             panel.device_rows = ()
@@ -694,26 +894,27 @@ class MainSettingsState:
             return None
         special = str(row.get("special") or "")
         if special == "cancel":
-            self.reset_box_device_panel(box_num)
-            self.ensure_focus_ring()
-            btn = f"main_box{box_num}_button"
-            if btn in self.focus_ring:
-                self.focus_index = self.focus_ring.index(btn)
+            self.restore_box_device_panel(box_num)
             return None
         if special == "enter_ip":
             self.start_manual_device_entry(box_num)
             self.ensure_focus_ring()
             return None
-        name = str(row.get("name") or row.get("label") or row.get("address") or "")
-        ip = str(row.get("address") or "")
-        panel.picked = (name, ip)
+        if self.device_row_matches_saved(box_num, row):
+            self.restore_box_device_panel(box_num)
+            return None
         panel.active = False
         panel.phase = "idle"
         panel.scanning = False
+        panel.devices = ()
+        panel.device_rows = ()
+        panel.scroll = 0
+        panel.row = 0
+        panel.arrow = ""
         if box_num == 2:
-            self.show_box2_panel = True
+            self.show_box2_panel = False
         elif box_num == 3:
-            self.show_box3_panel = True
+            self.show_box3_panel = False
         self.ensure_focus_ring()
         btn = f"main_box{box_num}_button"
         if btn in self.focus_ring:
@@ -758,13 +959,20 @@ class MainSettingsState:
     ) -> None:
         from pigeon.widgets.settings_keyboard import focus_first_letter, focus_keyboard_go, open_keyboard
 
+        buffer_prefill = ""
         if target == "location":
-            initial = self.location_name
+            initial = ""
+            buffer_prefill = self.location_name
         elif target == "network":
-            initial = self.wifi_password
+            initial = ""
+            buffer_prefill = self.wifi_password
         elif target == "pin":
             initial = ""
-            if self.box_pairing is not None and self.box_pairing.step.endswith("_pin"):
+        elif target == "device_name":
+            entry = self.manual_device_entry
+            initial = str(entry.name or "") if entry is not None else ""
+            if initial:
+                buffer_prefill = initial
                 initial = ""
         else:
             initial = ""
@@ -772,18 +980,26 @@ class MainSettingsState:
         if target == "device_ip":
             from pigeon.widgets.settings_keyboard import KeyboardMode
 
-            mode_override = KeyboardMode.NUMERIC_ALL
+            mode_override = KeyboardMode.NUMERIC_IP
         elif target == "device_name":
             from pigeon.widgets.settings_keyboard import KeyboardMode
 
             mode_override = KeyboardMode.QWERTY_UPPER
+        elif target == "wifi_logout":
+            from pigeon.widgets.settings_keyboard import KeyboardMode
+
+            mode_override = KeyboardMode.YES_NO
         self.keyboard = open_keyboard(
             target=target,
             initial_text=initial,
+            buffer=buffer_prefill,
             theme=self.theme,
             assets_dir=assets_dir,
             mode=mode_override,
         )
+        for box_num in (2, 3):
+            panel = self._box_panel(box_num)
+            panel.scanning = False
         if target == "network" or trigger_button == "main_dual_network_button":
             focus_keyboard_go(self.keyboard, assets_dir=assets_dir)
         elif trigger_button == "main_dual_location_button":
@@ -791,10 +1007,14 @@ class MainSettingsState:
         elif target == "device_ip":
             from pigeon.widgets.settings_keyboard import KeyboardMode, focus_numeric_one
 
-            self.keyboard.set_mode(KeyboardMode.NUMERIC_ALL, assets_dir=assets_dir)
+            self.keyboard.set_mode(KeyboardMode.NUMERIC_IP, assets_dir=assets_dir)
             focus_numeric_one(self.keyboard, assets_dir=assets_dir)
         elif target == "device_name":
             focus_first_letter(self.keyboard, assets_dir=assets_dir)
+        elif target == "wifi_logout":
+            from pigeon.widgets.settings_keyboard import focus_yes_no_yes
+
+            focus_yes_no_yes(self.keyboard, assets_dir=assets_dir)
         else:
             focus_first_letter(self.keyboard, assets_dir=assets_dir)
 
@@ -1018,11 +1238,11 @@ def _hide_wifi_onboarding_search_svg_circles(root: ET.Element) -> None:
     _hide_wifi_onboarding_search_svg_glyphs(root)
 
 
-def _discover_onboarding_search_arc_specs(root: ET.Element) -> tuple[_OnboardingSearchArcSpec, ...]:
-    """Clip-masked ring arcs for onboarding ``main_box2_search_icon``."""
-    search_group = _wifi_onboarding_search_group(root)
-    if search_group is None:
-        return ()
+def _discover_search_arc_specs_in_group(
+    root: ET.Element,
+    search_group: ET.Element,
+) -> tuple[_OnboardingSearchArcSpec, ...]:
+    """Clip-masked ring arcs from a search-icon subtree (box columns + onboarding)."""
     parents = _parent_map(root)
     if _is_subtree_hidden(search_group, parents):
         return ()
@@ -1066,6 +1286,25 @@ def _discover_onboarding_search_arc_specs(root: ET.Element) -> tuple[_Onboarding
             )
         )
     return tuple(specs)
+
+
+def _discover_onboarding_search_arc_specs(root: ET.Element) -> tuple[_OnboardingSearchArcSpec, ...]:
+    """Clip-masked ring arcs for onboarding ``main_box2_search_icon``."""
+    search_group = _wifi_onboarding_search_group(root)
+    if search_group is None:
+        return ()
+    return _discover_search_arc_specs_in_group(root, search_group)
+
+
+def _discover_box_search_arc_specs(
+    root: ET.Element,
+    box_num: int,
+) -> tuple[_OnboardingSearchArcSpec, ...]:
+    """Clip-masked ring arcs for ``main_box{N}_search_icon`` column spinners."""
+    search_group = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    if search_group is None:
+        return ()
+    return _discover_search_arc_specs_in_group(root, search_group)
 
 
 def _discover_onboarding_search_triangle_specs(
@@ -1134,6 +1373,7 @@ def _draw_onboarding_search_arc_overlays_on_patch(
     *,
     origin_x0: int,
     origin_y0: int,
+    color_bgr: tuple[int, int, int] = _SEARCH_GLYPH_BGR,
 ) -> None:
     """Draw clipped arcs into a cropped glyph patch (offset-local coordinates)."""
     if patch.size == 0:
@@ -1153,7 +1393,7 @@ def _draw_onboarding_search_arc_overlays_on_patch(
         ring_mask = np.zeros(patch.shape[:2], dtype=np.uint8)
         cv2.circle(ring_mask, (cx, cy), radius, 255, stroke, lineType=cv2.LINE_AA)
         ring_mask = cv2.bitwise_and(ring_mask, clip_mask)
-        _composite_stroke_mask(patch, ring_mask, _SEARCH_GLYPH_BGR)
+        _composite_stroke_mask(patch, ring_mask, color_bgr)
 
 
 def _mask_wifi_search_glyph_patch(patch: np.ndarray) -> np.ndarray:
@@ -1161,6 +1401,77 @@ def _mask_wifi_search_glyph_patch(patch: np.ndarray) -> np.ndarray:
     out = patch.copy()
     out[:, :, 3] = np.where(out[:, :, 3] > 0, 255, 0).astype(np.uint8)
     return out
+
+
+_SEARCH_SPINNER_STEPS = 36
+
+
+def _precompute_rotated_patches(
+    patch: np.ndarray,
+    *,
+    steps: int = _SEARCH_SPINNER_STEPS,
+) -> tuple[np.ndarray, ...]:
+    """Pre-render spinner rotations so animation avoids per-frame warpAffine."""
+    ph, pw = patch.shape[:2]
+    center = (pw * 0.5, ph * 0.5)
+    frames: list[np.ndarray] = []
+    step_deg = 360.0 / max(1, steps)
+    for i in range(steps):
+        angle = i * step_deg
+        matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        frames.append(
+            cv2.warpAffine(
+                patch,
+                matrix,
+                (pw, ph),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(0, 0, 0, 0),
+            )
+        )
+    return tuple(frames)
+
+
+def _rotated_patch_for_angle(
+    frames: tuple[np.ndarray, ...],
+    angle_deg: float,
+) -> np.ndarray:
+    if not frames:
+        raise ValueError("spinner frame cache is empty")
+    step_deg = 360.0 / len(frames)
+    idx = int(round(float(angle_deg) / step_deg)) % len(frames)
+    return frames[idx]
+
+
+def _blit_spinner_patch(frame: np.ndarray, patch: np.ndarray, *, cx: int, cy: int) -> None:
+    ph, pw = patch.shape[:2]
+    x0 = cx - pw // 2
+    y0 = cy - ph // 2
+    x1 = x0 + pw
+    y1 = y0 + ph
+    fx0 = max(0, x0)
+    fy0 = max(0, y0)
+    fx1 = min(frame.shape[1], x1)
+    fy1 = min(frame.shape[0], y1)
+    if fx1 <= fx0 or fy1 <= fy0:
+        return
+    sx0 = fx0 - x0
+    sy0 = fy0 - y0
+    sx1 = sx0 + (fx1 - fx0)
+    sy1 = sy0 + (fy1 - fy0)
+    region = frame[fy0:fy1, fx0:fx1]
+    strip = patch[sy0:sy1, sx0:sx1]
+    alpha = strip[:, :, 3:4].astype(np.float32) / 255.0
+    fg = strip[:, :, :3].astype(np.float32)
+    bg = region[:, :, :3].astype(np.float32)
+    blended = np.clip(fg * alpha + bg * (1.0 - alpha), 0, 255).astype(np.uint8)
+    out_a = np.clip(
+        alpha * 255.0 + (1.0 - alpha) * region[:, :, 3:4].astype(np.float32),
+        0,
+        255,
+    ).astype(np.uint8)
+    region[:, :, :3] = blended
+    region[:, :, 3:4] = out_a
 
 
 def _mask_search_glyph_patch(patch: np.ndarray, *, include_dark: bool) -> np.ndarray:
@@ -1757,7 +2068,69 @@ def _apply_keyboard_layer_visibility(root: ET.Element, state: MainSettingsState)
     kb_target = ""
     if state.keyboard is not None:
         kb_target = str(getattr(state.keyboard, "target", "") or "")
+    pairing_pin = kb_target == "pin" and state.box_pairing is not None
+    wifi_logout = kb_target == "wifi_logout"
+    manual_entry = state.manual_device_entry is not None
+    device_entry = kb_target in ("device_ip", "device_name") or manual_entry
     password_flow = kb_target == "network" or state.wifi_connecting
+    if wifi_logout:
+        for lid in (
+            "main_exit_group",
+            "main_network_picker",
+            "welcome_to_pigeon_find_your_wifi_text",
+            "welcome_to_pigeon_group",
+            "main_box1_text",
+            "main_box1_device_group",
+            "main_box2_device_group",
+            "main_box3_device_group",
+            "main_box1_container",
+            "main_box2_container",
+            "main_box3_container",
+            "main_box2_add_search_icon",
+            "main_box2_+_icon",
+        ):
+            _set_visible(_find_by_logical_id(root, lid), False)
+        search_group = _wifi_onboarding_search_group(root)
+        if search_group is not None:
+            _set_visible(search_group, False)
+        for lid in _DUAL_LOCATION_ICON_IDS:
+            _set_visible(_find_by_logical_id(root, lid), False)
+        _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
+        _set_visible(_find_by_logical_id(root, "main_instructions"), True)
+        nest_el = _find_by_logical_id(root, "rename_your_nest_text")
+        if nest_el is not None:
+            _set_text_content(nest_el, _wifi_logout_instruction_text(state))
+            _force_layer_white(nest_el)
+            _set_visible(nest_el, True)
+        return
+    if pairing_pin or device_entry:
+        for lid in (
+            "main_exit_group",
+            "main_instructions",
+            "main_network_picker",
+            "welcome_to_pigeon_find_your_wifi_text",
+            "main_box1_text",
+            "main_box1_device_group",
+            "main_box2_device_group",
+            "main_box3_device_group",
+            "main_box1_container",
+            "main_box2_container",
+            "main_box3_container",
+            "main_box2_add_search_icon",
+        ):
+            _set_visible(_find_by_logical_id(root, lid), False)
+        for lid in _DUAL_LOCATION_ICON_IDS:
+            _set_visible(_find_by_logical_id(root, lid), False)
+        _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
+        if pairing_pin:
+            _set_visible(_find_by_logical_id(root, "main_instructions"), True)
+            _set_visible(_find_by_logical_id(root, "welcome_to_pigeon_group"), False)
+            nest_el = _find_by_logical_id(root, "rename_your_nest_text")
+            if nest_el is not None:
+                _set_text_content(nest_el, _pairing_instruction_text(state))
+                _force_layer_white(nest_el)
+                _set_visible(nest_el, True)
+        return
     if password_flow:
         for lid in (
             "main_exit_group",
@@ -1776,12 +2149,43 @@ def _apply_keyboard_layer_visibility(root: ET.Element, state: MainSettingsState)
             for lid in _DUAL_LOCATION_ICON_IDS:
                 _set_visible(_find_by_logical_id(root, lid), False)
         return
+    # Location rename / default keyboard: suppress every box column layer under the overlay.
     for lid in _KEYBOARD_HIDE_WHEN_OPEN:
         _set_visible(_find_by_logical_id(root, lid), False)
+    _set_box_columns_visible(root, False)
+    for box_num in (1, 2, 3):
+        _set_visible(_find_by_logical_id(root, _BOX_LOCATION_GROUPS[box_num - 1]), False)
+        _set_visible(_find_by_logical_id(root, _BOX_DEVICE_GROUPS[box_num]), False)
+        _set_visible(_find_by_logical_id(root, f"main_box{box_num}_container"), False)
+        _set_visible(_find_by_logical_id(root, f"main_box{box_num}_search_icon"), False)
+        _set_box_search_results_visible(root, box_num, False)
+        _hide_box_search_animation_layers(root, box_num)
 
 
-def _text_field_spec(target: str) -> dict[str, float | str] | None:
+def _text_field_spec(target: str) -> dict[str, float | str | bool] | None:
     return _TEXT_ENTRY_FIELDS.get(target)
+
+
+def _location_text_is_grayed(state: MainSettingsState) -> bool:
+    """True when dual-location shows placeholder gray (replace mode, not append)."""
+    if state.show_instructions:
+        return True
+    name = str(state.location_name or "").strip().lower()
+    return name in ("", "nest 1", "nest1")
+
+
+def _wifi_logout_instruction_text(state: MainSettingsState) -> str:
+    ssid = str(state.selected_wifi_ssid or "").strip() or "network"
+    return f"log out of {ssid}?"
+
+
+def _pairing_instruction_text(state: MainSettingsState) -> str:
+    sess = state.box_pairing
+    if sess is None:
+        return "PAIR COMPANION (1 of 2)"
+    if sess.step == "airplay_pin":
+        return "PAIR AIRPLAY (2 of 2)"
+    return "PAIR COMPANION (1 of 2)"
 
 
 @lru_cache(maxsize=4)
@@ -2039,6 +2443,49 @@ def _entry_display_text(
     return ""
 
 
+def _entry_field_bounds_px(target: str) -> tuple[int, int]:
+    """Pixel bounds for the active dual-bar field (matches ``_draw_text_entry_content``)."""
+    if target in ("location", "device_name"):
+        return _dual_location_text_bounds_px()
+    if target in ("network", "pin", "device_ip"):
+        return (
+            int(round(_DUAL_NETWORK_TEXT_X0_SVG * DESIGN_W / 800.0)),
+            int(round(_DUAL_NETWORK_TEXT_X1_SVG * DESIGN_W / 800.0)),
+        )
+    spec = _text_field_spec(target)
+    if spec is None:
+        return 0, DESIGN_W
+    return (
+        int(round(float(spec["x0_svg"]) * DESIGN_W / 800.0)),
+        int(round(float(spec["x1_svg"]) * DESIGN_W / 800.0)),
+    )
+
+
+def _entry_cursor_display(
+    *,
+    buffer: str,
+    initial: str,
+    spec: dict[str, float | str | bool],
+    state: MainSettingsState | None = None,
+) -> str:
+    """Rendered string used to place the caret at the end of the editable text."""
+    if (
+        state is not None
+        and state.network_password_error
+        and spec.get("password_mask")
+        and not buffer
+    ):
+        return "incorrect password"
+    edit = buffer if buffer else initial
+    if not edit:
+        return ""
+    if spec.get("password_mask"):
+        return _password_mask_display(edit)
+    if spec.get("uppercase_only"):
+        return edit.upper()
+    return edit
+
+
 def _clamp_field_cursor_x(cursor_x: int, *, x0_px: int, x1_px: int) -> int:
     return max(x0_px + 2, min(x1_px - 2, int(cursor_x)))
 
@@ -2057,6 +2504,33 @@ def _draw_text_entry_content(bgra: np.ndarray, state: MainSettingsState) -> None
         initial = str(getattr(kb, "initial_text", "") or "")
     if state.wifi_connecting and not target:
         target = "network"
+    if target == "wifi_logout" and state.keyboard_open:
+        baseline_px = int(round(float(_TEXT_ENTRY_FIELDS["location"]["baseline_y_svg"]) * DESIGN_H / _ARTBOARD_H))
+        loc_x0, loc_x1 = _dual_location_text_bounds_px()
+        rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGBA)
+        img = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(img)
+        ssid = str(state.selected_wifi_ssid or "").strip()
+        if ssid:
+            loc_spec = _TEXT_ENTRY_FIELDS["location"]
+            ssid_size = _entry_content_font_size_px(
+                loc_spec,
+                buffer=ssid,
+                display=ssid,
+                max_width_px=max(24, loc_x1 - loc_x0 - 56),
+            )
+            ssid_font = _field_font(loc_spec, ssid_size)
+            _draw_centered_field_text(
+                draw,
+                x0_px=loc_x0,
+                x1_px=loc_x1,
+                baseline_px=baseline_px,
+                text=ssid,
+                font=ssid_font,
+                fill=(255, 255, 255, 255),
+            )
+        bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
+        return
     spec = _text_field_spec(target)
     if spec is None:
         return
@@ -2143,6 +2617,11 @@ def _draw_text_entry_content(bgra: np.ndarray, state: MainSettingsState) -> None
                 max_width_px=max(24, loc_x1 - loc_x0 - 16),
             )
             loc_font = _field_font(loc_spec, loc_size)
+            loc_fill = (
+                _COLOR_GRAY_RGBA
+                if (not buffer and _location_text_is_grayed(state))
+                else (255, 255, 255, 255)
+            )
             _draw_centered_field_text(
                 draw,
                 x0_px=loc_x0,
@@ -2150,6 +2629,168 @@ def _draw_text_entry_content(bgra: np.ndarray, state: MainSettingsState) -> None
                 baseline_px=baseline_px,
                 text=loc_display,
                 font=loc_font,
+                fill=loc_fill,
+            )
+        bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
+        return
+
+    if kb is None and state.manual_device_entry is not None:
+        entry = state.manual_device_entry
+        loc_x0, loc_x1 = _dual_location_text_bounds_px()
+        net_x0 = int(round(_DUAL_NETWORK_TEXT_X0_SVG * DESIGN_W / 800.0))
+        net_x1 = int(round(_DUAL_NETWORK_TEXT_X1_SVG * DESIGN_W / 800.0))
+        loc_spec = _TEXT_ENTRY_FIELDS["device_name"]
+        net_spec = _TEXT_ENTRY_FIELDS["device_ip"]
+        loc_font = _field_font(loc_spec, _entry_content_font_size_px(
+            loc_spec, buffer="", display="NEW DEVICE", max_width_px=max(24, loc_x1 - loc_x0 - 16)
+        ))
+        _draw_centered_field_text(
+            draw,
+            x0_px=loc_x0,
+            x1_px=loc_x1,
+            baseline_px=baseline_px,
+            text="NEW DEVICE",
+            font=loc_font,
+            fill=_COLOR_GRAY_RGBA,
+        )
+        ip_text = str(entry.ip or "").strip()
+        if ip_text:
+            ip_size = _entry_content_font_size_px(
+                net_spec, buffer=ip_text, display=ip_text, max_width_px=max(24, net_x1 - net_x0 - 16)
+            )
+            ip_font = _field_font(net_spec, ip_size)
+            _draw_centered_field_text(
+                draw,
+                x0_px=net_x0,
+                x1_px=net_x1,
+                baseline_px=baseline_px,
+                text=ip_text,
+                font=ip_font,
+                fill=(255, 255, 255, 255),
+            )
+        bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
+        return
+
+    if target == "pin":
+        loc_x0, loc_x1 = _dual_location_text_bounds_px()
+        net_x0 = int(round(_DUAL_NETWORK_TEXT_X0_SVG * DESIGN_W / 800.0))
+        net_x1 = int(round(_DUAL_NETWORK_TEXT_X1_SVG * DESIGN_W / 800.0))
+        device_name = ""
+        if state.box_pairing is not None:
+            device_name = str(state.box_pairing.device_name or "").strip().upper()
+        if device_name:
+            loc_spec = _TEXT_ENTRY_FIELDS["location"]
+            loc_size = _entry_content_font_size_px(
+                loc_spec,
+                buffer=device_name,
+                display=device_name,
+                max_width_px=max(24, loc_x1 - loc_x0 - 16),
+            )
+            loc_font = _field_font(loc_spec, loc_size)
+            _draw_centered_field_text(
+                draw,
+                x0_px=loc_x0,
+                x1_px=loc_x1,
+                baseline_px=baseline_px,
+                text=device_name,
+                font=loc_font,
+                fill=(255, 255, 255, 255),
+            )
+        pin_spec = _TEXT_ENTRY_FIELDS["pin"]
+        pin_display = _entry_display_text(buffer=buffer, initial=initial, spec=pin_spec, state=state)
+        if pin_display:
+            pin_size = _entry_content_font_size_px(
+                pin_spec,
+                buffer=buffer,
+                display=pin_display,
+                max_width_px=max(24, net_x1 - net_x0 - 16),
+            )
+            pin_font = _field_font(pin_spec, pin_size)
+            pin_fill = _COLOR_GRAY_RGBA if not buffer else (255, 255, 255, 255)
+            _draw_centered_field_text(
+                draw,
+                x0_px=net_x0,
+                x1_px=net_x1,
+                baseline_px=baseline_px,
+                text=pin_display,
+                font=pin_font,
+                fill=pin_fill,
+            )
+        bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
+        return
+
+    if target == "device_ip":
+        loc_x0, loc_x1 = _dual_location_text_bounds_px()
+        net_x0 = int(round(_DUAL_NETWORK_TEXT_X0_SVG * DESIGN_W / 800.0))
+        net_x1 = int(round(_DUAL_NETWORK_TEXT_X1_SVG * DESIGN_W / 800.0))
+        loc_spec = _TEXT_ENTRY_FIELDS["device_name"]
+        loc_font = _field_font(loc_spec, _entry_content_font_size_px(
+            loc_spec, buffer="", display="NEW DEVICE", max_width_px=max(24, loc_x1 - loc_x0 - 16)
+        ))
+        _draw_centered_field_text(
+            draw,
+            x0_px=loc_x0,
+            x1_px=loc_x1,
+            baseline_px=baseline_px,
+            text="NEW DEVICE",
+            font=loc_font,
+            fill=_COLOR_GRAY_RGBA,
+        )
+        ip_spec = _TEXT_ENTRY_FIELDS["device_ip"]
+        ip_display = _entry_display_text(buffer=buffer, initial=initial, spec=ip_spec, state=state)
+        if ip_display:
+            ip_size = _entry_content_font_size_px(
+                ip_spec, buffer=buffer, display=ip_display, max_width_px=max(24, net_x1 - net_x0 - 16)
+            )
+            ip_font = _field_font(ip_spec, ip_size)
+            _draw_centered_field_text(
+                draw,
+                x0_px=net_x0,
+                x1_px=net_x1,
+                baseline_px=baseline_px,
+                text=ip_display,
+                font=ip_font,
+                fill=(255, 255, 255, 255),
+            )
+        bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
+        return
+
+    if target == "device_name":
+        entry = state.manual_device_entry
+        loc_x0, loc_x1 = _dual_location_text_bounds_px()
+        net_x0 = int(round(_DUAL_NETWORK_TEXT_X0_SVG * DESIGN_W / 800.0))
+        net_x1 = int(round(_DUAL_NETWORK_TEXT_X1_SVG * DESIGN_W / 800.0))
+        name_spec = _TEXT_ENTRY_FIELDS["device_name"]
+        name_display = _entry_display_text(buffer=buffer, initial=initial, spec=name_spec, state=state)
+        if name_display:
+            name_size = _entry_content_font_size_px(
+                name_spec, buffer=buffer, display=name_display, max_width_px=max(24, loc_x1 - loc_x0 - 16)
+            )
+            name_font = _field_font(name_spec, name_size)
+            name_fill = _COLOR_GRAY_RGBA if (not buffer and name_display == "NEW DEVICE") else (255, 255, 255, 255)
+            _draw_centered_field_text(
+                draw,
+                x0_px=loc_x0,
+                x1_px=loc_x1,
+                baseline_px=baseline_px,
+                text=name_display,
+                font=name_font,
+                fill=name_fill,
+            )
+        ip_text = str(entry.ip or "").strip() if entry is not None else ""
+        if ip_text:
+            ip_spec = _TEXT_ENTRY_FIELDS["device_ip"]
+            ip_size = _entry_content_font_size_px(
+                ip_spec, buffer=ip_text, display=ip_text, max_width_px=max(24, net_x1 - net_x0 - 16)
+            )
+            ip_font = _field_font(ip_spec, ip_size)
+            _draw_centered_field_text(
+                draw,
+                x0_px=net_x0,
+                x1_px=net_x1,
+                baseline_px=baseline_px,
+                text=ip_text,
+                font=ip_font,
                 fill=(255, 255, 255, 255),
             )
         bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
@@ -2210,6 +2851,23 @@ def _draw_text_entry_content(bgra: np.ndarray, state: MainSettingsState) -> None
     bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
 
 
+def _centered_field_cursor_x(
+    draw: ImageDraw.ImageDraw,
+    *,
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    x0_px: int,
+    x1_px: int,
+) -> int:
+    """Insertion caret immediately after the last rendered character."""
+    if not text:
+        return x0_px + 8
+    bbox = draw.textbbox((0, 0), text, font=font, anchor="ls")
+    tw = bbox[2] - bbox[0]
+    cx = (x0_px + x1_px) // 2
+    return cx - tw // 2 + tw + 1
+
+
 def _draw_text_entry_cursor(bgra: np.ndarray, state: MainSettingsState) -> None:
     """Blinking insertion caret for the active dual-bar text field."""
     kb = state.keyboard
@@ -2223,14 +2881,18 @@ def _draw_text_entry_cursor(bgra: np.ndarray, state: MainSettingsState) -> None:
         return
     buffer = str(getattr(kb, "buffer", "") or "")
     initial = str(getattr(kb, "initial_text", "") or "")
-    x0_px = int(round(float(spec["x0_svg"]) * DESIGN_W / 800.0))
-    x1_px = int(round(float(spec["x1_svg"]) * DESIGN_W / 800.0))
+    x0_px, x1_px = _entry_field_bounds_px(target)
     baseline_px = int(round(float(spec["baseline_y_svg"]) * DESIGN_H / _ARTBOARD_H))
-    display = _entry_display_text(buffer=buffer, initial=initial, spec=spec, state=state)
+    display = _entry_cursor_display(
+        buffer=buffer, initial=initial, spec=spec, state=state
+    )
     placeholder = str(spec.get("placeholder", "") or "")
     max_field_w = max(24, x1_px - x0_px - 8)
+    content_display = _entry_display_text(
+        buffer=buffer, initial=initial, spec=spec, state=state
+    )
     size_px = _entry_content_font_size_px(
-        spec, buffer=buffer, display=display, max_width_px=max_field_w
+        spec, buffer=buffer, display=content_display, max_width_px=max_field_w
     )
     font = _field_font(spec, size_px)
     rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGBA)
@@ -2258,15 +2920,18 @@ def _draw_text_entry_cursor(bgra: np.ndarray, state: MainSettingsState) -> None:
                 size_px=size_px,
             )
         else:
-            bbox = draw.textbbox((0, 0), display, font=font, anchor="ls")
-            tw = bbox[2] - bbox[0]
             if not buffer and spec.get("password_mask") and display == placeholder:
                 text_y += int(spec.get("placeholder_baseline_offset_px", 0))
-                cursor_x = cx - tw // 2
+            cursor_x = _centered_field_cursor_x(
+                draw, text=display, font=font, x0_px=x0_px, x1_px=x1_px
+            )
+            if display:
+                bbox = draw.textbbox((0, 0), display, font=font, anchor="ls")
+                top = text_y + bbox[1]
+                bot = text_y + bbox[3]
             else:
-                cursor_x = cx - tw // 2 + tw + 2
-            top = text_y - size_px + 4
-            bot = text_y + 2
+                top = text_y - size_px + 4
+                bot = text_y + 2
         cursor_x = _clamp_field_cursor_x(cursor_x, x0_px=x0_px, x1_px=x1_px)
     else:
         cursor_x = _clamp_field_cursor_x(x0_px + 8, x0_px=x0_px, x1_px=x1_px)
@@ -2415,11 +3080,17 @@ def _discover_wifi_icon_layouts(root: ET.Element) -> list[_WifiIconLayout]:
             continue
         cx, cy = center
         if is_dual:
+            cy -= 3.0
             focus_logical = "main_dual_network_button"
             picker_row = False
+            picker_slot = None
         else:
             focus_logical = "main_network_picker_button"
             picker_row = True
+            picker_slot = None
+            m = re.search(r"network_picker_row(\d+)_wifi", logical)
+            if m:
+                picker_slot = int(m.group(1)) - 1
         layouts.append(
             _WifiIconLayout(
                 clip_polygon_svg=clip,
@@ -2428,6 +3099,7 @@ def _discover_wifi_icon_layouts(root: ET.Element) -> list[_WifiIconLayout]:
                 fail_text_xy_svg=_wifi_fail_text_xy(group),
                 focus_logical=focus_logical,
                 picker_row=picker_row,
+                picker_slot=picker_slot,
             )
         )
     return layouts
@@ -2546,12 +3218,14 @@ def _draw_wifi_overlays(
     focused_logical: str,
 ) -> None:
     del focused_logical  # WiFi icons stay brand red regardless of nav focus.
-    level = max(0, min(3, int(state.wifi_level)))
+    default_level = max(0, min(3, int(state.wifi_level)))
     active_bgr = _hex_to_bgr(state.theme.ui)
+    scroll = max(0, int(state.network_picker_scroll))
     kb_target = ""
     if state.keyboard is not None:
         kb_target = str(getattr(state.keyboard, "target", "") or "")
     kb_network = state.keyboard_open and kb_target == "network"
+    kb_logout = state.keyboard_open and kb_target == "wifi_logout"
     dual_layout: _WifiIconLayout | None = None
     for layout in layouts:
         if layout.focus_logical == "main_dual_network_button":
@@ -2561,12 +3235,18 @@ def _draw_wifi_overlays(
         if layout.picker_row and not state.show_network_picker:
             continue
         if layout.focus_logical == "main_dual_network_button":
+            if kb_logout:
+                continue
             if not state.wifi_configured and not state.wifi_connecting:
                 continue
             if kb_network:
                 continue
+        level = default_level
+        if layout.picker_row and layout.picker_slot is not None:
+            abs_idx = scroll + int(layout.picker_slot)
+            level = max(1, min(3, 3 - abs_idx))
         _draw_wifi_icon_overlay(bgra, layout, level=level, active_bgr=active_bgr)
-    if kb_network and dual_layout is not None:
+    if (kb_network or kb_logout) and dual_layout is not None:
         loc_layout = _WifiIconLayout(
             clip_polygon_svg=dual_layout.clip_polygon_svg,
             cx_svg=_DUAL_LOCATION_WIFI_CENTER_SVG[0],
@@ -2578,7 +3258,7 @@ def _draw_wifi_overlays(
             focus_logical="main_dual_location_button",
             picker_row=False,
         )
-        _draw_wifi_icon_overlay(bgra, loc_layout, level=level, active_bgr=active_bgr)
+        _draw_wifi_icon_overlay(bgra, loc_layout, level=default_level, active_bgr=active_bgr)
 
 
 @dataclass(frozen=True)
@@ -2662,67 +3342,9 @@ def _box_focus_button(el: ET.Element, parents: dict[ET.Element, ET.Element]) -> 
 
 
 def _discover_star_masked_circles(root: ET.Element) -> list[_StarMaskedCircleSpec]:
-    """Pair search star/triangle polygons with their ellipse circle strokes."""
+    """Pair pigeon-logo hex clips with circle strokes (search spinners use a separate path)."""
     parents = _parent_map(root)
     specs: list[_StarMaskedCircleSpec] = []
-    star_by_group_side: dict[tuple[int, str], tuple[tuple[float, float], ...]] = {}
-
-    for el in root.iter():
-        if not el.tag.endswith("polygon"):
-            continue
-        logical = _normalize_logical(el.get("id") or "")
-        if "search" not in logical or "triangle" not in logical:
-            continue
-        side = "left" if "_left_" in logical else "right" if "_right_" in logical else None
-        if side is None:
-            continue
-        pts = _parse_svg_points(el.get("points") or "")
-        if not pts:
-            continue
-        search_group = _ancestor_search_icon(el, parents)
-        if search_group is None or _is_subtree_hidden(el, parents):
-            continue
-        if _is_onboarding_search_group(root, search_group, parents):
-            continue
-        star_by_group_side[(id(search_group), side)] = pts
-
-    for el in root.iter():
-        if not el.tag.endswith("g"):
-            continue
-        logical = _normalize_logical(el.get("id") or "")
-        if "search" not in logical or ("eplipse" not in logical and "ellipse" not in logical):
-            continue
-        side = "left" if "_left_" in logical else "right" if "_right_" in logical else None
-        if side is None:
-            continue
-        search_group = _ancestor_search_icon(el, parents)
-        if search_group is None or _is_subtree_hidden(el, parents):
-            continue
-        if _is_onboarding_search_group(root, search_group, parents):
-            continue
-        star_pts = star_by_group_side.get((id(search_group), side))
-        if star_pts is None:
-            continue
-        circle_el: ET.Element | None = None
-        for node in el.iter():
-            if node.tag.endswith("circle") and node.get("cx") and node.get("r"):
-                circle_el = node
-                break
-        if circle_el is None:
-            continue
-        cx, cy, radius, stroke_w, stroke_hex = _circle_stroke_from_element(circle_el)
-        specs.append(
-            _StarMaskedCircleSpec(
-                mask_polygon_svg=star_pts,
-                cx_svg=cx,
-                cy_svg=cy,
-                radius_svg=radius,
-                stroke_svg=stroke_w,
-                default_stroke_hex=stroke_hex,
-                focus_button=_box_focus_button(search_group, parents),
-                circle_el_id=id(circle_el),
-            )
-        )
 
     for el in root.iter():
         logical = _normalize_logical(el.get("id") or "")
@@ -2770,6 +3392,25 @@ def _hide_star_masked_svg_circles(root: ET.Element, specs: list[_StarMaskedCircl
             _set_visible(el, False)
 
 
+def _hide_box_search_animation_layers(root: ET.Element, box_num: int) -> None:
+    """Force-hide search spinner art for a column (SVG vectors + group)."""
+    search_icon = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    if search_icon is not None:
+        _set_visible(search_icon, False)
+        _hide_box_search_icon_vectors(search_icon)
+    # Belt-and-suspenders: hide any leftover search triangle/ellipse under this box.
+    prefix = f"main_box{box_num}_search_"
+    for el in root.iter():
+        logical = _normalize_logical(el.get("id") or "")
+        if not logical.startswith(prefix):
+            continue
+        if "results" in logical:
+            continue
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag in ("circle", "polygon", "g") or "triangle" in logical or "eplipse" in logical or "ellipse" in logical:
+            _set_visible(el, False)
+
+
 def _stroke_bgr_for_star_spec(
     spec: _StarMaskedCircleSpec,
     *,
@@ -2777,6 +3418,12 @@ def _stroke_bgr_for_star_spec(
     focused_logical: str,
 ) -> tuple[int, int, int]:
     theme = state.theme
+    if spec.focus_button and len(spec.mask_polygon_svg) == 6:
+        m = re.match(r"main_box([23])_button", spec.focus_button)
+        if m is not None:
+            panel = state._box_panel(int(m.group(1)))
+            if not panel.scanning and not panel.active:
+                return _hex_to_bgr("#FF0013")
     if spec.focus_button:
         m = re.match(r"main_box([23])_button", spec.focus_button)
         if m is not None:
@@ -2817,13 +3464,14 @@ def _draw_star_masked_circle_overlays(
     *,
     focused_logical: str,
 ) -> None:
-    capture = bool(getattr(state, "spinner_glyph_capture", False))
+    if state.keyboard_open or state.manual_device_entry is not None:
+        return
     for spec in specs:
         if spec.focus_button:
             m = re.match(r"main_box([23])_button", spec.focus_button)
             if m is not None:
                 panel = state._box_panel(int(m.group(1)))
-                if panel.scanning and not capture:
+                if panel.scanning or panel.results_locked:
                     continue
         color = _stroke_bgr_for_star_spec(spec, state=state, focused_logical=focused_logical)
         _draw_star_masked_circle_stroke(bgra, spec, color_bgr=color)
@@ -3060,15 +3708,18 @@ def _apply_box_device_group_labels(
     if box_num not in (2, 3):
         return
     panel = state._box_panel(box_num)
-    picked = panel.picked
+    picked = state.saved_box_device(box_num)
     if picked is None:
         return
+    if panel.picked is None:
+        panel.picked = picked
     name, ip = picked
     ip_invalid = state.box2_ip_invalid if box_num == 2 else state.box3_ip_invalid
     _apply_box_device_group_layout(root, box_num, name=name, ip=ip)
     group = _find_box_device_group(root, box_num)
     if group is None:
         return
+    _apply_box_pigeon_logo_icon_styles(root, box_num, theme=state.theme)
     if ip_invalid:
         for el in group.iter():
             logical = _normalize_logical(el.get("id") or "")
@@ -3078,6 +3729,27 @@ def _apply_box_device_group_labels(
                         _set_paint(node, fill=COLOR_UI_DEFAULT)
 
 
+def _apply_box_pigeon_logo_icon_styles(
+    root: ET.Element,
+    box_num: int,
+    *,
+    theme: SettingsTheme,
+) -> None:
+    """Paint hex-clip ring strokes in box3/box2 pigeon logo icons accent red."""
+    icon = _find_by_logical_id(root, f"main_box{box_num}_pigeon_logo_icon")
+    if icon is None:
+        return
+    accent = "#FF0013"
+    for el in icon.iter():
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag == "circle":
+            _set_paint(el, fill="none", stroke=accent)
+        elif tag == "line":
+            _set_paint(el, fill="none", stroke=accent)
+        elif tag == "polygon":
+            _set_paint(el, fill=accent, stroke="#000013")
+
+
 def _apply_box_device_text_contrast(
     root: ET.Element,
     *,
@@ -3085,7 +3757,8 @@ def _apply_box_device_text_contrast(
     selected: bool,
     theme: SettingsTheme,
 ) -> None:
-    """When a box nav item is selected, invert device name + IP inside that column."""
+    """Selected box pill is white → black text; deselected dark → white text."""
+    contrast = theme.deselected if selected else theme.selected
     group = _find_box_device_group(root, box_num)
     if group is None:
         return
@@ -3093,7 +3766,9 @@ def _apply_box_device_text_contrast(
         logical = _normalize_logical(el.get("id") or "")
         if not _is_device_label_logical(logical):
             continue
-        _apply_contrast_paint(el, selected=selected, theme=theme)
+        for node in el.iter():
+            if node.tag.endswith("text"):
+                _set_paint(node, fill=contrast)
 
 
 def _box_shows_location_group(
@@ -3107,18 +3782,12 @@ def _box_shows_location_group(
         return False
     if _needs_wifi_setup(state) or state.manual_device_entry is not None:
         return False
+    if state.box_has_saved_device(box_num) and not panel.active:
+        return False
     if box_num == 2:
-        panel_open = bool(
-            state.show_box2_panel
-            or state.box2_devices.active
-            or not state.box_has_saved_device(2)
-        )
+        panel_open = bool(state.show_box2_panel or state.box2_devices.active)
     else:
-        panel_open = bool(
-            state.show_box3_panel
-            or state.box3_devices.active
-            or not state.box_has_saved_device(3)
-        )
+        panel_open = bool(state.show_box3_panel or state.box3_devices.active)
     if panel.active:
         return False
     return panel_open
@@ -3128,18 +3797,29 @@ def _box_location_text_bounds_svg(box_num: int) -> tuple[float, float]:
     return _box_column_inner_svg(box_num)
 
 
+def _box_location_label_for_slot(state: MainSettingsState, box_num: int) -> str:
+    """Label shown inside a box location group (picker slots or current nest)."""
+    default = _LOCATION_SLOT_DEFAULT_NAMES[max(0, min(2, int(box_num) - 1))]
+    if state.show_location_picker:
+        slot = state.location_slot(box_num)
+        if slot is not None:
+            return str(slot[1] or "").strip() or default
+        return default
+    return str(state.location_name or default).strip() or default
+
+
 def _apply_box_location_group_labels(
     root: ET.Element,
     state: MainSettingsState,
     box_num: int,
 ) -> None:
-    """Center and truncate nest/location label inside box2/box3 column chrome."""
-    if box_num not in (2, 3):
+    """Center and truncate nest/location label inside box1–3 column chrome."""
+    if box_num not in (1, 2, 3):
         return
     group = _find_by_logical_id(root, f"main_box{box_num}_location_group")
     if group is None:
         return
-    label = str(state.location_name or "nest 1").strip() or "nest 1"
+    label = _box_location_label_for_slot(state, box_num)
     x0, x1 = _box_location_text_bounds_svg(box_num)
     center_svg = (x0 + x1) * 0.5
     y_svg = _BOX_LOCATION_TEXT_Y_SVG.get(box_num, 325.7)
@@ -3291,10 +3971,59 @@ def _hide_all_box_chrome(root: ET.Element) -> None:
 def _network_field_text(state: MainSettingsState) -> str | None:
     """Dual-network label text, or ``None`` to preserve SVG placeholder art."""
     if state.wifi_configured:
-        return state.selected_wifi_ssid
+        return "CONNECTED"
     if state.wifi_connecting or state.keyboard_open:
         return None
-    return "CONNECT"
+    return "CONNECT TO WIFI"
+
+
+def _network_field_font_size_svg(display: str) -> float | None:
+    """Disconnected label uses the same size as the location field."""
+    return None
+
+
+def _dual_bar_pill_center_y_px() -> int:
+    baseline = float(_TEXT_ENTRY_FIELDS["location"]["baseline_y_svg"])
+    return int(round(baseline * DESIGN_H / _ARTBOARD_H))
+
+
+def _draw_dual_bar_network_prompt(bgra: np.ndarray, state: MainSettingsState) -> None:
+    """Paint the disconnected dual-network CTA with Digital-7 sizing and vertical centering."""
+    if (
+        state.wifi_configured
+        or state.wifi_connecting
+        or state.keyboard_open
+        or state.show_network_picker
+    ):
+        return
+    label = _network_field_text(state)
+    if label != "CONNECT TO WIFI":
+        return
+    net_x0 = int(round(_DUAL_NETWORK_TEXT_X0_SVG * DESIGN_W / 800.0))
+    net_x1 = int(round(_DUAL_NETWORK_TEXT_X1_SVG * DESIGN_W / 800.0))
+    loc_spec = _TEXT_ENTRY_FIELDS["location"]
+    display = label.upper()
+    start_px = _field_font_size_px(float(loc_spec["font_size_svg"]))
+    size_px, font = _fit_text_font_size(
+        display,
+        lambda s: _field_font(loc_spec, s),
+        max_width_px=max(24, net_x1 - net_x0 - 16),
+        start_px=start_px,
+    )
+    text_y = _dual_bar_pill_center_y_px()
+    rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGBA)
+    img = Image.fromarray(rgb)
+    draw = ImageDraw.Draw(img)
+    _draw_centered_field_text(
+        draw,
+        x0_px=net_x0,
+        x1_px=net_x1,
+        baseline_px=text_y,
+        text=display,
+        font=font,
+        fill=_COLOR_GRAY_RGBA,
+    )
+    bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
 
 
 def _apply_wifi_onboarding_visibility(root: ET.Element, state: MainSettingsState) -> None:
@@ -3312,9 +4041,16 @@ def _apply_wifi_onboarding_visibility(root: ET.Element, state: MainSettingsState
         )
         _hide_all_box_chrome(root)
     else:
+        _set_visible(_find_by_logical_id(root, "welcome_to_pigeon_group"), False)
+        _set_visible(_find_by_logical_id(root, "welcome_to_pigeon_find_your_wifi_text"), False)
         _set_visible(_find_by_logical_id(root, "main_box2_add_search_icon"), False)
         _set_visible(_find_by_logical_id(root, "main_box1_text"), False)
-        _set_visible(_find_by_logical_id(root, "rename_your_nest_text"), state.show_instructions)
+        show_rename_hint = bool(state.show_instructions or state.show_location_picker)
+        nest_el = _find_by_logical_id(root, "rename_your_nest_text")
+        if nest_el is not None and state.show_location_picker:
+            _set_text_content(nest_el, "rename your nest")
+            _force_layer_white(nest_el)
+        _set_visible(nest_el, show_rename_hint)
         _set_box_columns_visible(root, True)
 
 
@@ -3343,35 +4079,35 @@ def _apply_scene_layer_visibility(root: ET.Element, state: MainSettingsState) ->
     show_search_chrome = no_wifi and (state.wifi_scanning or state.wifi_connecting)
     _set_visible(_find_by_logical_id(root, "main_instructions"), show_search_chrome)
     _set_visible(_find_by_logical_id(root, "welcome_to_pigeon_find_your_wifi_text"), False)
+    if not no_wifi:
+        _set_visible(_find_by_logical_id(root, "welcome_to_pigeon_group"), False)
+        _set_visible(_find_by_logical_id(root, "main_box2_add_search_icon"), False)
     _set_visible(_find_by_logical_id(root, "main_network_picker"), state.show_network_picker)
     _finalize_wifi_onboarding_layers(root, state)
 
     if state.show_network_picker:
         _hide_wifi_onboarding_chrome_for_picker(root)
 
+    location_picker = bool(state.show_location_picker) and not no_wifi
+    # Panel chrome (search / results) — not used for the dual-location rename picker.
     panel_open = {
         1: False if no_wifi else bool(state.show_box1_panel),
         2: False
         if no_wifi or state.manual_device_entry is not None
-        else bool(
-            state.show_box2_panel
-            or state.box2_devices.active
-            or not state.box_has_saved_device(2)
-        ),
+        else bool(state.show_box2_panel or state.box2_devices.active),
         3: False
         if no_wifi or state.manual_device_entry is not None
-        else bool(
-            state.show_box3_panel
-            or state.box3_devices.active
-            or not state.box_has_saved_device(3)
-        ),
+        else bool(state.show_box3_panel or state.box3_devices.active),
     }
     for i, gid in enumerate(_BOX_LOCATION_GROUPS, start=1):
-        show_loc = panel_open.get(i, False)
-        if i in (2, 3):
-            panel = state._box_panel(i)
-            if panel.active:
-                show_loc = False
+        if location_picker:
+            show_loc = True
+        else:
+            show_loc = panel_open.get(i, False)
+            if i in (2, 3):
+                panel = state._box_panel(i)
+                if panel.active:
+                    show_loc = False
         _set_visible(_find_by_logical_id(root, gid), show_loc)
 
     parents = _parent_map(root)
@@ -3391,12 +4127,31 @@ def _apply_scene_layer_visibility(root: ET.Element, state: MainSettingsState) ->
         if not _is_box_chrome_logical(logical):
             continue
         box_num = _box_num_from_chrome_logical(logical)
-        _set_visible(el, bool(box_num and panel_open.get(box_num, False)))
+        # Dual-location picker: only location_group + container (search/results stay off).
+        _set_visible(el, False if location_picker else bool(box_num and panel_open.get(box_num, False)))
 
-    for box_num in (2, 3):
-        _apply_box_device_panel_layers(
-            root, state, box_num, theme=state.theme, focused=focused
-        )
+    if location_picker:
+        # Match Illustrator dual-location visibility: location + container on; device/search off.
+        for box_num in (1, 2, 3):
+            _set_visible(_find_by_logical_id(root, _BOX_DEVICE_GROUPS[box_num]), False)
+            _set_visible(_find_by_logical_id(root, f"main_box{box_num}_search_icon"), False)
+            _set_box_search_results_visible(root, box_num, False)
+            _hide_box_search_animation_layers(root, box_num)
+            _set_visible(_find_by_logical_id(root, _BOX_LOCATION_GROUPS[box_num - 1]), True)
+            _set_visible(
+                _find_by_logical_id(root, f"main_box{box_num}_container"),
+                True,
+            )
+    else:
+        for box_num in (2, 3):
+            _apply_box_device_panel_layers(
+                root, state, box_num, theme=state.theme, focused=focused
+            )
+        # Box1 has no LAN device search — keep its search spinner art permanently off.
+        _hide_box_search_animation_layers(root, 1)
+        # Restore host device chrome after leaving the location rename picker.
+        if not no_wifi and state.manual_device_entry is None:
+            _set_visible(_find_by_logical_id(root, "main_box1_device_group"), True)
 
 
 def _parse_svg_text_y_svg(el: ET.Element) -> float | None:
@@ -3635,11 +4390,13 @@ def _apply_box_result_text_style(
     selected: bool,
     theme: SettingsTheme,
 ) -> None:
+    """Selected row: black on white mini; unselected: white on dark column."""
     if el is None:
         return
+    fill = theme.deselected if selected else theme.selected
     targets = [el] if el.tag.endswith("text") else [n for n in el.iter() if n.tag.endswith("text")]
     for hit in targets:
-        _apply_contrast_paint(hit, selected=selected, theme=theme)
+        _set_paint(hit, fill=fill)
 
 
 def _find_box_scroll_arrow(root: ET.Element, box_num: int, direction: str) -> ET.Element | None:
@@ -3718,10 +4475,9 @@ def _apply_box_column_nav_fills(
         _apply_box_device_text_contrast(
             root, box_num=box_num, selected=selected, theme=theme
         )
-        if box_num in (2, 3):
-            _apply_box_location_text_contrast(
-                root, box_num=box_num, selected=selected, theme=theme
-            )
+        _apply_box_location_text_contrast(
+            root, box_num=box_num, selected=selected, theme=theme
+        )
 
 
 def _apply_dual_bar_nav_fills(
@@ -3768,22 +4524,73 @@ def _apply_box_device_panel_layers(
     if panel.results_locked:
         _set_visible(device_group, False)
         _set_visible(location_group, False)
-        _set_visible(search_icon, False)
+        _hide_box_search_animation_layers(root, box_num)
         _set_box_search_results_visible(root, box_num, True)
+
+        names = panel.devices
+        scroll = max(0, int(panel.scroll))
+        row_idx = max(0, min(_BOX_DEVICE_ROW_COUNT - 1, int(panel.row)))
+
+        for i in range(1, _BOX_DEVICE_ROW_COUNT + 1):
+            for kind in ("device", "ip", "mini"):
+                layer = _find_box_result_layer(root, box_num, kind, i)
+                if layer is not None:
+                    _set_visible(layer, False)
+
+        for i in range(1, _BOX_DEVICE_ROW_COUNT + 1):
+            idx = scroll + (i - 1)
+            has_data = 0 <= idx < len(names)
+            name, ip = names[idx] if has_data else ("", "")
+            show_ip = has_data and name not in (BOX_DEVICE_ROW_ENTER_IP, BOX_DEVICE_ROW_CANCEL)
+            selected_row = has_data and (i - 1) == row_idx
+
+            dev_el = _find_box_result_device_layer(root, box_num, i)
+            ip_el = _find_box_result_layer(root, box_num, "ip", i)
+            mini_el = _find_box_result_layer(root, box_num, "mini", i)
+
+            if dev_el is not None:
+                _set_visible(dev_el, has_data)
+                if has_data:
+                    display_name = name.upper() if name else ""
+                    _apply_box_result_row_text_layout(
+                        dev_el, ip_el if show_ip else None, name=display_name, ip=ip, row=i, box_num=box_num
+                    )
+                    _apply_box_result_text_style(dev_el, selected=selected_row, theme=theme)
+            if ip_el is not None:
+                _set_visible(ip_el, show_ip)
+                if show_ip:
+                    if dev_el is None:
+                        _apply_box_result_row_text_layout(
+                            None, ip_el, name=name, ip=ip, row=i, box_num=box_num
+                        )
+                    _apply_box_result_text_style(ip_el, selected=selected_row, theme=theme)
+            if mini_el is not None:
+                _set_visible(mini_el, selected_row)
+                if selected_row:
+                    _apply_button_fill(mini_el, selected=True, theme=theme)
+                    for hit in _find_all_by_logical_id(root, mini_el.get("id") or ""):
+                        _apply_button_fill(hit, selected=True, theme=theme)
+
+        for direction in ("up", "down"):
+            _set_visible(_find_box_scroll_arrow(root, box_num, direction), False)
+        return
     elif panel.active and panel.phase == "scanning":
         _set_visible(device_group, False)
         _set_visible(location_group, False)
         _set_box_search_results_visible(root, box_num, False)
         if search_icon is not None:
             _set_visible(search_icon, capture)
-            _apply_box_search_icon_variant(search_icon, selected=True, show_plus=False)
+            if capture:
+                _apply_box_search_icon_variant(search_icon, selected=True, show_plus=False)
             _hide_box_search_icon_vectors(search_icon)
+        else:
+            _hide_box_search_animation_layers(root, box_num)
         return
     elif has_device:
         show_loc = _box_shows_location_group(state, box_num, panel)
         _set_visible(device_group, True)
         _set_visible(location_group, show_loc)
-        _set_visible(search_icon, False)
+        _hide_box_search_animation_layers(root, box_num)
         _set_box_search_results_visible(root, box_num, False)
         return
     else:
@@ -3806,56 +4613,6 @@ def _apply_box_device_panel_layers(
             else:
                 _show_box_search_icon_vectors(search_icon)
         return
-
-    if not panel.results_locked:
-        return
-
-    names = panel.devices
-    scroll = max(0, int(panel.scroll))
-    row_idx = max(0, min(_BOX_DEVICE_ROW_COUNT - 1, int(panel.row)))
-
-    for i in range(1, _BOX_DEVICE_ROW_COUNT + 1):
-        for kind in ("device", "ip", "mini"):
-            layer = _find_box_result_layer(root, box_num, kind, i)
-            if layer is not None:
-                _set_visible(layer, False)
-
-    for i in range(1, _BOX_DEVICE_ROW_COUNT + 1):
-        idx = scroll + (i - 1)
-        has_data = 0 <= idx < len(names)
-        name, ip = names[idx] if has_data else ("", "")
-        show_ip = has_data and name != BOX_DEVICE_ROW_ENTER_IP
-        selected_row = has_data and (i - 1) == row_idx
-
-        dev_el = _find_box_result_device_layer(root, box_num, i)
-        ip_el = _find_box_result_layer(root, box_num, "ip", i)
-        mini_el = _find_box_result_layer(root, box_num, "mini", i)
-
-        if dev_el is not None:
-            _set_visible(dev_el, has_data)
-            if has_data:
-                display_name = name.upper() if name else ""
-                _apply_box_result_row_text_layout(
-                    dev_el, ip_el if show_ip else None, name=display_name, ip=ip, row=i, box_num=box_num
-                )
-                _apply_box_result_text_style(dev_el, selected=selected_row, theme=theme)
-        if ip_el is not None:
-            _set_visible(ip_el, show_ip)
-            if show_ip:
-                if dev_el is None:
-                    _apply_box_result_row_text_layout(
-                        None, ip_el, name=name, ip=ip, row=i, box_num=box_num
-                    )
-                _apply_box_result_text_style(ip_el, selected=selected_row, theme=theme)
-        if mini_el is not None:
-            _set_visible(mini_el, selected_row)
-            if selected_row:
-                _apply_button_fill(mini_el, selected=True, theme=theme)
-                for hit in _find_all_by_logical_id(root, mini_el.get("id") or ""):
-                    _apply_button_fill(hit, selected=True, theme=theme)
-
-    for direction in ("up", "down"):
-        _set_visible(_find_box_scroll_arrow(root, box_num, direction), False)
 
 
 def _box_button_fill_selected(state: MainSettingsState, box_num: int, focused: str) -> bool:
@@ -3937,6 +4694,7 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
     _apply_box1_host_device_labels(root)
     for box_num in (2, 3):
         _apply_box_device_group_labels(root, state, box_num)
+    for box_num in (1, 2, 3):
         _apply_box_location_group_labels(root, state, box_num)
 
     # Apply theme accent globally to *_accent layers (selection does not change accent).
@@ -3948,33 +4706,27 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
         if logical.endswith("_accent") or re.search(r"_accent(_|$)", logical):
             _apply_accent_paint(el, theme.accent)
 
-    # Dynamic text stubs (overlays paint active keyboard fields).
     entry = state.manual_device_entry
+    pairing_pin = state.box_pairing is not None and kb_target == "pin"
+    wifi_logout_kb = state.keyboard_open and kb_target == "wifi_logout"
     if entry is not None:
-        loc_el = _find_by_logical_id(root, "main_dual_location_text")
-        net_el = _find_by_logical_id(root, "main_dual_network_name_text")
-        loc_label = "DEVICE" if entry.step == "ip" else (entry.name or "DEVICE")
-        net_label = "ENTER IP" if entry.step == "ip" else (entry.ip or "")
-        _set_text_content(loc_el, loc_label)
-        _set_text_content(net_el, net_label)
-        loc_x0, loc_x1 = _dual_location_text_bounds_svg(root)
-        baseline = float(_TEXT_ENTRY_FIELDS["location"]["baseline_y_svg"])
-        for el in (loc_el, net_el):
-            if el is None:
-                continue
-            _set_visible(el, True)
-            cx = (loc_x0 + loc_x1) * 0.5 if el is loc_el else (
-                (_DUAL_NETWORK_TEXT_X0_SVG + _DUAL_NETWORK_TEXT_X1_SVG) * 0.5
-            )
-            for node in el.iter():
-                if not node.tag.endswith("text"):
-                    continue
-                _set_svg_text_horiz_centered(node, cx, baseline)
-                _set_paint(node, fill="#808080")
+        for lid in _DUAL_LOCATION_ICON_IDS:
+            _set_visible(_find_by_logical_id(root, lid), False)
+        _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
+    if pairing_pin or wifi_logout_kb:
+        for lid in _DUAL_LOCATION_ICON_IDS:
+            _set_visible(_find_by_logical_id(root, lid), False)
+        _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
+        _set_visible(_find_by_logical_id(root, "welcome_to_pigeon_group"), False)
+        _set_visible(_find_by_logical_id(root, "main_box2_add_search_icon"), False)
+        search_group = _wifi_onboarding_search_group(root)
+        if search_group is not None:
+            _set_visible(search_group, False)
     hide_loc_svg = (
-        (state.keyboard_open and kb_target in ("location", "network", "device_name"))
+        (state.keyboard_open and kb_target in ("location", "network", "device_name", "pin", "wifi_logout"))
         or state.wifi_connecting
         or entry is not None
+        or pairing_pin
     )
     if hide_loc_svg:
         _set_visible(_find_by_logical_id(root, "main_dual_location_text"), False)
@@ -3989,25 +4741,36 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
                     _set_svg_text_horiz_centered(node, (loc_x0 + loc_x1) * 0.5, baseline)
         _set_visible(loc_el, True)
     hide_net_svg = (
-        (state.keyboard_open and kb_target in ("network", "device_ip"))
+        (state.keyboard_open and kb_target in ("network", "device_ip", "pin"))
         or state.wifi_connecting
         or entry is not None
+        or pairing_pin
     )
     if hide_net_svg:
         _set_visible(_find_by_logical_id(root, "main_dual_network_name_text"), False)
     else:
         net_el = _find_by_logical_id(root, "main_dual_network_name_text")
         net_text = _network_field_text(state)
-        if net_text is not None:
+        if net_text == "CONNECT TO WIFI":
+            _set_visible(net_el, False)
+        elif net_text is not None:
             display = net_text.upper() if not state.wifi_configured else net_text
             _set_text_content(net_el, display)
-            if not state.wifi_configured:
-                cx = (_DUAL_NETWORK_TEXT_X0_SVG + _DUAL_NETWORK_TEXT_X1_SVG) * 0.5
-                baseline = float(_TEXT_ENTRY_FIELDS["location"]["baseline_y_svg"])
-                for node in net_el.iter():
-                    if node.tag.endswith("text"):
-                        _set_svg_text_horiz_centered(node, cx, baseline)
-        _set_visible(net_el, net_text is not None)
+            cx = (_DUAL_NETWORK_TEXT_X0_SVG + _DUAL_NETWORK_TEXT_X1_SVG) * 0.5
+            baseline = float(_TEXT_ENTRY_FIELDS["location"]["baseline_y_svg"])
+            for node in net_el.iter():
+                if node.tag.endswith("text"):
+                    fit_size = _network_field_font_size_svg(display)
+                    if fit_size is not None:
+                        _set_svg_text_font_size_px(node, _field_font_size_px(fit_size))
+                    _set_svg_text_horiz_centered(node, cx, baseline)
+                    if state.wifi_configured and display == "CONNECTED":
+                        _set_paint(node, fill="#FFFFFF")
+                    elif not state.wifi_configured:
+                        _set_paint(node, fill="#808080")
+            _set_visible(net_el, True)
+        else:
+            _set_visible(net_el, False)
     for ver_id in ("text_pigeonVersion", "main_pigeon_version_text", "pigeon_version_text"):
         ver_el = _find_by_logical_id(root, ver_id)
         if ver_el is not None:
@@ -4153,8 +4916,9 @@ def render_main_settings_bgra(
     _draw_wifi_onboarding_search_overlays(
         bgra, st, onboarding_arc_specs, onboarding_triangle_specs
     )
-    if st.keyboard_open or st.wifi_connecting:
+    if st.keyboard_open or st.wifi_connecting or st.manual_device_entry is not None:
         _draw_text_entry_content(bgra, st)
+    _draw_dual_bar_network_prompt(bgra, st)
     return bgra
 
 
@@ -4204,6 +4968,10 @@ class MainSettingsWidget:
         self._box_scan_result: dict[int, tuple[tuple[tuple[str, str], ...], tuple[dict[str, str], ...]] | None] = {}
         self._box_scan_cache: dict[int, tuple[tuple[tuple[str, str], ...], tuple[dict[str, str], ...], float]] = {}
         self._box_search_glyph_cache: dict[int, np.ndarray | None] = {}
+        self._wifi_search_rotated_cache: tuple[np.ndarray, ...] | None = None
+        self._box_search_rotated_cache: dict[int, tuple[np.ndarray, ...]] = {}
+        self._box_scan_pending: set[int] = set()
+        self._pre_scan_main_bgra: dict[int, np.ndarray] = {}
         self._last_tick_mono: float = time.monotonic()
 
     @property
@@ -4264,6 +5032,10 @@ class MainSettingsWidget:
             bool(st.show_box1_panel),
             bool(st.show_box2_panel),
             bool(st.show_box3_panel),
+            bool(st.show_location_picker),
+            tuple(st.location_slots),
+            str(st.renaming_location_id),
+            int(st.renaming_location_slot),
             tuple(st.box2_devices.devices),
             st.box2_devices.phase,
             bool(st.box2_devices.scanning),
@@ -4320,6 +5092,8 @@ class MainSettingsWidget:
         return
 
     def _any_box_scanning(self) -> bool:
+        if self._state.keyboard_open:
+            return False
         return bool(self._state.box2_devices.scanning or self._state.box3_devices.scanning)
 
     def tick(self) -> None:
@@ -4342,26 +5116,40 @@ class MainSettingsWidget:
                     self._wifi_scan_cache = (networks, now)
                 self._wifi_scan_result = None
                 self._wifi_search_glyph_cache = None
+                self._wifi_search_rotated_cache = None
                 invalidated = True
         for box_num in (2, 3):
             panel = st._box_panel(box_num)
-            if not panel.scanning:
+            pending = box_num in self._box_scan_pending
+            if panel.scanning:
+                panel.scan_angle_deg = (panel.scan_angle_deg + _BOX_SCAN_ROTATION_DPS * dt) % 360.0
+            if not panel.scanning and not pending:
                 continue
-            panel.scan_angle_deg = (panel.scan_angle_deg + _BOX_SCAN_ROTATION_DPS * dt) % 360.0
             elapsed = now - panel.scan_started_mono
             result = self._box_scan_result.get(box_num)
             result_ready = result is not None
             timed_out = elapsed >= _BOX_SCAN_MAX_DURATION_S
             if result_ready or timed_out:
                 devices = result if result is not None else ()
-                st.complete_box_device_scan(box_num, devices)
-                if devices:
-                    self._box_scan_cache[box_num] = (*devices, now)
                 self._box_scan_result.pop(box_num, None)
-                self._box_search_glyph_cache.pop(box_num, None)
+                self._box_scan_pending.discard(box_num)
+                self._clear_box_search_spinner_cache(box_num)
+                if panel.scanning:
+                    st.complete_box_device_scan(box_num, devices)
+                    if devices:
+                        self._box_scan_cache[box_num] = (*devices, now)
+                    self._pre_scan_main_bgra.pop(box_num, None)
+                elif devices:
+                    # UI was aborted mid-scan — keep results for the next open.
+                    self._box_scan_cache[box_num] = (*devices, now)
                 invalidated = True
+                self.invalidate()
         if invalidated and not (st.wifi_scanning or self._any_box_scanning()):
             self.invalidate()
+
+    def _clear_box_search_spinner_cache(self, box_num: int) -> None:
+        self._box_search_glyph_cache.pop(box_num, None)
+        self._box_search_rotated_cache.pop(box_num, None)
 
     def _search_glyph_center_px(self) -> tuple[int, int]:
         return _svg_to_px(_WIFI_SEARCH_CENTER_SVG[0], _WIFI_SEARCH_CENTER_SVG[1])
@@ -4385,23 +5173,24 @@ class MainSettingsWidget:
         y0 = max(0, cy_px - r)
         patch = np.zeros((2 * r, 2 * r, 4), dtype=np.uint8)
         _draw_onboarding_search_arc_overlays_on_patch(
-            patch, arc_specs, origin_x0=x0, origin_y0=y0
+            patch, arc_specs, origin_x0=x0, origin_y0=y0, color_bgr=_WIFI_SEARCH_GLYPH_BGR
         )
         _draw_triangle_specs_on_patch(
             patch,
             triangle_specs,
             origin_x0=x0,
             origin_y0=y0,
-            color_bgr=_SEARCH_GLYPH_BGR,
+            color_bgr=_WIFI_SEARCH_GLYPH_BGR,
         )
         return _mask_wifi_search_glyph_patch(patch)
 
     def _ensure_wifi_search_glyph_cache(self) -> None:
-        if self._wifi_search_glyph_cache is not None:
+        if self._wifi_search_rotated_cache is not None:
             return
         patch = self._build_wifi_search_glyph_patch()
         if patch is not None:
             self._wifi_search_glyph_cache = patch
+            self._wifi_search_rotated_cache = _precompute_rotated_patches(patch)
 
     def _cached_wifi_scan(self) -> tuple[str, ...] | None:
         cached = self._wifi_scan_cache
@@ -4457,7 +5246,11 @@ class MainSettingsWidget:
         st.wifi_networks = ()
         st.spinner_glyph_capture = True
         try:
-            self._wifi_search_glyph_cache = self._build_wifi_search_glyph_patch()
+            patch = self._build_wifi_search_glyph_patch()
+            self._wifi_search_glyph_cache = patch
+            self._wifi_search_rotated_cache = (
+                _precompute_rotated_patches(patch) if patch is not None else None
+            )
         finally:
             st.spinner_glyph_capture = False
         st.start_wifi_scan()
@@ -4470,6 +5263,9 @@ class MainSettingsWidget:
 
     def _start_box_device_scan(self, box_num: int) -> None:
         st = self._state
+        # Snapshot the idle UI so abort can restore it without a mid-spin freeze frame.
+        if self._cached_main_bgra is not None:
+            self._pre_scan_main_bgra[box_num] = self._cached_main_bgra.copy()
         panel = st._box_panel(box_num)
         panel.active = True
         panel.phase = "scanning"
@@ -4479,15 +5275,39 @@ class MainSettingsWidget:
             st.show_box3_panel = True
         st.spinner_glyph_capture = True
         try:
-            self._box_search_glyph_cache[box_num] = self._build_box_search_glyph_patch(box_num)
+            patch = self._build_box_search_glyph_patch(box_num)
+            self._box_search_glyph_cache[box_num] = patch
+            if patch is not None:
+                self._box_search_rotated_cache[box_num] = _precompute_rotated_patches(patch)
+            else:
+                self._box_search_rotated_cache.pop(box_num, None)
         finally:
             st.spinner_glyph_capture = False
         st.start_box_device_scan(box_num)
         cached = self._cached_box_scan(box_num)
         if cached is not None:
             self._box_scan_result[box_num] = cached
+            self._box_scan_pending.discard(box_num)
         else:
+            self._box_scan_pending.add(box_num)
             self._start_box_device_scan_async(box_num)
+
+    def _abort_box_device_scan_ui(self, box_num: int) -> bool:
+        """Dismiss the spinner immediately; restore prior device/idle state."""
+        st = self._state
+        self._clear_box_search_spinner_cache(box_num)
+        if not st.abort_box_device_scan_ui(box_num):
+            return False
+        self._pre_scan_main_bgra.pop(box_num, None)
+        # Force a full re-render from restored state (not a stale mid-scan frame).
+        self._cached_kb_bgra = None
+        self._cached_kb_sig = None
+        self._cached_bgra = None
+        self._cached_sig = None
+        self._cached_main_bgra = None
+        self._cached_main_sig = None
+        self.invalidate()
+        return True
 
     def _box_search_center_px(self, box_num: int) -> tuple[int, int]:
         cx, cy = box_search_center_svg(box_num)
@@ -4501,9 +5321,9 @@ class MainSettingsWidget:
         if not path.is_file():
             return None
         root = _svg_tree_from_path(path)
-        star_specs = _box_search_star_specs(_discover_star_masked_circles(root), box_num)
+        arc_specs = _discover_box_search_arc_specs(root, box_num)
         triangle_specs = _discover_box_search_triangle_specs(root, box_num)
-        if not star_specs and not triangle_specs:
+        if not arc_specs and not triangle_specs:
             return None
         cx_px, cy_px = self._box_search_center_px(box_num)
         r = _WIFI_SEARCH_PATCH_RADIUS_PX
@@ -4511,15 +5331,16 @@ class MainSettingsWidget:
         y0 = max(0, cy_px - r)
         patch = np.zeros((2 * r, 2 * r, 4), dtype=np.uint8)
         color = _hex_to_bgr("#202020")
-        for spec in star_specs:
-            _draw_star_spec_on_patch(patch, spec, origin_x0=x0, origin_y0=y0, color_bgr=color)
+        _draw_onboarding_search_arc_overlays_on_patch(
+            patch, arc_specs, origin_x0=x0, origin_y0=y0
+        )
         _draw_triangle_specs_on_patch(
             patch, triangle_specs, origin_x0=x0, origin_y0=y0, color_bgr=color
         )
         return _mask_wifi_search_glyph_patch(patch)
 
     def _ensure_box_search_glyph_cache(self, box_num: int) -> None:
-        if self._box_search_glyph_cache.get(box_num) is not None:
+        if box_num in self._box_search_rotated_cache:
             return
         st = self._state
         st.spinner_glyph_capture = True
@@ -4529,101 +5350,34 @@ class MainSettingsWidget:
             st.spinner_glyph_capture = False
         if patch is not None:
             self._box_search_glyph_cache[box_num] = patch
+            self._box_search_rotated_cache[box_num] = _precompute_rotated_patches(patch)
 
     def _draw_box_search_spinner(self, frame: np.ndarray, box_num: int) -> None:
-        patch = self._box_search_glyph_cache.get(box_num)
-        if patch is None:
+        rotated_frames = self._box_search_rotated_cache.get(box_num)
+        if not rotated_frames:
             return
         panel = self._state._box_panel(box_num)
         cx, cy = self._box_search_center_px(box_num)
-        ph, pw = patch.shape[:2]
-        x0 = cx - pw // 2
-        y0 = cy - ph // 2
-        matrix = cv2.getRotationMatrix2D((pw * 0.5, ph * 0.5), panel.scan_angle_deg, 1.0)
-        rotated = cv2.warpAffine(
-            patch,
-            matrix,
-            (pw, ph),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0, 0),
-        )
-        x1 = x0 + pw
-        y1 = y0 + ph
-        fx0 = max(0, x0)
-        fy0 = max(0, y0)
-        fx1 = min(frame.shape[1], x1)
-        fy1 = min(frame.shape[0], y1)
-        if fx1 <= fx0 or fy1 <= fy0:
+        patch = _rotated_patch_for_angle(rotated_frames, panel.scan_angle_deg)
+        _blit_spinner_patch(frame, patch, cx=cx, cy=cy)
+
+    def _draw_wifi_search_spinner(self, frame: np.ndarray) -> None:
+        rotated_frames = self._wifi_search_rotated_cache
+        if not rotated_frames:
             return
-        sx0 = fx0 - x0
-        sy0 = fy0 - y0
-        sx1 = sx0 + (fx1 - fx0)
-        sy1 = sy0 + (fy1 - fy0)
-        region = frame[fy0:fy1, fx0:fx1]
-        rotated = rotated[sy0:sy1, sx0:sx1]
-        alpha = rotated[:, :, 3:4].astype(np.float32) / 255.0
-        fg = rotated[:, :, :3].astype(np.float32)
-        bg = region[:, :, :3].astype(np.float32)
-        blended = np.clip(fg * alpha + bg * (1.0 - alpha), 0, 255).astype(np.uint8)
-        out_a = np.clip(
-            alpha * 255.0 + (1.0 - alpha) * region[:, :, 3:4].astype(np.float32),
-            0,
-            255,
-        ).astype(np.uint8)
-        region[:, :, :3] = blended
-        region[:, :, 3:4] = out_a
+        cx, cy = self._search_glyph_center_px()
+        patch = _rotated_patch_for_angle(rotated_frames, self._state.wifi_scan_angle_deg)
+        _blit_spinner_patch(frame, patch, cx=cx, cy=cy)
 
     def _apply_box_search_overlays(self, frame: np.ndarray) -> None:
+        if self._state.manual_device_entry is not None:
+            return
         for box_num in (2, 3):
             panel = self._state._box_panel(box_num)
             if not panel.scanning:
                 continue
             self._ensure_box_search_glyph_cache(box_num)
             self._draw_box_search_spinner(frame, box_num)
-
-    def _draw_wifi_search_spinner(self, frame: np.ndarray) -> None:
-        if self._wifi_search_glyph_cache is None:
-            return
-        cx, cy = self._search_glyph_center_px()
-        patch = self._wifi_search_glyph_cache
-        ph, pw = patch.shape[:2]
-        x0 = cx - pw // 2
-        y0 = cy - ph // 2
-        matrix = cv2.getRotationMatrix2D((pw * 0.5, ph * 0.5), self._state.wifi_scan_angle_deg, 1.0)
-        rotated = cv2.warpAffine(
-            patch,
-            matrix,
-            (pw, ph),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0, 0),
-        )
-        x1 = x0 + pw
-        y1 = y0 + ph
-        fx0 = max(0, x0)
-        fy0 = max(0, y0)
-        fx1 = min(frame.shape[1], x1)
-        fy1 = min(frame.shape[0], y1)
-        if fx1 <= fx0 or fy1 <= fy0:
-            return
-        sx0 = fx0 - x0
-        sy0 = fy0 - y0
-        sx1 = sx0 + (fx1 - fx0)
-        sy1 = sy0 + (fy1 - fy0)
-        region = frame[fy0:fy1, fx0:fx1]
-        rotated = rotated[sy0:sy1, sx0:sx1]
-        alpha = rotated[:, :, 3:4].astype(np.float32) / 255.0
-        fg = rotated[:, :, :3].astype(np.float32)
-        bg = region[:, :, :3].astype(np.float32)
-        blended = np.clip(fg * alpha + bg * (1.0 - alpha), 0, 255).astype(np.uint8)
-        out_a = np.clip(
-            alpha * 255.0 + (1.0 - alpha) * region[:, :, 3:4].astype(np.float32),
-            0,
-            255,
-        ).astype(np.uint8)
-        region[:, :, :3] = blended
-        region[:, :, 3:4] = out_a
 
     def _apply_wifi_search_overlay(self, frame: np.ndarray) -> None:
         st = self._state
@@ -4661,6 +5415,7 @@ class MainSettingsWidget:
                     box_num = int(st.manual_device_entry.box_num)
                     st.manual_device_entry = None
                     st.reset_box_device_panel(box_num)
+                    self._clear_box_search_spinner_cache(box_num)
                     st.ensure_focus_ring()
                 if st.box_pairing is not None:
                     try:
@@ -4672,8 +5427,31 @@ class MainSettingsWidget:
                     except Exception:
                         pass
                     st.clear_box_pairing()
+                if st.renaming_location_id or st.show_location_picker:
+                    st.renaming_location_id = ""
+                    st.renaming_location_slot = 0
+                    try:
+                        from pigeon.app_state import read_current_location_name
+
+                        st.location_name = read_current_location_name()
+                    except Exception:
+                        pass
+                    if st.show_location_picker:
+                        st.ensure_focus_ring()
                 self.invalidate()
                 return "keyboard_cancel"
+            if result == "yes":
+                st.close_keyboard(commit=False)
+                self.invalidate()
+                return "wifi_logout:yes"
+            if result == "no":
+                st.close_keyboard(commit=False)
+                st.ensure_focus_ring()
+                btn = "main_dual_network_button"
+                if btn in st.focus_ring:
+                    st.focus_index = st.focus_ring.index(btn)
+                self.invalidate()
+                return "wifi_logout:no"
             if result == "go":
                 kb = st.keyboard
                 pin_buf = ""
@@ -4696,9 +5474,9 @@ class MainSettingsWidget:
                     entry.ip = str(getattr(kb, "buffer", "") or "").strip()
                     entry.step = "name"
                     st.close_keyboard(commit=False)
-                    st.open_keyboard("device_name", assets_dir=self._assets_dir)
+                    st.ensure_focus_ring()
                     self.invalidate()
-                    return "keyboard_open:device_name"
+                    return "manual_device_ip_done"
                 if kb is not None and kb_target == "device_name":
                     entry = st.manual_device_entry
                     if entry is None:
@@ -4731,25 +5509,44 @@ class MainSettingsWidget:
 
         focused = st.focused_id
         action = _ACTIVATE_ACTIONS.get(focused, f"activate:{focused}")
-        if action == "focus_location":
-            st.open_keyboard(
-                "location",
-                assets_dir=self._assets_dir,
-                trigger_button="main_dual_location_button",
-            )
+        if action == "exit" and st.show_location_picker:
+            st.exit_location_picker()
+            try:
+                from pigeon.app_state import read_current_location_name
+
+                st.location_name = read_current_location_name()
+            except Exception:
+                pass
             self.invalidate()
-            return "keyboard_open:location"
+            return "location_picker_exit"
+        if action == "focus_location":
+            entry = st.manual_device_entry
+            if entry is not None and entry.step == "name" and str(entry.ip or "").strip():
+                st.open_keyboard("device_name", assets_dir=self._assets_dir)
+                self.invalidate()
+                return "keyboard_open:device_name"
+            if st.show_location_picker:
+                st.exit_location_picker()
+                try:
+                    from pigeon.app_state import read_current_location_name
+
+                    st.location_name = read_current_location_name()
+                except Exception:
+                    pass
+                self.invalidate()
+                return "location_picker_exit"
+            st.enter_location_picker()
+            self.invalidate()
+            return "location_picker"
         if action == "focus_network":
+            if st.show_location_picker:
+                st.exit_location_picker()
             if not st.wifi_configured:
                 self._begin_wifi_scan()
                 return "wifi_scan_start"
-            st.open_keyboard(
-                "network",
-                assets_dir=self._assets_dir,
-                trigger_button="main_dual_network_button",
-            )
+            st.open_keyboard("wifi_logout", assets_dir=self._assets_dir)
             self.invalidate()
-            return "keyboard_open:network"
+            return "keyboard_open:wifi_logout"
         if action == "wifi_search":
             self._begin_wifi_scan()
             return "wifi_scan_start"
@@ -4760,6 +5557,7 @@ class MainSettingsWidget:
             if ssid:
                 st.select_wifi_network(ssid)
                 self._wifi_search_glyph_cache = None
+                self._wifi_search_rotated_cache = None
                 st.open_keyboard(
                     "network",
                     assets_dir=self._assets_dir,
@@ -4769,12 +5567,34 @@ class MainSettingsWidget:
                 return f"wifi_selected:{ssid}"
             return action
         if action == "focus_box1":
+            if st.show_location_picker:
+                if st.begin_rename_location_slot(1):
+                    st.open_keyboard(
+                        "location",
+                        assets_dir=self._assets_dir,
+                        trigger_button="main_dual_location_button",
+                    )
+                    self.invalidate()
+                    return "keyboard_open:location"
+                return action
             st.enter_pigeon_settings()
             self.invalidate()
             return "pigeon_settings"
-        if action == "focus_box2":
-            if st.box2_devices.results_locked:
+        if action in ("pick_box2_device", "focus_box2"):
+            if st.show_location_picker and action == "focus_box2":
+                if st.begin_rename_location_slot(2):
+                    st.open_keyboard(
+                        "location",
+                        assets_dir=self._assets_dir,
+                        trigger_button="main_dual_location_button",
+                    )
+                    self.invalidate()
+                    return "keyboard_open:location"
+                return action
+            if st.box2_devices.results_locked or action == "pick_box2_device":
                 row = st.pick_box_device(2)
+                if row is None:
+                    self._clear_box_search_spinner_cache(2)
                 if st.manual_device_entry is not None:
                     st.open_keyboard("device_ip", assets_dir=self._assets_dir)
                     self.invalidate()
@@ -4785,14 +5605,29 @@ class MainSettingsWidget:
                     return "box2_pair_start"
                 self.invalidate()
                 return action
+            if st.box2_devices.scanning:
+                self._abort_box_device_scan_ui(2)
+                return "box2_scan_abort"
             if st.box2_devices.phase != "scanning":
                 self._start_box_device_scan(2)
                 self.invalidate()
                 return "box2_scan_start"
             return action
-        if action == "focus_box3":
-            if st.box3_devices.results_locked:
+        if action in ("pick_box3_device", "focus_box3"):
+            if st.show_location_picker and action == "focus_box3":
+                if st.begin_rename_location_slot(3):
+                    st.open_keyboard(
+                        "location",
+                        assets_dir=self._assets_dir,
+                        trigger_button="main_dual_location_button",
+                    )
+                    self.invalidate()
+                    return "keyboard_open:location"
+                return action
+            if st.box3_devices.results_locked or action == "pick_box3_device":
                 row = st.pick_box_device(3)
+                if row is None:
+                    self._clear_box_search_spinner_cache(3)
                 if st.manual_device_entry is not None:
                     st.open_keyboard("device_ip", assets_dir=self._assets_dir)
                     self.invalidate()
@@ -4803,6 +5638,9 @@ class MainSettingsWidget:
                     return "box3_pair_start"
                 self.invalidate()
                 return action
+            if st.box3_devices.scanning:
+                self._abort_box_device_scan_ui(3)
+                return "box3_scan_abort"
             if st.box3_devices.phase != "scanning":
                 self._start_box_device_scan(3)
                 self.invalidate()

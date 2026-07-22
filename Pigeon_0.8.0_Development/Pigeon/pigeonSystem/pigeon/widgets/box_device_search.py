@@ -10,7 +10,7 @@ _BOX_SEARCH_CENTERS_SVG: dict[int, tuple[float, float]] = {
     3: (644.32, 309.323),
 }
 _BOX_SCAN_MAX_DURATION_S = 25.0
-_BOX_SCAN_ROTATION_DPS = 720.0
+_BOX_SCAN_ROTATION_DPS = 540.0
 
 BOX_DEVICE_ROW_CANCEL = "CANCEL"
 BOX_DEVICE_ROW_ENTER_IP = "ENTER IP"
@@ -45,7 +45,7 @@ class BoxDevicePanelState:
 
     @property
     def results_locked(self) -> bool:
-        return self.active and self.phase == "results" and self.picked is None
+        return self.active and self.phase == "results"
 
     def max_scroll(self) -> int:
         return max(0, len(self.devices) - _BOX_DEVICE_ROW_COUNT)
