@@ -12,6 +12,7 @@ set -euo pipefail
 REPO="${PIGEON_UPDATE_GITHUB_USER:-jasonhenle}/${PIGEON_UPDATE_GITHUB_REPO:-pigeon_0.7.x}"
 BRANCH="${PIGEON_UPDATE_GITHUB_BRANCH:-main}"
 ZIP_URL="https://codeload.github.com/${REPO}/zip/refs/heads/${BRANCH}"
+APP_REL="Pigeon_0.8.0_Development/Pigeon"
 
 INSTALL_DIR="${1:-}"
 if [[ -z "${INSTALL_DIR}" ]]; then
@@ -48,35 +49,42 @@ WORKDIR="$(mktemp -d /tmp/pigeon-update.XXXXXX)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
 curl -fsSL -o "${WORKDIR}/pigeon.zip" "${ZIP_URL}"
-python3 - <<'PY' "${WORKDIR}/pigeon.zip" "${WORKDIR}/extract"
+python3 - <<'PY' "${WORKDIR}/pigeon.zip" "${WORKDIR}/extract" "${APP_REL}"
 import sys
 import zipfile
 from pathlib import Path
 
-zip_path, out = Path(sys.argv[1]), Path(sys.argv[2])
+zip_path, out, app_rel = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+marker = app_rel.rstrip("/") + "/"
 out.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(zip_path) as zf:
-    zf.extractall(out)
+    for info in zf.infolist():
+        name = info.filename
+        if marker not in name:
+            continue
+        target = out / name
+        if info.is_dir() or name.endswith("/"):
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(info) as src, open(target, "wb") as dst:
+            dst.write(src.read())
 PY
 
+EXTRACT="${WORKDIR}/extract"
 SRC=""
-for d in "${WORKDIR}/extract"/*; do
-  if [[ -d "${d}/pigeonSystem" ]]; then
-    SRC="${d}"
+for candidate in \
+  "${EXTRACT}"/*/"${APP_REL}" \
+  "${EXTRACT}/${APP_REL}" \
+  "${EXTRACT}"/*; do
+  if [[ -f "${candidate}/pigeonSystem/pigeon_0_8.py" ]]; then
+    SRC="${candidate}"
     break
-  fi
-  if [[ -d "${d}" ]]; then
-    for sub in "${d}"/*; do
-      if [[ -f "${sub}/pigeonSystem/pigeon_0_8.py" || -f "${sub}/pigeonSystem/pigeon_0_6.py" ]]; then
-        SRC="${sub}"
-        break 2
-      fi
-    done
   fi
 done
 
 if [[ -z "${SRC}" || ! -d "${SRC}/pigeonSystem" ]]; then
-  echo "pigeon: could not find app folder inside GitHub zip." >&2
+  echo "pigeon: could not find ${APP_REL} inside GitHub zip." >&2
   exit 1
 fi
 
