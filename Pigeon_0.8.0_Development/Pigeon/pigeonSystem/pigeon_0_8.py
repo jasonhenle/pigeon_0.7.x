@@ -411,6 +411,8 @@ LANDING_DIM_BRIGHTNESS = 0.78  # Space-bar pulse “off” — still readable vs
 STARTUP_PIGEON_WORDMARK_MAX_S = 5.0
 # After splash: optional startup transition timing (no mic EQ).
 SKIP_POST_SPLASH_STARTUP_TRANSITION = True
+# After splash lifts: clock digits ease up from black before now-playing chrome.
+CLOCK_STARTUP_FADE_S = 1.4
 # If True and a saved TMDb backdrop exists, switch to it when this timer elapses.
 STARTUP_AUTO_RESTORE_SAVED_BACKDROP = os.environ.get("PIGEON_STARTUP_RESTORE_BACKDROP", "").strip().lower() in (
     "1",
@@ -2302,7 +2304,23 @@ def main() -> int:
                 return DisplayView.ONE
             return display_view_holder[0]
 
+        def _clock_startup_intro_opacity(now: float) -> float | None:
+            """Smooth 0→1 while the post-splash clock is the first reveal; else ``None``."""
+            t0 = post_splash_mono[0]
+            if t0 is None or startup_ph[0] is not None:
+                return None
+            if clock_saver_composite_bgra is None:
+                return None
+            elapsed = now - float(t0)
+            if elapsed >= float(CLOCK_STARTUP_FADE_S):
+                return None
+            u = max(0.0, min(1.0, elapsed / max(1e-6, float(CLOCK_STARTUP_FADE_S))))
+            return u * u * (3.0 - 2.0 * u)
+
         def _clock_saver_layer_opacity(now: float) -> float:
+            intro = _clock_startup_intro_opacity(now)
+            if intro is not None:
+                return float(intro)
             if now < clock_saver_peek_until_mono[0]:
                 return 1.0
             # View 3: dedicated clock layout — saver text stays at full opacity (not idle-dimmed).
@@ -2333,6 +2351,8 @@ def main() -> int:
             """True when the large saver time/date patches should be drawn (idle on most views; always on view 3)."""
             if clock_saver_composite_bgra is None:
                 return False
+            if _clock_startup_intro_opacity(now) is not None:
+                return True
             if dev_phase != DevPhase.OFF:
                 return False
             if not scene_enabled:
@@ -3664,7 +3684,32 @@ def main() -> int:
                 cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
                 canvas_np = np.zeros((int(DESIGN_H), int(DESIGN_W), 3), dtype=np.uint8)
                 canvas_np[:] = (0, 0, 0)
-                if dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
+                now_cs = time.monotonic()
+                intro_op = _clock_startup_intro_opacity(now_cs)
+                # Splash unveil stays black; after splash the clock fades up before chrome.
+                if startup_ph[0] is not None:
+                    pass
+                elif intro_op is not None and clock_saver_composite_bgra is not None and alpha_blend_bgra_over_bgr is not None:
+                    acc_cs = (
+                        tuple(status_bar_widget.accent_bgr)
+                        if status_bar_widget is not None
+                        else None
+                    )
+                    (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                        shadow_bgr=acc_cs,
+                        layer_opacity=float(intro_op),
+                        time_layer_opacity=float(intro_op),
+                        date_layer_opacity=float(intro_op),
+                        date_anchor_row=CLOCK_ANCHOR_ROW,
+                        date_anchor_col=CLOCK_ANCHOR_COL,
+                    )
+                    for cs_bgra, (sx, sy, sw, sh) in (
+                        (date_bgra, d_rect),
+                        (time_bgra, t_rect),
+                    ):
+                        roi2 = canvas_np[sy : sy + sh, sx : sx + sw]
+                        roi2[:] = alpha_blend_bgra_over_bgr(roi2, cs_bgra)
+                elif dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
                     main_settings_widget.render(canvas_np)
                 else:
                     _sync_now_playing_screen_state()
@@ -3717,18 +3762,23 @@ def main() -> int:
                     base = fit.scale_and_crop(lit)
             now_cs = time.monotonic()
             cs = _clock_saver_for_compose(now_cs)
+            intro_op = _clock_startup_intro_opacity(now_cs)
             bdim = _clock_saver_backdrop_brightness(now_cs)
-            if bdim < 1.0 - 1e-6:
+            if intro_op is not None:
+                base[:] = 0
+            elif bdim < 1.0 - 1e-6:
                 base = (base.astype(np.float32) * bdim).astype(np.uint8)
             # Composite order: clock saver / small clock / overlays sit above
             # the mic/EQ visualizer, which in turn sits above the bottom
             # gradient (so the gradient never dims the EQ bars). The viz is
             # blended per-branch below after the gradient call.
-            _blend_top_gradient_fast(base, cap_w, cap_h)
+            if intro_op is None:
+                _blend_top_gradient_fast(base, cap_w, cap_h)
             if cs:
                 # Saver mode has no bottom gradient, so blend viz first; the
                 # saver digits then land on top for legibility.
-                _maybe_blend_mic_visualizer(base)
+                if intro_op is None:
+                    _maybe_blend_mic_visualizer(base)
                 if alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
                         tuple(status_bar_widget.accent_bgr)
@@ -3736,12 +3786,15 @@ def main() -> int:
                         else None
                     )
                     _cs_dim = _clock_saver_layer_opacity(now_cs)
-                    _clock_saver_dim_pre_digit_canvas(base, _cs_dim)
+                    if intro_op is None:
+                        _clock_saver_dim_pre_digit_canvas(base, _cs_dim)
+                    _time_op = float(intro_op) if intro_op is not None else 1.0
+                    _date_op = float(intro_op) if intro_op is not None else _cs_dim
                     (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
                         shadow_bgr=acc_cs,
                         layer_opacity=_cs_dim,
-                        time_layer_opacity=1.0,
-                        date_layer_opacity=_cs_dim,
+                        time_layer_opacity=_time_op,
+                        date_layer_opacity=_date_op,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
                     )
@@ -4083,26 +4136,33 @@ def main() -> int:
             _set_playback_overlay_clock_saver_volume_flag()
             now_cs = time.monotonic()
             cs = _clock_saver_for_compose(now_cs) and not show_grid
+            intro_op = _clock_startup_intro_opacity(now_cs)
             bdim_c = _clock_saver_backdrop_brightness(now_cs)
-            if bdim_c < 1.0 - 1e-6:
+            if intro_op is not None:
+                canvas[:] = 0
+            elif bdim_c < 1.0 - 1e-6:
                 canvas = (canvas.astype(np.float32) * bdim_c).astype(np.uint8)
             # Layer order: top gradient first, then bottom gradient (in the
             # non-saver branch below), then the mic/EQ visualizer on top of
             # the gradient, then clock saver / clock widget / overlays on
             # top of the visualizer. See the saver branch for the no-gradient
             # variant.
-            if not (_view_one_uses_now_playing_screen() and not cs):
+            if intro_op is None and not (_view_one_uses_now_playing_screen() and not cs):
                 _blend_top_gradient_design(canvas)
             if not cs and _view_one_uses_now_playing_screen():
                 canvas[:] = (0, 0, 0)
-                if dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
+                if startup_ph[0] is not None:
+                    # Stay black under the splash so unveil is black → clock fade-up.
+                    pass
+                elif dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
                     main_settings_widget.render(canvas)
                 else:
                     _sync_now_playing_screen_state()
                     if now_playing_screen_widget is not None:
                         now_playing_screen_widget.render(canvas)
             elif cs:
-                _maybe_blend_mic_visualizer(canvas)
+                if intro_op is None:
+                    _maybe_blend_mic_visualizer(canvas)
                 if alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
                         tuple(status_bar_widget.accent_bgr)
@@ -4110,12 +4170,15 @@ def main() -> int:
                         else None
                     )
                     _cs_dim_d = _clock_saver_layer_opacity(now_cs)
-                    _clock_saver_dim_pre_digit_canvas(canvas, _cs_dim_d)
+                    if intro_op is None:
+                        _clock_saver_dim_pre_digit_canvas(canvas, _cs_dim_d)
+                    _time_op_d = float(intro_op) if intro_op is not None else 1.0
+                    _date_op_d = float(intro_op) if intro_op is not None else _cs_dim_d
                     (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
                         shadow_bgr=acc_cs,
                         layer_opacity=_cs_dim_d,
-                        time_layer_opacity=1.0,
-                        date_layer_opacity=_cs_dim_d,
+                        time_layer_opacity=_time_op_d,
+                        date_layer_opacity=_date_op_d,
                         date_anchor_row=CLOCK_ANCHOR_ROW,
                         date_anchor_col=CLOCK_ANCHOR_COL,
                     )
@@ -10575,6 +10638,9 @@ def main() -> int:
             def _next_render_ms() -> int:
                 if playing:
                     return frame_interval_ms
+                # Post-splash clock fade-up needs a smooth cadence.
+                if _PIGEON_EXT and _clock_startup_intro_opacity(time.monotonic()) is not None:
+                    return 33
                 # WiFi / box scan spinner: keep responsive without 60 FPS full-frame uploads on Pi.
                 if (
                     dev_phase == DevPhase.MAIN_SETTINGS
@@ -10752,6 +10818,11 @@ def main() -> int:
             location_toast_animating = _PIGEON_EXT and 0.0 < ta_toast < 1.0
             location_toast_cache_key = int(round(ta_toast * 1000)) if _PIGEON_EXT else 0
             clock_saver_cache_key = 1 if (_PIGEON_EXT and _clock_saver_for_compose(now)) else 0
+            clock_intro_op = _clock_startup_intro_opacity(now) if _PIGEON_EXT else None
+            clock_intro_cache_key = (
+                int(round(float(clock_intro_op) * 1000.0)) if clock_intro_op is not None else -1
+            )
+            clock_intro_animating = clock_intro_op is not None
             clock_saver_peek_cache_key = (
                 1 if (_PIGEON_EXT and now < clock_saver_peek_until_mono[0]) else 0
             )
@@ -10802,6 +10873,7 @@ def main() -> int:
                 and not idle_dim_animating
                 and not location_toast_animating
                 and not tmdb_x_animating
+                and not clock_intro_animating
                 and skip_cache
                 == (
                     scaled_version,
@@ -10827,6 +10899,7 @@ def main() -> int:
                     mic_viz_cache_key,
                     tmdb_x_cache_key,
                     tmdb_flag_badge_cache_key,
+                    clock_intro_cache_key,
                 )
             ):
                 _schedule_next_render()
@@ -10870,6 +10943,7 @@ def main() -> int:
                 and not idle_dim_animating
                 and not location_toast_animating
                 and not tmdb_x_animating
+                and not clock_intro_animating
             ):
                 skip_cache = (
                     scaled_version,
@@ -10895,6 +10969,7 @@ def main() -> int:
                     mic_viz_cache_key,
                     tmdb_x_cache_key,
                     tmdb_flag_badge_cache_key,
+                    clock_intro_cache_key,
                 )
             else:
                 skip_cache = None
