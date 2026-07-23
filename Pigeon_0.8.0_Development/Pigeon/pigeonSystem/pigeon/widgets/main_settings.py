@@ -5099,6 +5099,11 @@ class MainSettingsWidget:
         self._cached_main_sig: tuple[object, ...] | None = None
         self._cached_kb_bgra: np.ndarray | None = None
         self._cached_kb_sig: tuple[object, ...] | None = None
+        # Per-key keyboard overlays for the active mode — Left/Right revisits skip PyMuPDF.
+        self._kb_focus_frame_cache: dict[tuple[object, ...], np.ndarray] = {}
+        self._kb_composed_cache: dict[tuple[object, ...], np.ndarray] = {}
+        self._kb_cache_mode: object | None = None
+        self._kb_prewarm_inflight: bool = False
         self._wifi_search_glyph_cache: np.ndarray | None = None
         self._wifi_scan_result: tuple[str, ...] | None = None
         self._wifi_scan_cache: tuple[tuple[str, ...], float] | None = None
@@ -5139,6 +5144,10 @@ class MainSettingsWidget:
         self._cached_main_sig = None
         self._cached_kb_bgra = None
         self._cached_kb_sig = None
+        self._kb_focus_frame_cache.clear()
+        self._kb_composed_cache.clear()
+        self._kb_cache_mode = None
+        self._kb_prewarm_inflight = False
         self._focus_frame_cache.clear()
         self._focus_cache_structure = None
         self._prewarm_all_inflight = False
@@ -5165,11 +5174,44 @@ class MainSettingsWidget:
             1 if kb_open else 0,
         )
 
+    def _clear_keyboard_focus_caches(self) -> None:
+        self._kb_focus_frame_cache.clear()
+        self._kb_composed_cache.clear()
+        self._kb_cache_mode = None
+        self._kb_prewarm_inflight = False
+        self._cached_kb_bgra = None
+        self._cached_kb_sig = None
+
     def _invalidate_keyboard_cache(self) -> None:
+        """Drop composed output; keep per-key kb bitmaps for Left/Right reuse."""
         self._cached_kb_bgra = None
         self._cached_kb_sig = None
         self._cached_bgra = None
         self._cached_sig = None
+        self._paste_fully_opaque = None
+
+    def _keyboard_overlay_sig_for(
+        self, mode: object, focus_index: int
+    ) -> tuple[object, ...]:
+        return (mode, int(focus_index), str(self._assets_dir or ""))
+
+    def _store_kb_frame(self, kb_sig: tuple[object, ...], frame: np.ndarray) -> None:
+        if kb_sig not in self._kb_focus_frame_cache:
+            self._kb_focus_frame_cache[kb_sig] = frame
+            if len(self._kb_focus_frame_cache) > 28:
+                oldest = next(iter(self._kb_focus_frame_cache))
+                if oldest != kb_sig:
+                    self._kb_focus_frame_cache.pop(oldest, None)
+
+    def _store_kb_composed(
+        self, compose_key: tuple[object, ...], frame: np.ndarray
+    ) -> None:
+        if compose_key not in self._kb_composed_cache:
+            self._kb_composed_cache[compose_key] = frame
+            if len(self._kb_composed_cache) > 28:
+                oldest = next(iter(self._kb_composed_cache))
+                if oldest != compose_key:
+                    self._kb_composed_cache.pop(oldest, None)
 
     def _main_state_sig(self) -> tuple[object, ...]:
         st = self._state
@@ -5394,8 +5436,25 @@ class MainSettingsWidget:
         st = self._state
         if st.keyboard is not None:
             st.navigate(forward=forward)
-            self._invalidate_keyboard_cache()
+            kb = st.keyboard
+            mode = getattr(kb, "mode", None) if kb is not None else None
+            if self._kb_cache_mode is None:
+                self._kb_cache_mode = mode
+            elif self._kb_cache_mode != mode:
+                self._clear_keyboard_focus_caches()
+                self._kb_cache_mode = mode
+            kb_sig = self._keyboard_overlay_sig()
+            # Soft reuse: keep per-key overlays; only drop composed PhotoImage input.
+            self._cached_bgra = None
+            self._cached_sig = None
             self._paste_fully_opaque = None
+            if kb_sig is not None and kb_sig in self._kb_focus_frame_cache:
+                self._cached_kb_bgra = self._kb_focus_frame_cache[kb_sig]
+                self._cached_kb_sig = kb_sig
+            else:
+                self._cached_kb_bgra = None
+                self._cached_kb_sig = None
+            self._prewarm_neighbor_keyboard(forward=forward)
             return
         if st.show_pigeon_settings:
             st.navigate_pigeon(forward=forward)
@@ -5593,6 +5652,114 @@ class MainSettingsWidget:
             cache.setdefault(key_probe, frame)
 
         threading.Thread(target=_work, name="pigeon-settings-prewarm", daemon=True).start()
+
+    def prewarm_keyboard_focus(self) -> None:
+        """Rasterize upcoming keyboard keys off-thread (all keys for small pads)."""
+        import copy
+        import threading
+
+        if self._kb_prewarm_inflight:
+            return
+        st = self._state
+        kb = st.keyboard
+        if kb is None or not kb.focus_ring:
+            return
+        mode = getattr(kb, "mode", None)
+        if self._kb_cache_mode not in (None, mode):
+            self._clear_keyboard_focus_caches()
+        self._kb_cache_mode = mode
+        n = len(kb.focus_ring)
+        cur = int(kb.focus_index) % n
+        # Small pads (PIN/IP/yes-no): warm everything. QWERTY: a short lookahead window.
+        budget = n if n <= 16 else 5
+        order = [(cur + i) % n for i in range(1, budget + 1)]
+        missing = [
+            idx
+            for idx in order
+            if self._keyboard_overlay_sig_for(mode, idx) not in self._kb_focus_frame_cache
+        ]
+        if not missing:
+            return
+        self._kb_prewarm_inflight = True
+        assets = self._assets_dir
+        cache = self._kb_focus_frame_cache
+        mode_ref = mode
+
+        def _work() -> None:
+            try:
+                if self._state.keyboard is None:
+                    return
+                live = self._state.keyboard
+                if getattr(live, "mode", None) != mode_ref:
+                    return
+                snap = copy.deepcopy(live)
+                from pigeon.widgets.settings_keyboard import render_keyboard_bgra
+
+                for idx in missing:
+                    if self._state.keyboard is None:
+                        return
+                    if getattr(self._state.keyboard, "mode", None) != mode_ref:
+                        return
+                    snap.focus_index = idx
+                    key = self._keyboard_overlay_sig_for(mode_ref, idx)
+                    if key in cache:
+                        continue
+                    try:
+                        frame = render_keyboard_bgra(snap, assets_dir=assets)
+                    except Exception:
+                        return
+                    cache.setdefault(key, frame)
+            finally:
+                self._kb_prewarm_inflight = False
+
+        threading.Thread(
+            target=_work, name="pigeon-settings-prewarm-kb", daemon=True
+        ).start()
+
+    def _prewarm_neighbor_keyboard(self, *, forward: bool) -> None:
+        """Rasterize the next keyboard key overlay off-thread."""
+        import copy
+        import threading
+
+        kb = self._state.keyboard
+        if kb is None or not kb.focus_ring:
+            return
+        mode = getattr(kb, "mode", None)
+        if self._kb_cache_mode not in (None, mode):
+            return
+        n = len(kb.focus_ring)
+        nxt = (int(kb.focus_index) + (1 if forward else -1)) % n
+        key = self._keyboard_overlay_sig_for(mode, nxt)
+        if key in self._kb_focus_frame_cache:
+            # Also warm one more step ahead when possible.
+            nxt2 = (nxt + (1 if forward else -1)) % n
+            key2 = self._keyboard_overlay_sig_for(mode, nxt2)
+            if key2 in self._kb_focus_frame_cache:
+                return
+            nxt = nxt2
+            key = key2
+        snap = copy.deepcopy(kb)
+        snap.focus_index = nxt
+        assets = self._assets_dir
+        cache = self._kb_focus_frame_cache
+        mode_ref = mode
+
+        def _work() -> None:
+            try:
+                from pigeon.widgets.settings_keyboard import render_keyboard_bgra
+
+                frame = render_keyboard_bgra(snap, assets_dir=assets)
+            except Exception:
+                return
+            if self._state.keyboard is None:
+                return
+            if getattr(self._state.keyboard, "mode", None) != mode_ref:
+                return
+            cache.setdefault(key, frame)
+
+        threading.Thread(
+            target=_work, name="pigeon-settings-prewarm-kb-n", daemon=True
+        ).start()
 
     def navigate_vertical(self, *, up: bool) -> None:
         """Vertical navigation disabled — use left/right only."""
@@ -6005,6 +6172,8 @@ class MainSettingsWidget:
                 self._cached_main_bgra = None
                 self._cached_main_sig = None
                 self._cached_bgra = None
+                # Text field changed — drop composed overlays; keep per-key kb bitmaps.
+                self._kb_composed_cache.clear()
             elif result.startswith("mode:"):
                 self.invalidate()
             else:
@@ -6301,33 +6470,65 @@ class MainSettingsWidget:
             if self._state.keyboard is not None:
                 from pigeon.widgets.settings_keyboard import render_keyboard_bgra
 
+                kb = self._state.keyboard
+                mode = getattr(kb, "mode", None)
+                if self._kb_cache_mode is None:
+                    self._kb_cache_mode = mode
+                elif self._kb_cache_mode != mode:
+                    self._clear_keyboard_focus_caches()
+                    self._kb_cache_mode = mode
                 kb_sig = self._keyboard_overlay_sig()
-                if self._cached_kb_bgra is not None and self._cached_kb_sig == kb_sig:
-                    kb_frame = self._cached_kb_bgra
-                else:
-                    kb_frame = render_keyboard_bgra(
-                        self._state.keyboard,
-                        assets_dir=self._assets_dir,
-                    )
-                    self._cached_kb_bgra = kb_frame
+                compose_key = (main_sig, kb_sig)
+                if compose_key in self._kb_composed_cache:
+                    frame = self._kb_composed_cache[compose_key]
+                    self._cached_kb_bgra = self._kb_focus_frame_cache.get(kb_sig)  # type: ignore[arg-type]
                     self._cached_kb_sig = kb_sig
-                frame = frame.copy()
-                base_bgr = frame[:, :, :3]
-                blended = alpha_blend_bgra_over_bgr(base_bgr, kb_frame)
-                alpha = kb_frame[:, :, 3:4].astype(np.float32) / 255.0
-                out_a = np.clip(
-                    alpha * 255.0 + (1.0 - alpha) * frame[:, :, 3:4].astype(np.float32),
-                    0,
-                    255,
-                ).astype(np.uint8)
-                frame = np.dstack([blended, out_a[:, :, 0]])
+                else:
+                    if (
+                        kb_sig is not None
+                        and self._cached_kb_bgra is not None
+                        and self._cached_kb_sig == kb_sig
+                    ):
+                        kb_frame = self._cached_kb_bgra
+                    elif kb_sig is not None and kb_sig in self._kb_focus_frame_cache:
+                        kb_frame = self._kb_focus_frame_cache[kb_sig]
+                        self._cached_kb_bgra = kb_frame
+                        self._cached_kb_sig = kb_sig
+                    else:
+                        kb_frame = render_keyboard_bgra(
+                            self._state.keyboard,
+                            assets_dir=self._assets_dir,
+                        )
+                        self._cached_kb_bgra = kb_frame
+                        self._cached_kb_sig = kb_sig
+                        if kb_sig is not None:
+                            self._store_kb_frame(kb_sig, kb_frame)
+                    frame = frame.copy()
+                    base_bgr = frame[:, :, :3]
+                    blended = alpha_blend_bgra_over_bgr(base_bgr, kb_frame)
+                    alpha = kb_frame[:, :, 3:4].astype(np.float32) / 255.0
+                    out_a = np.clip(
+                        alpha * 255.0 + (1.0 - alpha) * frame[:, :, 3:4].astype(np.float32),
+                        0,
+                        255,
+                    ).astype(np.uint8)
+                    frame = np.dstack([blended, out_a[:, :, 0]])
+                    if kb_sig is not None:
+                        self._store_kb_composed(compose_key, frame)
         except Exception:
             self.invalidate()
             raise
         self._cached_bgra = frame
-        if self._want_prewarm_after_paint and not st.show_pigeon_settings and st.keyboard is None:
+        if self._want_prewarm_after_paint and not st.show_pigeon_settings:
             self._want_prewarm_after_paint = False
-            self.prewarm_focus_ring()
+            if st.keyboard is not None:
+                self.prewarm_keyboard_focus()
+            else:
+                self.prewarm_focus_ring()
+        elif st.keyboard is not None and not self._kb_prewarm_inflight:
+            # Keep a lookahead window warm while browsing keys.
+            if len(self._kb_focus_frame_cache) < 3:
+                self.prewarm_keyboard_focus()
         return frame
 
     def render(self, canvas_bgr: np.ndarray) -> None:
