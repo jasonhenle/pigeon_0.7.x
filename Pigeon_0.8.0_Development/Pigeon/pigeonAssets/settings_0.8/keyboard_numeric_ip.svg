@@ -1,59 +1,60 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 262.15 180">
-  <g id="keyboard_numeric_ip_9">
-    <rect id="keyboard_numeric_ip_9_button" x="198.58" y="91.09" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_9_icon" transform="translate(230.35 112.15)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">9</tspan></text>
-  </g>
-  <g id="keyboard_numeric_ip_8">
-    <rect id="keyboard_numeric_ip_8_button" x="132.49" y="91.09" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_8_icon" transform="translate(164.26 112.15)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">8</tspan></text>
-  </g>
-  <g id="keyboard_numeric_ip_7">
-    <rect id="keyboard_numeric_ip_7_button" x="66.38" y="91.09" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_7_icon" transform="translate(98.15 112.15)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">7</tspan></text>
-  </g>
-  <g id="keyboard_numeric_ip_6">
-    <rect id="keyboard_numeric_ip_6_button" x="198.61" y="45.09" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_6_icon" transform="translate(230.38 66.15)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">6</tspan></text>
-  </g>
-  <g id="keyboard_numeric_ip_5">
-    <rect id="keyboard_numeric_ip_5_button" x="132.49" y="45.09" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_5_icon" transform="translate(164.26 66.15)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">5</tspan></text>
-  </g>
-  <g id="keyboard_numeric_ip_4">
-    <rect id="keyboard_numeric_ip_4_button" x="66.38" y="45.09" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_4_icon" transform="translate(98.15 66.15)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">4</tspan></text>
-  </g>
-  <g id="keyboard_numeric_ip_3">
-    <rect id="keyboard_numeric_ip_3_button" x="198.61" y="0" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_3_icon" transform="translate(230.38 21.06)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">3</tspan></text>
-  </g>
-  <g id="keyboard_numeric_ip_2">
-    <rect id="keyboard_numeric_ip_2_button" x="132.49" y="0" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_2_icon" transform="translate(164.26 21.06)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">2</tspan></text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480">
+  <!-- Aligned to keyboard_numeric_all / Illustrator export on the 800×480 artboard. -->
+  <g id="keyboard_numeric_ip_0">
+    <rect id="keyboard_numeric_ip_0_button" x="268.31" y="223.44" width="63.54" height="133.2" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_0_icon" transform="translate(300.08 303.74)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">0</tspan></text>
   </g>
   <g id="keyboard_numeric_ip_1">
-    <rect id="keyboard_numeric_ip_1_button" x="66.38" y="0" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_1_icon" transform="translate(98.15 21.06)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">1</tspan></text>
+    <rect id="keyboard_numeric_ip_1_button" x="334.69" y="223.44" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_1_icon" transform="translate(366.46 255.74)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">1</tspan></text>
   </g>
-  <g id="keyboard_numeric_ip_0">
-    <rect id="keyboard_numeric_ip_0_button" x="0" y="0" width="63.54" height="133.2" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_0_icon" transform="translate(31.77 66.6)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">0</tspan></text>
+  <g id="keyboard_numeric_ip_2">
+    <rect id="keyboard_numeric_ip_2_button" x="400.81" y="223.44" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_2_icon" transform="translate(432.58 255.74)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">2</tspan></text>
   </g>
-  <g id="keyboard_numeric_ip_go">
-    <rect id="keyboard_numeric_ip_go_button" x="198.58" y="137.89" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_go_icon" transform="translate(230.35 158.95)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="22" font-weight="600"><tspan x="0" y="0">go</tspan></text>
+  <g id="keyboard_numeric_ip_3">
+    <rect id="keyboard_numeric_ip_3_button" x="466.92" y="223.44" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_3_icon" transform="translate(498.69 255.74)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">3</tspan></text>
   </g>
-  <g id="keyboard_numeric_ip_dot">
-    <rect id="keyboard_numeric_ip_dot_button" x="132.49" y="137.89" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_dot_icon" transform="translate(164.26 158.95)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">.</tspan></text>
+  <g id="keyboard_numeric_ip_4">
+    <rect id="keyboard_numeric_ip_4_button" x="334.69" y="268.54" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_4_icon" transform="translate(366.46 300.91)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">4</tspan></text>
   </g>
-  <g id="keyboard_numeric_ip_delete">
-    <rect id="keyboard_numeric_ip_delete_button" x="66.38" y="137.89" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_delete_icon" transform="translate(98.15 158.95)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="22" font-weight="600"><tspan x="0" y="0">del</tspan></text>
+  <g id="keyboard_numeric_ip_5">
+    <rect id="keyboard_numeric_ip_5_button" x="400.81" y="268.54" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_5_icon" transform="translate(432.58 300.91)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">5</tspan></text>
+  </g>
+  <g id="keyboard_numeric_ip_6">
+    <rect id="keyboard_numeric_ip_6_button" x="466.92" y="268.54" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_6_icon" transform="translate(498.69 300.91)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">6</tspan></text>
+  </g>
+  <g id="keyboard_numeric_ip_7">
+    <rect id="keyboard_numeric_ip_7_button" x="334.69" y="314.54" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_7_icon" transform="translate(366.46 346.74)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">7</tspan></text>
+  </g>
+  <g id="keyboard_numeric_ip_8">
+    <rect id="keyboard_numeric_ip_8_button" x="400.81" y="314.54" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_8_icon" transform="translate(432.58 346.74)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">8</tspan></text>
+  </g>
+  <g id="keyboard_numeric_ip_9">
+    <rect id="keyboard_numeric_ip_9_button" x="466.89" y="314.54" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_9_icon" transform="translate(498.66 346.74)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">9</tspan></text>
   </g>
   <g id="keyboard_numeric_ip_cancel">
-    <rect id="keyboard_numeric_ip_cancel_button" x="0" y="137.89" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
-    <text id="keyboard_numeric_ip_cancel_icon" transform="translate(31.77 158.95)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="12" font-weight="600"><tspan x="0" y="0">cancel</tspan></text>
+    <rect id="keyboard_numeric_ip_cancel_button" x="268.31" y="360.53" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_cancel_icon" transform="translate(300.08 381.59)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="14" font-weight="600"><tspan x="0" y="0">cancel</tspan></text>
+  </g>
+  <g id="keyboard_numeric_ip_delete">
+    <rect id="keyboard_numeric_ip_delete_button" x="334.69" y="360.53" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_delete_icon" transform="translate(366.46 381.59)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="22" font-weight="600"><tspan x="0" y="0">del</tspan></text>
+  </g>
+  <g id="keyboard_numeric_ip_dot">
+    <rect id="keyboard_numeric_ip_dot_button" x="400.81" y="360.53" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_dot_icon" transform="translate(432.58 381.59)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="30" font-weight="600"><tspan x="0" y="0">.</tspan></text>
+  </g>
+  <g id="keyboard_numeric_ip_go">
+    <rect id="keyboard_numeric_ip_go_button" x="466.89" y="360.53" width="63.54" height="42.11" rx="19" ry="19" fill="#231f20"/>
+    <text id="keyboard_numeric_ip_go_icon" transform="translate(498.66 381.59)" text-anchor="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="22" font-weight="600"><tspan x="0" y="0">go</tspan></text>
   </g>
 </svg>
