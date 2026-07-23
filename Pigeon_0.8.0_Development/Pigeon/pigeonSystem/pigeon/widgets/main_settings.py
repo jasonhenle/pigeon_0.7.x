@@ -1692,17 +1692,39 @@ def _find_by_id(root: ET.Element, layer_id: str) -> ET.Element | None:
     return None
 
 
-def _find_by_logical_id(root: ET.Element, logical_id: str) -> ET.Element | None:
-    """Match exact encoded id, raw logical id, or AI-suffixed variants."""
-    want = _normalize_logical(logical_id)
-    encoded = encode_svg_id(logical_id)
-    # Prefer an exact logical id (e.g. ``main_box1`` group, not ``main_box1_right_icon``).
+# Per-tree logical-id → elements. Built once; apply_state does hundreds of lookups
+# on a ~3.7k-node SVG, and naive O(n) scans made each Pi invalidate multi-second.
+_LOGICAL_INDEX_BY_ROOT: dict[int, tuple[ET.Element, dict[str, list[ET.Element]]]] = {}
+
+
+def _invalidate_logical_index(root: ET.Element) -> None:
+    _LOGICAL_INDEX_BY_ROOT.pop(id(root), None)
+
+
+def _logical_id_index(root: ET.Element) -> dict[str, list[ET.Element]]:
+    rid = id(root)
+    hit = _LOGICAL_INDEX_BY_ROOT.get(rid)
+    if hit is not None and hit[0] is root:
+        return hit[1]
+    index: dict[str, list[ET.Element]] = {}
     for el in root.iter():
         raw = el.get("id") or ""
         if not raw:
             continue
-        if _normalize_logical(raw) == want:
-            return el
+        index.setdefault(_normalize_logical(raw), []).append(el)
+    if len(_LOGICAL_INDEX_BY_ROOT) >= 8:
+        _LOGICAL_INDEX_BY_ROOT.clear()
+    _LOGICAL_INDEX_BY_ROOT[rid] = (root, index)
+    return index
+
+
+def _find_by_logical_id(root: ET.Element, logical_id: str) -> ET.Element | None:
+    """Match exact encoded id, raw logical id, or AI-suffixed variants."""
+    want = _normalize_logical(logical_id)
+    hits = _logical_id_index(root).get(want)
+    if hits:
+        return hits[0]
+    encoded = encode_svg_id(logical_id)
     for el in root.iter():
         raw = el.get("id") or ""
         if not raw:
@@ -1810,13 +1832,13 @@ def _dual_location_text_bounds_px(root: ET.Element | None = None) -> tuple[int, 
 
 def _find_all_by_logical_id(root: ET.Element, logical_id: str) -> list[ET.Element]:
     want = _normalize_logical(logical_id)
+    indexed = _logical_id_index(root).get(want)
+    if indexed:
+        return list(indexed)
     hits: list[ET.Element] = []
     for el in root.iter():
         raw = el.get("id") or ""
         if not raw:
-            continue
-        if _normalize_logical(raw) == want:
-            hits.append(el)
             continue
         decoded = decode_svg_id(raw)
         if decoded.startswith(want + "_") and _AI_SUFFIX_RE.search(decoded[len(want) :]):
@@ -1825,22 +1847,26 @@ def _find_all_by_logical_id(root: ET.Element, logical_id: str) -> list[ET.Elemen
 
 
 def _set_visible(el: ET.Element | None, visible: bool) -> None:
-    """Toggle visibility on ``el`` and all descendants (PyMuPDF ignores parent display)."""
+    """Toggle visibility on ``el``.
+
+    Only the root of the subtree is marked; ``_prune_display_none`` removes the
+    whole branch before PyMuPDF (which ignores inherited ``display``). Ancestor
+    walks in ``_is_hidden`` / ``_is_subtree_hidden`` still see the flag.
+    """
     if el is None:
         return
-    for node in [el, *(child for child in el.iter() if child is not el)]:
-        if visible:
-            node.attrib.pop("display", None)
-            style = node.get("style") or ""
-            if "display:" in style:
-                cleaned = re.sub(r"display\s*:\s*[^;]+;?\s*", "", style, flags=re.IGNORECASE)
-                cleaned = cleaned.strip().rstrip(";")
-                if cleaned:
-                    node.set("style", cleaned)
-                elif "style" in node.attrib:
-                    node.attrib.pop("style")
-        else:
-            node.set("display", "none")
+    if visible:
+        el.attrib.pop("display", None)
+        style = el.get("style") or ""
+        if "display:" in style:
+            cleaned = re.sub(r"display\s*:\s*[^;]+;?\s*", "", style, flags=re.IGNORECASE)
+            cleaned = cleaned.strip().rstrip(";")
+            if cleaned:
+                el.set("style", cleaned)
+            elif "style" in el.attrib:
+                el.attrib.pop("style")
+    else:
+        el.set("display", "none")
 
 
 def _prune_display_none(root: ET.Element) -> None:
@@ -3928,8 +3954,10 @@ def _apply_picker_network_labels(root: ET.Element, state: MainSettingsState) -> 
     for i, text_id in enumerate(_PICKER_ROW_TEXTS):
         idx = scroll + i
         label = names[idx] if idx < len(names) else ""
+        # Digital-7 has limited lowercase coverage — uppercase keeps SSIDs visible on Pi.
+        display = str(label).upper() if label else ""
         for text_el in _find_all_by_logical_id(root, text_id):
-            _set_text_content(text_el, label)
+            _set_text_content(text_el, display)
             targets = [text_el] if text_el.tag.endswith("text") else [
                 n for n in text_el.iter() if n.tag.endswith("text")
             ]
@@ -4628,23 +4656,34 @@ def _apply_network_picker_rows(
     """Per-row white/black pills inside the picker (outer container stays dark)."""
     if not state.show_network_picker:
         return
+    names = state.wifi_networks
+    scroll = max(0, int(state.network_picker_scroll))
     row_idx = max(0, min(len(_PICKER_ROW_MINI_BUTTONS) - 1, int(state.network_picker_row)))
     for i, mini_id in enumerate(_PICKER_ROW_MINI_BUTTONS):
-        selected = i == row_idx
+        has_network = (scroll + i) < len(names)
+        selected = has_network and i == row_idx
         mini_el = _find_by_logical_id(root, mini_id)
-        _apply_button_fill(mini_el, selected=selected, theme=theme)
-        for hit in _find_all_by_logical_id(root, mini_id):
-            _apply_button_fill(hit, selected=selected, theme=theme)
+        _set_visible(mini_el, has_network)
+        if has_network:
+            _apply_button_fill(mini_el, selected=selected, theme=theme)
+            for hit in _find_all_by_logical_id(root, mini_id):
+                _apply_button_fill(hit, selected=selected, theme=theme)
 
     for i, text_id in enumerate(_PICKER_ROW_TEXTS):
-        selected = i == row_idx
+        has_network = (scroll + i) < len(names)
+        selected = has_network and i == row_idx
         for text_el in _find_all_by_logical_id(root, text_id):
-            _apply_contrast_paint(text_el, selected=selected, theme=theme)
+            _set_visible(text_el, has_network)
+            if has_network:
+                _apply_contrast_paint(text_el, selected=selected, theme=theme)
 
     for i, lock_id in enumerate(_PICKER_ROW_LOCK_GROUPS):
-        selected = i == row_idx
+        has_network = (scroll + i) < len(names)
+        selected = has_network and i == row_idx
         for lock_el in _find_all_by_logical_id(root, lock_id):
-            _apply_contrast_paint(lock_el, selected=selected, theme=theme)
+            _set_visible(lock_el, has_network)
+            if has_network:
+                _apply_contrast_paint(lock_el, selected=selected, theme=theme)
 
 
 def discover_focus_ring_in_svg(root: ET.Element, state: MainSettingsState) -> tuple[str, ...]:
@@ -4985,6 +5024,23 @@ class MainSettingsWidget:
         self._cached_main_sig = None
         self._cached_kb_bgra = None
         self._cached_kb_sig = None
+
+    def frame_cache_token(self) -> tuple[object, ...]:
+        """Stable token for skip-cache while the settings bitmap is unchanged."""
+        return (
+            self._cached_main_sig,
+            self._cached_kb_sig,
+            round(float(self._state.wifi_scan_angle_deg), 0)
+            if self._state.wifi_scanning or self._state.wifi_connecting
+            else 0,
+            round(float(self._state.box2_devices.scan_angle_deg), 0)
+            if self._state.box2_devices.scanning
+            else 0,
+            round(float(self._state.box3_devices.scan_angle_deg), 0)
+            if self._state.box3_devices.scanning
+            else 0,
+            1 if self._state.keyboard is not None else 0,
+        )
 
     def _invalidate_keyboard_cache(self) -> None:
         self._cached_kb_bgra = None
