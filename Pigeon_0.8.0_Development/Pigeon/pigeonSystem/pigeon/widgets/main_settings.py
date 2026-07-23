@@ -1849,24 +1849,29 @@ def _find_all_by_logical_id(root: ET.Element, logical_id: str) -> list[ET.Elemen
 def _set_visible(el: ET.Element | None, visible: bool) -> None:
     """Toggle visibility on ``el``.
 
-    Only the root of the subtree is marked; ``_prune_display_none`` removes the
-    whole branch before PyMuPDF (which ignores inherited ``display``). Ancestor
-    walks in ``_is_hidden`` / ``_is_subtree_hidden`` still see the flag.
+    Hide marks only the subtree root — ``_prune_display_none`` drops the whole
+    branch before PyMuPDF (which ignores inherited ``display``).
+
+    Show clears ``display:none`` on the root and descendants: Illustrator often
+    bakes ``display:none`` into child ``style`` (e.g. darker container stripes),
+    and those must be cleared or the red menu background renders as a wedge.
     """
     if el is None:
         return
-    if visible:
-        el.attrib.pop("display", None)
-        style = el.get("style") or ""
-        if "display:" in style:
-            cleaned = re.sub(r"display\s*:\s*[^;]+;?\s*", "", style, flags=re.IGNORECASE)
-            cleaned = cleaned.strip().rstrip(";")
-            if cleaned:
-                el.set("style", cleaned)
-            elif "style" in el.attrib:
-                el.attrib.pop("style")
-    else:
-        el.set("display", "none")
+    nodes = [el, *(child for child in el.iter() if child is not el)] if visible else [el]
+    for node in nodes:
+        if visible:
+            node.attrib.pop("display", None)
+            style = node.get("style") or ""
+            if "display:" in style:
+                cleaned = re.sub(r"display\s*:\s*[^;]+;?\s*", "", style, flags=re.IGNORECASE)
+                cleaned = cleaned.strip().rstrip(";")
+                if cleaned:
+                    node.set("style", cleaned)
+                elif "style" in node.attrib:
+                    node.attrib.pop("style")
+        else:
+            node.set("display", "none")
 
 
 def _prune_display_none(root: ET.Element) -> None:
@@ -3655,11 +3660,14 @@ def _remove_canvas_background_rect(root: ET.Element) -> None:
                 parent.remove(el)
 
 
-def _draw_container_background_bgra(bgra: np.ndarray, stripes: tuple[_ContainerStripeSpec, ...]) -> None:
-    """Paint clipped diagonal stripes behind UI (fixes inverted PyMuPDF clip-path)."""
+def _draw_container_background_bgra(bgra: np.ndarray, stripes: tuple[_ContainerStripeSpec, ...] | None = None) -> None:
+    """Paint solid red menu plate + clipped diagonal stripes (PyMuPDF clip-path fix)."""
+    mask = _menu_container_mask()
+    # Base plate — without this, only uncovered stripe wedges show on black.
+    brand = _hex_to_bgr(COLOR_UI_DEFAULT)
+    _composite_stroke_mask(bgra, mask, brand)
     if not stripes:
         return
-    mask = _menu_container_mask()
     for stripe in stripes:
         corners = _transform_rect_corners_svg(
             stripe.x_svg,
