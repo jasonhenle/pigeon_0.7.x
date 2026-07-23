@@ -303,7 +303,10 @@ def draw_settings_text_ops_bgra(bgra: np.ndarray, ops: list[SettingsTextDrawOp])
     """Paint collected ops onto a BGRA frame in place."""
     if not ops:
         return
-    if not any(_font_path_for_role(op.role) for op in ops):
+
+    # Prefer role fonts; fall back so missing Digital-7 never blanks the whole UI.
+    fallback = resolve_ui_font_semibold() or resolve_digital7_font()
+    if not any(_font_path_for_role(op.role) or fallback for op in ops):
         return
 
     rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGBA)
@@ -311,7 +314,7 @@ def draw_settings_text_ops_bgra(bgra: np.ndarray, ops: list[SettingsTextDrawOp])
     draw = ImageDraw.Draw(img)
 
     for op in ops:
-        path = _font_path_for_role(op.role)
+        path = _font_path_for_role(op.role) or fallback
         if not path:
             continue
         font = _load_font(path, op.size_px)
