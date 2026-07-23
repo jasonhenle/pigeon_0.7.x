@@ -5415,6 +5415,8 @@ def main() -> int:
                 dev_phase = DevPhase.OFF
             skip_cache = None
             sync_developer_chrome()
+            if dev_phase == DevPhase.MAIN_SETTINGS:
+                render_once()
             return "break"
 
         def on_shift_tab_dev_cycle(event: tk.Event) -> str | None:
@@ -10210,9 +10212,11 @@ def main() -> int:
                     dev_phase = DevPhase.OFF
                     skip_cache = None
                     sync_developer_chrome()
+                    render_once()
                 else:
                     _handle_main_settings_action(action)
                     skip_cache = None
+                    render_once()
                 return "break"
             if _send_player_play_pause_hotkey():
                 return "break"
@@ -10322,10 +10326,12 @@ def main() -> int:
                 if ks == "Right":
                     main_settings_widget.navigate(forward=True)
                     skip_cache = None
+                    render_once()
                     return "break"
                 if ks == "Left":
                     main_settings_widget.navigate(forward=False)
                     skip_cache = None
+                    render_once()
                     return "break"
                 return "break"
             from pigeon.player_remote import queue_player_remote_action

@@ -5116,6 +5116,10 @@ class MainSettingsWidget:
         self._focus_frame_cache: dict[tuple[object, ...], np.ndarray] = {}
         self._focus_cache_structure: tuple[object, ...] | None = None
         self._prewarm_all_inflight: bool = False
+        # Kick full-ring prewarm only after the first live paint for a structure.
+        self._want_prewarm_after_paint: bool = False
+        # Avoid repeated full-frame alpha.min() when the current paste is known opaque.
+        self._paste_fully_opaque: bool | None = None
         # Warm LAN IP off the first settings paint (hostname/ipconfig can take tens of ms).
         try:
             from pigeon.local_ip import local_ipv4_address
@@ -5138,6 +5142,8 @@ class MainSettingsWidget:
         self._focus_frame_cache.clear()
         self._focus_cache_structure = None
         self._prewarm_all_inflight = False
+        self._want_prewarm_after_paint = True
+        self._paste_fully_opaque = None
 
     def frame_cache_token(self) -> tuple[object, ...]:
         """Stable token for skip-cache while the settings bitmap is unchanged."""
@@ -5346,17 +5352,28 @@ class MainSettingsWidget:
         if st.keyboard is not None:
             st.navigate(forward=forward)
             self._invalidate_keyboard_cache()
+            self._paste_fully_opaque = None
             return
         if st.show_pigeon_settings:
             st.navigate_pigeon(forward=forward)
             self.invalidate()
             return
         st.navigate(forward=forward)
-        # Keep structure caches; only drop the composed frame so the new focus can hit the focus cache.
+        # Drop composed frame so PhotoImage refreshes; reuse focus bitmap when available.
         self._cached_bgra = None
         self._cached_sig = None
-        self._cached_main_bgra = None
-        self._cached_main_sig = None
+        self._paste_fully_opaque = None
+        focus_key = self._focus_cache_key()
+        structure = self._structure_sig()
+        if (
+            structure == self._focus_cache_structure
+            and focus_key in self._focus_frame_cache
+        ):
+            self._cached_main_bgra = self._focus_frame_cache[focus_key]
+            self._cached_main_sig = self._main_state_sig()
+        else:
+            self._cached_main_bgra = None
+            self._cached_main_sig = None
         self.prefetch_scans_for_focus(st.focused_id)
         self._prewarm_neighbor_focus(forward=forward)
 
@@ -5603,7 +5620,9 @@ class MainSettingsWidget:
         else:
             self._prefetch_box_into_cache(2)
             self._prefetch_box_into_cache(3)
-        self.prewarm_focus_ring()
+        # Full-ring prewarm after the first live paint — avoid contending with cold SVG.
+        self._want_prewarm_after_paint = True
+        self._prewarm_neighbor_focus(forward=True)
 
     def prefetch_scans_for_focus(self, focused: str) -> None:
         """Prefetch when the user lands on a search-capable control."""
@@ -6190,6 +6209,9 @@ class MainSettingsWidget:
             self.invalidate()
             raise
         self._cached_bgra = frame
+        if self._want_prewarm_after_paint and not st.show_pigeon_settings and st.keyboard is None:
+            self._want_prewarm_after_paint = False
+            self.prewarm_focus_ring()
         return frame
 
     def render(self, canvas_bgr: np.ndarray) -> None:
@@ -6201,12 +6223,17 @@ class MainSettingsWidget:
         if self._state.keyboard is not None:
             frame = frame.copy()
             _draw_text_entry_cursor(frame, self._state)
+            self._paste_fully_opaque = None
         ch, cw = int(canvas_bgr.shape[0]), int(canvas_bgr.shape[1])
         fh, fw = int(frame.shape[0]), int(frame.shape[1])
         if fh == ch and fw == cw:
             alpha_u8 = frame[:, :, 3]
             # Settings is usually fully opaque over black — avoid full-frame float blend.
-            if int(alpha_u8.min()) == 255:
+            opaque = self._paste_fully_opaque
+            if opaque is None:
+                opaque = int(alpha_u8.min()) == 255
+                self._paste_fully_opaque = opaque
+            if opaque:
                 canvas_bgr[:] = frame[:, :, :3]
             else:
                 canvas_bgr[:] = alpha_blend_bgra_over_bgr(canvas_bgr, frame)
