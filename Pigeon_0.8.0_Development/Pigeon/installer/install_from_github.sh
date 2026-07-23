@@ -119,15 +119,14 @@ install_pi_linux() {
         break
       fi
     done
-    if [[ -z "${app}" ]]; then
-      echo "pigeon: tarball did not contain Pigeon_* folder." >&2
-      exit 1
+    if [[ -n "${app}" ]]; then
+      echo "${app}"
+      return
     fi
-    echo "${app}"
-    return
+    echo "==> Latest release tarball is not a 0.8 package — falling back to main-branch zip." >&2
   fi
 
-  echo "==> No GitHub Release tarball yet — using main-branch zip (full repo snapshot)." >&2
+  echo "==> Using main-branch zip (full repo snapshot)." >&2
   install_from_zip
 }
 
