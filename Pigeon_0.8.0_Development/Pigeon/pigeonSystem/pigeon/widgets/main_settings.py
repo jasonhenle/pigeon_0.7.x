@@ -743,27 +743,25 @@ class MainSettingsState:
         self.pigeon_focus_index = (int(self.pigeon_focus_index) + step) % len(ring)
 
     def navigate_picker_row(self, *, forward: bool) -> bool:
-        """Move selection among the three visible picker rows (left/right only)."""
+        """Move selection among picker rows; wraps at the ends of the full list."""
         if not self.show_network_picker:
             return False
-        row = int(self.network_picker_row)
-        if forward:
-            if row >= len(_PICKER_ROW_TEXTS) - 1:
-                if self.network_picker_can_scroll_down:
-                    self.network_picker_scroll = int(self.network_picker_scroll) + 1
-                    self.network_picker_arrow = ""
-                    return True
-                return False
-            self.network_picker_row = row + 1
-            self.network_picker_arrow = ""
-            return True
-        if row <= 0:
-            if self.network_picker_can_scroll_up:
-                self.network_picker_scroll = int(self.network_picker_scroll) - 1
-                self.network_picker_arrow = ""
-                return True
+        n = len(self.wifi_networks)
+        if n <= 0:
             return False
-        self.network_picker_row = row - 1
+        visible = len(_PICKER_ROW_TEXTS)
+        step = 1 if forward else -1
+        cur = max(0, min(int(self.network_picker_absolute_row), n - 1))
+        abs_row = (cur + step) % n
+        max_scroll = max(0, n - visible)
+        scroll = int(self.network_picker_scroll)
+        if abs_row < scroll:
+            scroll = abs_row
+        elif abs_row >= scroll + visible:
+            scroll = abs_row - visible + 1
+        scroll = max(0, min(scroll, max_scroll))
+        self.network_picker_scroll = scroll
+        self.network_picker_row = abs_row - scroll
         self.network_picker_arrow = ""
         return True
 
@@ -852,27 +850,26 @@ class MainSettingsState:
         self.ensure_focus_ring()
 
     def navigate_box_device_row(self, box_num: int, *, forward: bool) -> bool:
+        """Move selection among device rows; wraps at the ends of the full list."""
         panel = self._box_panel(box_num)
         if not panel.results_locked:
             return False
-        row = int(panel.row)
-        if forward:
-            if row >= _BOX_DEVICE_ROW_COUNT - 1:
-                if panel.can_scroll_down():
-                    panel.scroll = int(panel.scroll) + 1
-                    panel.arrow = ""
-                    return True
-                return False
-            panel.row = row + 1
-            panel.arrow = ""
-            return True
-        if row <= 0:
-            if panel.can_scroll_up():
-                panel.scroll = int(panel.scroll) - 1
-                panel.arrow = ""
-                return True
+        n = len(panel.devices)
+        if n <= 0:
             return False
-        panel.row = row - 1
+        visible = int(_BOX_DEVICE_ROW_COUNT)
+        step = 1 if forward else -1
+        cur = max(0, min(int(panel.absolute_row()), n - 1))
+        abs_row = (cur + step) % n
+        max_scroll = panel.max_scroll()
+        scroll = int(panel.scroll)
+        if abs_row < scroll:
+            scroll = abs_row
+        elif abs_row >= scroll + visible:
+            scroll = abs_row - visible + 1
+        scroll = max(0, min(scroll, max_scroll))
+        panel.scroll = scroll
+        panel.row = abs_row - scroll
         panel.arrow = ""
         return True
 
