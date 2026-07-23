@@ -3422,11 +3422,34 @@ def _discover_star_masked_circles(root: ET.Element) -> list[_StarMaskedCircleSpe
 
 
 def _hide_star_masked_svg_circles(root: ET.Element, specs: list[_StarMaskedCircleSpec]) -> None:
-    """Hide circle strokes replaced by star/hex clip overlays."""
+    """Hide circle strokes replaced by star/hex clip overlays.
+
+    Prefer live element ids from this render's discover pass. Also hide every
+    stroked circle under ``*_pigeon_logo_icon`` when any star specs exist for
+    that focus button, so a stale/cross-tree id never leaves unclipped rings.
+    """
     hide_ids = {spec.circle_el_id for spec in specs if spec.circle_el_id is not None}
+    focus_buttons = {spec.focus_button for spec in specs if spec.focus_button}
     for el in root.iter():
         if el.tag.endswith("circle") and id(el) in hide_ids:
             _set_visible(el, False)
+    if not specs:
+        return
+    parents = _parent_map(root)
+    for el in root.iter():
+        logical = _normalize_logical(el.get("id") or "")
+        if not logical.endswith("_pigeon_logo_icon"):
+            continue
+        focus = _box_focus_button(el, parents)
+        if focus_buttons and focus not in focus_buttons:
+            continue
+        for sub in el.iter():
+            if not sub.tag.endswith("circle"):
+                continue
+            fill, stroke = _iter_style_fill_stroke(sub)
+            if stroke in ("none", "transparent") and fill in ("none", "transparent"):
+                continue
+            _set_visible(sub, False)
 
 
 def _hide_box_search_animation_layers(root: ET.Element, box_num: int) -> None:
@@ -4933,7 +4956,9 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
 
 _SVG_TREE_TEMPLATES: dict[tuple[str, int], ET.Element] = {}
 _SVG_TREE_TEMPLATE_MAX = 2
-# Stable art discovers (stars / wifi / onboarding) keyed by SVG path+mtime.
+# Stable art discovers (wifi / onboarding) keyed by SVG path+mtime.
+# Star-masked pigeon-logo rings are NOT cached: discovery depends on layer
+# visibility after apply, and specs carry per-tree element ids used to hide circles.
 _SVG_GEOMETRY_CACHE: dict[tuple[str, int], dict[str, object]] = {}
 
 
@@ -4943,7 +4968,6 @@ def _svg_geometry_bundle(path: Path, root: ET.Element) -> dict[str, object]:
     if hit is not None:
         return hit
     bundle = {
-        "stars": _discover_star_masked_circles(root),
         "onboarding_arcs": _discover_onboarding_search_arc_specs(root),
         "onboarding_tris": _discover_onboarding_search_triangle_specs(root),
         "wifi_layouts": _discover_wifi_icon_layouts(root),
@@ -5008,8 +5032,10 @@ def render_main_settings_bgra(
     stripe_specs = _discover_container_stripe_specs(root, active_container)
     _hide_container_stripe_rects(root)
     _remove_canvas_background_rect(root)
+    # Discover after apply so hidden pigeon-logo icons are skipped, and circle
+    # element ids match this tree for hide + OpenCV star-clip redraw.
+    star_specs = _discover_star_masked_circles(root)
     geom = _svg_geometry_bundle(path, root)
-    star_specs = geom["stars"]  # type: ignore[assignment]
     onboarding_arc_specs = geom["onboarding_arcs"]  # type: ignore[assignment]
     onboarding_triangle_specs = geom["onboarding_tris"]  # type: ignore[assignment]
     wifi_layouts = geom["wifi_layouts"]  # type: ignore[assignment]
