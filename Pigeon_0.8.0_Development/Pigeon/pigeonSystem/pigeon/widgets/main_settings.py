@@ -3270,6 +3270,8 @@ def _draw_wifi_overlays(
         level = default_level
         if layout.picker_row and layout.picker_slot is not None:
             abs_idx = scroll + int(layout.picker_slot)
+            if abs_idx >= len(state.wifi_networks):
+                continue
             level = max(1, min(3, 3 - abs_idx))
         _draw_wifi_icon_overlay(bgra, layout, level=level, active_bgr=active_bgr)
     if (kb_network or kb_logout) and dual_layout is not None:
