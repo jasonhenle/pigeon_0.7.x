@@ -99,7 +99,7 @@ _BOTTOM_ROW_SVG = "keyboard_bottom_row.svg"
 _BOTTOM_ROW_X = 37  # (800 - 725) / 2
 _BOTTOM_ROW_Y = 378
 
-# Self-contained numeric pads (IP / PIN) — align with ``keyboard_numeric_all`` grid.
+# Self-contained PIN pad (compact crop). IP uses full 800×480 artboard placement.
 _INTEGRATED_PAD_TOP_Y = 225
 _INTEGRATED_PAD_CONTENT_W = 320
 
@@ -973,14 +973,17 @@ def _rasterize_keyboard_chars(
     root = ET.parse(path).getroot()
     if state.mode == KeyboardMode.QWERTY_UPPER and not state.supports_lowercase:
         _remove_qwerty_shift_key(root)
-    pad_mode = state.mode in (KeyboardMode.NUMERIC_PIN, KeyboardMode.NUMERIC_IP, KeyboardMode.YES_NO)
+    pad_mode = state.mode in (KeyboardMode.NUMERIC_PIN, KeyboardMode.YES_NO)
+    full_ip = state.mode == KeyboardMode.NUMERIC_IP
     button_ids: set[str] = set()
     icon_map: dict[str, tuple[str, ...]] = {}
     for k in state.focus_ring:
-        if pad_mode or k.action in (KeyAction.CHAR, KeyAction.SHIFT):
-            button_ids.add(k.button_id)
-            if k.icon_ids:
-                icon_map[k.button_id] = k.icon_ids
+        include = pad_mode or full_ip or k.action in (KeyAction.CHAR, KeyAction.SHIFT)
+        if not include:
+            continue
+        button_ids.add(k.button_id)
+        if k.icon_ids:
+            icon_map[k.button_id] = k.icon_ids
 
     focused = state.focused.button_id
     char_focus = focused if focused in button_ids else ""
@@ -992,12 +995,14 @@ def _rasterize_keyboard_chars(
         icon_ids_by_button=icon_map,
     )
 
-    if state.mode in (KeyboardMode.NUMERIC_PIN, KeyboardMode.NUMERIC_IP, KeyboardMode.YES_NO):
+    # Compact cropped pads (PIN / yes-no). IP uses the full 800×480 artboard
+    # so it lines up with keyboard_numeric_all / Illustrator placement.
+    if pad_mode:
         _center_integrated_pad_labels(root)
         vb = viewbox_from_root(root)
         content_w = (
             _INTEGRATED_PAD_CONTENT_W
-            if state.mode in (KeyboardMode.NUMERIC_PIN, KeyboardMode.NUMERIC_IP)
+            if state.mode == KeyboardMode.NUMERIC_PIN
             else max(1, int(round(vb[2] * (DESIGN_W / 800.0))))
         )
         layout = _integrated_pad_layout(vb, content_w=content_w)
@@ -1017,6 +1022,9 @@ def _rasterize_keyboard_chars(
             dest_y = int(_INTEGRATED_PAD_TOP_Y * (DESIGN_H / 480)) - layout.pad_px
         _blit_bottom_row(canvas, pad, dest_x=dest_x, dest_y=dest_y)
         return canvas
+
+    if full_ip:
+        _center_integrated_pad_labels(root)
 
     _fit_full_artboard(root)
     return rasterize_settings_svg_bgra(
