@@ -138,7 +138,13 @@ elif [[ -f "${FONT_DIR}/Sharp Sans Medium.otf" ]]; then
   export PIGEON_FONT_MEDIUM="${FONT_DIR}/Sharp Sans Medium.otf"
 fi
 USER_FONT_DIR="${HOME}/.local/share/fonts/pigeon"
-if [[ -f "${USER_FONT_DIR}/fonts.conf" ]]; then
+# Add pigeon fonts without replacing the system fontconfig (Tk needs system fonts).
+if [[ -d "${USER_FONT_DIR}" ]]; then
+  export FONTCONFIG_PATH="${USER_FONT_DIR}${FONTCONFIG_PATH:+:${FONTCONFIG_PATH}}"
+fi
+# Only use a custom FONTCONFIG_FILE when it includes the system config.
+if [[ -f "${USER_FONT_DIR}/fonts.conf" ]] \
+  && grep -q 'include.*fonts\.conf' "${USER_FONT_DIR}/fonts.conf" 2>/dev/null; then
   export FONTCONFIG_FILE="${USER_FONT_DIR}/fonts.conf"
 fi
 # Pi / Linux: 800×480 logical target; UI composes at native 800×480. Fullscreen fills the monitor.
