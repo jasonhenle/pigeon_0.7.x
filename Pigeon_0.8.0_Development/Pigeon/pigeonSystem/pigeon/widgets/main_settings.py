@@ -5341,11 +5341,54 @@ class MainSettingsWidget:
         key = self._focus_cache_key()
         if key not in self._focus_frame_cache:
             self._focus_frame_cache[key] = frame.copy()
-            # Bound memory: keep a ring of recent focus bitmaps.
-            if len(self._focus_frame_cache) > 12:
+            # Bound memory: keep recent focus + list-row bitmaps (WiFi 3 / box 5).
+            if len(self._focus_frame_cache) > 20:
                 oldest = next(iter(self._focus_frame_cache))
                 if oldest != key:
                     self._focus_frame_cache.pop(oldest, None)
+
+    def _list_row_count(self) -> int | None:
+        """Visible selection rows when WiFi picker or box results are locked."""
+        st = self._state
+        if st.show_network_picker and not st.wifi_configured:
+            return len(_PICKER_ROW_TEXTS)
+        for box_num in (2, 3):
+            if st._box_panel(box_num).results_locked:
+                return int(_BOX_DEVICE_ROW_COUNT)
+        return None
+
+    def _current_list_row(self) -> int | None:
+        st = self._state
+        if st.show_network_picker and not st.wifi_configured:
+            return int(st.network_picker_row)
+        for box_num in (2, 3):
+            panel = st._box_panel(box_num)
+            if panel.results_locked:
+                return int(panel.row)
+        return None
+
+    def _apply_list_row(self, st: MainSettingsState, row: int) -> None:
+        if st.show_network_picker and not st.wifi_configured:
+            st.network_picker_row = int(row)
+            st.network_picker_arrow = ""
+            return
+        for box_num in (2, 3):
+            panel = st._box_panel(box_num)
+            if panel.results_locked:
+                panel.row = int(row)
+                panel.arrow = ""
+                return
+
+    def _focus_key_for_state(self, st: MainSettingsState) -> tuple[object, ...]:
+        return (
+            int(st.focus_index) if not st.keyboard_open else -1,
+            int(st.network_picker_row),
+            int(st.box2_devices.row),
+            str(st.box2_devices.arrow),
+            int(st.box3_devices.row),
+            str(st.box3_devices.arrow),
+            int(st.pigeon_focus_index),
+        )
 
     def navigate(self, forward: bool = True) -> None:
         st = self._state
@@ -5365,6 +5408,9 @@ class MainSettingsWidget:
         self._paste_fully_opaque = None
         focus_key = self._focus_cache_key()
         structure = self._structure_sig()
+        if structure != self._focus_cache_structure:
+            # Scroll / list content changed — refill row bitmaps after the next live paint.
+            self._want_prewarm_after_paint = True
         if (
             structure == self._focus_cache_structure
             and focus_key in self._focus_frame_cache
@@ -5378,19 +5424,70 @@ class MainSettingsWidget:
         self._prewarm_neighbor_focus(forward=forward)
 
     def prewarm_focus_ring(self) -> None:
-        """Rasterize every focus target for the current structure off-thread."""
+        """Rasterize every focus / list-row target for the current structure off-thread."""
         import copy
         import threading
 
         if self._prewarm_all_inflight:
             return
         st = self._state
-        if st.keyboard_open or st.show_pigeon_settings or not st.focus_ring:
+        if st.keyboard_open or st.show_pigeon_settings:
             return
         structure = self._structure_sig()
-        if structure != self._focus_cache_structure and self._focus_cache_structure is not None:
-            # Wait until the first live paint establishes the structure key.
-            pass
+        row_count = self._list_row_count()
+        # Search results: focus ring is length 1 — prewarm selection rows instead.
+        if row_count is not None:
+            cur = self._current_list_row() or 0
+            # Prefer rows ahead of the selection so the next Left/Right is ready first.
+            order = list(range(cur + 1, row_count)) + list(range(0, cur))
+            missing: list[int] = []
+            for row in order:
+                snap_probe = copy.deepcopy(st)
+                self._apply_list_row(snap_probe, row)
+                key = self._focus_key_for_state(snap_probe)
+                if key not in self._focus_frame_cache:
+                    missing.append(row)
+            if not missing:
+                return
+            self._prewarm_all_inflight = True
+            state_snap = copy.deepcopy(st)
+            svg_path = self._svg_path
+            assets_dir = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_rows() -> None:
+                try:
+                    for row in missing:
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        self._apply_list_row(state_snap, row)
+                        key = self._focus_key_for_state(state_snap)
+                        if key in cache:
+                            continue
+                        try:
+                            frame = render_main_settings_bgra(
+                                state_snap,
+                                svg_path=svg_path,
+                                assets_dir=assets_dir,
+                            )
+                        except Exception:
+                            return
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        if self._focus_cache_structure is None:
+                            self._focus_cache_structure = struct_ref
+                        cache[key] = frame
+                finally:
+                    self._prewarm_all_inflight = False
+
+            threading.Thread(
+                target=_work_rows, name="pigeon-settings-prewarm-rows", daemon=True
+            ).start()
+            return
+
+        if not st.focus_ring:
+            return
         n = len(st.focus_ring)
         if n <= 1:
             return
@@ -5407,15 +5504,7 @@ class MainSettingsWidget:
                     if self._focus_cache_structure not in (None, struct_ref):
                         return
                     state_snap.focus_index = idx
-                    key = (
-                        idx,
-                        int(state_snap.network_picker_row),
-                        int(state_snap.box2_devices.row),
-                        str(state_snap.box2_devices.arrow),
-                        int(state_snap.box3_devices.row),
-                        str(state_snap.box3_devices.arrow),
-                        int(state_snap.pigeon_focus_index),
-                    )
+                    key = self._focus_key_for_state(state_snap)
                     if key in cache:
                         continue
                     try:
@@ -5437,7 +5526,7 @@ class MainSettingsWidget:
         threading.Thread(target=_work, name="pigeon-settings-prewarm-all", daemon=True).start()
 
     def _prewarm_neighbor_focus(self, *, forward: bool) -> None:
-        """Rasterize the next focus target off-thread so the following keypress is cached."""
+        """Rasterize the next focus/list-row target off-thread for the following keypress."""
         import copy
         import threading
 
@@ -5445,23 +5534,50 @@ class MainSettingsWidget:
         if structure != self._focus_cache_structure:
             return
         st = self._state
-        if st.keyboard_open or not st.focus_ring:
+        if st.keyboard_open:
+            return
+
+        row_count = self._list_row_count()
+        if row_count is not None:
+            cur = self._current_list_row()
+            if cur is None:
+                return
+            nxt = int(cur) + (1 if forward else -1)
+            if nxt < 0 or nxt >= row_count:
+                return
+            snap = copy.deepcopy(st)
+            self._apply_list_row(snap, nxt)
+            key_probe = self._focus_key_for_state(snap)
+            if key_probe in self._focus_frame_cache:
+                return
+            assets = self._assets_dir
+            svg = self._svg_path
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_row() -> None:
+                try:
+                    frame = render_main_settings_bgra(snap, svg_path=svg, assets_dir=assets)
+                except Exception:
+                    return
+                if self._focus_cache_structure != struct_ref:
+                    return
+                cache.setdefault(key_probe, frame)
+
+            threading.Thread(
+                target=_work_row, name="pigeon-settings-prewarm-row", daemon=True
+            ).start()
+            return
+
+        if not st.focus_ring:
             return
         n = len(st.focus_ring)
         nxt = (int(st.focus_index) + (1 if forward else -1)) % n
-        key_probe = (
-            nxt,
-            int(st.network_picker_row),
-            int(st.box2_devices.row),
-            str(st.box2_devices.arrow),
-            int(st.box3_devices.row),
-            str(st.box3_devices.arrow),
-            int(st.pigeon_focus_index),
-        )
-        if key_probe in self._focus_frame_cache:
-            return
         snap = copy.deepcopy(st)
         snap.focus_index = nxt
+        key_probe = self._focus_key_for_state(snap)
+        if key_probe in self._focus_frame_cache:
+            return
         assets = self._assets_dir
         svg = self._svg_path
         cache = self._focus_frame_cache
