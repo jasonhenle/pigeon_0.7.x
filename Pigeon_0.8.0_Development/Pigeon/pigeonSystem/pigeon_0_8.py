@@ -72,6 +72,7 @@ from pigeon.app_state import (
     rename_location_v2,
     read_app_state,
     read_current_location_id,
+    read_current_location_name,
     read_last_apple_tv,
     read_last_receiver,
     read_saved_av_receiver,
@@ -797,6 +798,8 @@ def main() -> int:
 
     bootstrap_done: list[bool] = [False]
     splash_anim_done: list[bool] = [False]
+    # Window-sized BGR of the UI under the splash (fade unveil composites over this).
+    _splash_underlay_bgr: list[np.ndarray | None] = [None]
     # Post-splash UI timing (splash lift); mic visualizer removed.
     post_splash_mono: list[float | None] = [None]
     _post_splash_startup_hook: list[object] = [None]
@@ -874,7 +877,7 @@ def main() -> int:
     if _PIGEON_EXT:
         # Stay a direct child of ``shell`` (placed full-size). Do **not** pack into ``video_area`` after
         # the video ``Label``: two ``pack(..., fill=BOTH, expand=True)`` siblings leave the second with
-        # zero height, so the splash would disappear. Transparent PNG pixels still show ``content_host``.
+        # zero height, so the splash would disappear. Transparent PNG / fade pixels show ``content_host``.
         splash_overlay = tk.Frame(shell, bg="#000", highlightthickness=0, bd=0)
         splash_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         # Placed widgets can sit under later-packed siblings (e.g. ``hud_bar``); pin above ``content_host``.
@@ -886,6 +889,7 @@ def main() -> int:
             except tk.TclError:
                 pass
         startup_ph[0] = splash_overlay
+        # Empty label bg so PhotoImage alpha can punch through to content_host during the fade unveil.
         splash_label = tk.Label(splash_overlay, bg="#000", bd=0)
         splash_label.pack(expand=True, fill="both")
         splash_photo: list[ImageTk.PhotoImage | None] = [None]
@@ -1099,8 +1103,33 @@ def main() -> int:
                     # Fast path: opaque RGB → Tk's direct blit (no per-pixel alpha work).
                     splash_photo[0] = ImageTk.PhotoImage(image=Image.fromarray(rgb_hit, "RGB"))
                 else:
-                    # Splash now exits via off-screen motion; keep full alpha (no tail fade-out).
-                    splash_photo[0] = ImageTk.PhotoImage(image=bgra_to_pil_rgba(bgra_hit))
+                    # Fade-tail: composite faded splash over the already-painted UI underlay.
+                    fade_mul = splash_end_fade_factor(
+                        i, ntot, min(_splash_fade_frames, ntot)
+                    )
+                    bgra_out = apply_splash_global_alpha(bgra_hit, fade_mul)
+                    under = _splash_underlay_bgr[0]
+                    if (
+                        under is not None
+                        and under.ndim == 3
+                        and under.shape[:2] == bgra_out.shape[:2]
+                    ):
+                        a = bgra_out[:, :, 3:4].astype(np.float32) / 255.0
+                        blended = (
+                            bgra_out[:, :, :3].astype(np.float32) * a
+                            + under.astype(np.float32) * (1.0 - a)
+                        )
+                        rgb = cv2.cvtColor(
+                            np.clip(blended, 0, 255).astype(np.uint8),
+                            cv2.COLOR_BGR2RGB,
+                        )
+                        splash_photo[0] = ImageTk.PhotoImage(
+                            image=Image.fromarray(np.ascontiguousarray(rgb), "RGB")
+                        )
+                    else:
+                        splash_photo[0] = ImageTk.PhotoImage(
+                            image=bgra_to_pil_rgba(bgra_out)
+                        )
             except Exception:
                 # Best-effort RGB fallback so a single bad frame doesn't abort the splash.
                 try:
@@ -7528,6 +7557,28 @@ def main() -> int:
                 messagebox.showwarning("Pairing", "Enter the 4-digit code from the TV.", parent=root)
                 return
 
+            if action == "wifi_logout:yes":
+                try:
+                    from pigeon.app_state import clear_location_wifi
+
+                    clear_location_wifi()
+                except Exception:
+                    pass
+                st.selected_wifi_ssid = ""
+                st.wifi_password = ""
+                st.pending_wifi_ssid = ""
+                st.pending_network_password = ""
+                st.network_password_error = False
+                st.ensure_focus_ring()
+                main_settings_widget.invalidate()
+                skip_cache = None
+                return
+
+            if action == "wifi_logout:no":
+                main_settings_widget.invalidate()
+                skip_cache = None
+                return
+
             if action == "keyboard_go:network":
                 ssid = str(st.pending_wifi_ssid or "").strip()
                 password = str(st.pending_network_password or "")
@@ -7589,9 +7640,23 @@ def main() -> int:
 
             if action == "keyboard_go:location":
                 nm = str(st.location_name or "").strip() or "Room"
-                lid = read_current_location_id()
+                lid = str(getattr(st, "renaming_location_id", "") or "").strip()
+                if not lid:
+                    lid = read_current_location_id()
                 if lid:
                     rename_location_v2(lid, nm)
+                try:
+                    st.refresh_location_slots()
+                except Exception:
+                    pass
+                st.renaming_location_id = ""
+                st.renaming_location_slot = 0
+                try:
+                    st.location_name = read_current_location_name()
+                except Exception:
+                    st.location_name = nm
+                if st.show_location_picker:
+                    st.ensure_focus_ring()
                 main_settings_widget.invalidate()
                 skip_cache = None
                 return
@@ -7741,6 +7806,8 @@ def main() -> int:
                             end_apple_tv_operation()
                             if ok_af:
                                 _save_box_pair_device_row(2, row)
+                                st.load_saved_box_devices()
+                                st.show_box2_panel = True
                             st.clear_box_pairing()
                             main_settings_widget.invalidate()
                             skip_cache = None
@@ -10571,6 +10638,13 @@ def main() -> int:
                         black_photo = _bgr_to_tk_image(_black_screen_bgr())
                     label.configure(image=black_photo)
                     label.image = black_photo
+                if _PIGEON_EXT:
+                    try:
+                        _capture_splash_underlay(out_bgr)
+                    except NameError:
+                        pass
+                    except Exception:
+                        pass
                 _schedule_next_render()
                 return
 
@@ -10728,6 +10802,13 @@ def main() -> int:
             if tmdb_flag_badge_on:
                 _blend_tmdb_quality_flag_badge(shown)
             _update_label_photo_from_bgr(label, shown, label_live_photo)
+            if _PIGEON_EXT:
+                try:
+                    _capture_splash_underlay(shown)
+                except NameError:
+                    pass
+                except Exception:
+                    pass
 
             if (
                 not playing
@@ -10976,14 +11057,33 @@ def main() -> int:
 
             threading.Thread(target=work_safe, daemon=True).start()
 
+        def _capture_splash_underlay(out_bgr: np.ndarray) -> None:
+            """Keep a window-sized UI snapshot for the splash fade unveil."""
+            if startup_ph[0] is None or out_bgr is None or out_bgr.size == 0:
+                return
+            try:
+                if out_bgr.shape[0] == WINDOW_H and out_bgr.shape[1] == WINDOW_W:
+                    _splash_underlay_bgr[0] = np.ascontiguousarray(out_bgr)
+                else:
+                    _splash_underlay_bgr[0] = np.ascontiguousarray(
+                        _present_frame_to_display(out_bgr, WINDOW_W, WINDOW_H)
+                    )
+            except Exception:
+                pass
+
         def _splash_paint_view_one_under_overlay() -> None:
             """Composite View 1 under the splash while bootstrap finishes (helpers now exist)."""
-            if not _PIGEON_EXT or bootstrap_done[0]:
+            if not _PIGEON_EXT:
                 return
             _warm_view_one_under_splash()
             nonlocal skip_cache
             skip_cache = None
             render_once()
+            # Keep the scene painted under the splash so the fade unveil has something to reveal.
+            try:
+                root.update_idletasks()
+            except tk.TclError:
+                pass
 
         root.after(0, _splash_paint_view_one_under_overlay)
 
@@ -10994,6 +11094,12 @@ def main() -> int:
         skip_cache = None
         t_render0 = time.monotonic()
         render_once()
+        # Second paint once bootstrap is effectively complete — still under splash if animating.
+        if _PIGEON_EXT and startup_ph[0] is not None:
+            try:
+                render_once()
+            except Exception:
+                pass
         _log_view_one_startup_phase(f"first-render ({(time.monotonic() - t_render0) * 1000.0:.0f} ms)")
         root.after(600, _receiver_poll_tick)
 
@@ -11007,6 +11113,8 @@ def main() -> int:
                 pass
         bootstrap_done[0] = True
         _log_view_one_startup_phase("bootstrap-done")
+        # Removes overlay only when splash animation has also finished; otherwise the
+        # fade-tail continues unveiling the UI already painted into ``content_host``.
         _try_remove_splash_overlay()
 
     if _PIGEON_EXT:

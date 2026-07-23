@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 60">
+  <g id="keyboard_yes_no_yes">
+    <rect id="keyboard_yes_no_yes_button" x="8" y="8" width="96" height="44" rx="22" ry="22" fill="#231f20"/>
+    <text id="keyboard_yes_no_yes_icon" transform="translate(56 30)" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="24" font-weight="600"><tspan x="0" y="0">YES</tspan></text>
+  </g>
+  <g id="keyboard_yes_no_no">
+    <rect id="keyboard_yes_no_no_button" x="116" y="8" width="96" height="44" rx="22" ry="22" fill="#231f20"/>
+    <text id="keyboard_yes_no_no_icon" transform="translate(164 30)" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-family="SharpSans-Semibold, 'Sharp Sans'" font-size="24" font-weight="600"><tspan x="0" y="0">NO</tspan></text>
+  </g>
+</svg>
