@@ -5007,8 +5007,13 @@ def render_main_settings_bgra(
     *,
     svg_path: Path | str | None = None,
     assets_dir: Path | str | None = None,
+    skip_text_entry: bool = False,
 ) -> np.ndarray:
-    """Load settings_main.svg, apply ``state``, return 800×480 BGRA."""
+    """Load settings_main.svg, apply ``state``, return 800×480 BGRA.
+
+    ``skip_text_entry`` leaves dual-bar field text undrawn so callers can cache
+    chrome and patch the buffer without a full SVG re-raster.
+    """
     if svg_path is not None:
         path = Path(svg_path)
     else:
@@ -5051,8 +5056,10 @@ def render_main_settings_bgra(
         bgra, st, onboarding_arc_specs, onboarding_triangle_specs
     )
     if st.keyboard_open or st.wifi_connecting or st.manual_device_entry is not None:
-        _draw_text_entry_content(bgra, st)
-    _draw_dual_bar_network_prompt(bgra, st)
+        if not skip_text_entry:
+            _draw_text_entry_content(bgra, st)
+    if not skip_text_entry:
+        _draw_dual_bar_network_prompt(bgra, st)
     return bgra
 
 
@@ -5096,11 +5103,16 @@ class MainSettingsWidget:
         self._cached_main_sig: tuple[object, ...] | None = None
         self._cached_kb_bgra: np.ndarray | None = None
         self._cached_kb_sig: tuple[object, ...] | None = None
+        # Main chrome under the keyboard (no field text) — typing patches text only.
+        self._cached_kb_chrome_bgra: np.ndarray | None = None
+        self._cached_kb_chrome_sig: tuple[object, ...] | None = None
         # Per-key keyboard overlays for the active mode — Left/Right revisits skip PyMuPDF.
         self._kb_focus_frame_cache: dict[tuple[object, ...], np.ndarray] = {}
         self._kb_composed_cache: dict[tuple[object, ...], np.ndarray] = {}
         self._kb_cache_mode: object | None = None
         self._kb_prewarm_inflight: bool = False
+        # Opaque-flag cache for keyboard overlays (avoid float blend when possible).
+        self._kb_frame_opaque: dict[tuple[object, ...], bool] = {}
         self._wifi_search_glyph_cache: np.ndarray | None = None
         self._wifi_scan_result: tuple[str, ...] | None = None
         self._wifi_scan_cache: tuple[tuple[str, ...], float] | None = None
@@ -5141,8 +5153,11 @@ class MainSettingsWidget:
         self._cached_main_sig = None
         self._cached_kb_bgra = None
         self._cached_kb_sig = None
+        self._cached_kb_chrome_bgra = None
+        self._cached_kb_chrome_sig = None
         self._kb_focus_frame_cache.clear()
         self._kb_composed_cache.clear()
+        self._kb_frame_opaque.clear()
         self._kb_cache_mode = None
         self._kb_prewarm_inflight = False
         self._focus_frame_cache.clear()
@@ -5174,6 +5189,7 @@ class MainSettingsWidget:
     def _clear_keyboard_focus_caches(self) -> None:
         self._kb_focus_frame_cache.clear()
         self._kb_composed_cache.clear()
+        self._kb_frame_opaque.clear()
         self._kb_cache_mode = None
         self._kb_prewarm_inflight = False
         self._cached_kb_bgra = None
@@ -5186,6 +5202,85 @@ class MainSettingsWidget:
         self._cached_bgra = None
         self._cached_sig = None
         self._paste_fully_opaque = None
+
+    def _keyboard_chrome_sig(self) -> tuple[object, ...]:
+        """Main chrome under the keyboard — excludes typing buffer."""
+        st = self._state
+        th = st.theme
+        kb = st.keyboard
+        kb_main: tuple[object, ...] = ()
+        if kb is not None:
+            kb_main = (
+                getattr(kb, "mode", None),
+                str(getattr(kb, "target", "")),
+                str(getattr(kb, "initial_text", "")),
+                bool(getattr(kb, "supports_lowercase", True)),
+            )
+        return (
+            th.ui,
+            th.selected,
+            th.deselected,
+            th.inactive,
+            th.accent,
+            int(st.wifi_level),
+            st.location_name,
+            st.wifi_password,
+            st.selected_wifi_ssid,
+            st.pending_wifi_ssid,
+            bool(st.network_password_error),
+            bool(st.wifi_connecting),
+            st.version_string,
+            bool(st.show_network_picker),
+            bool(st.show_box1_panel),
+            bool(st.show_box2_panel),
+            bool(st.show_box3_panel),
+            bool(st.show_location_picker),
+            bool(st.show_pigeon_settings),
+            bool(st.keyboard_open),
+            str(self._svg_path or ""),
+            str(self._assets_dir or ""),
+            kb_main,
+            None
+            if st.box_pairing is None
+            else (
+                int(st.box_pairing.box_num),
+                str(st.box_pairing.step),
+                str(st.box_pairing.session_key),
+                str(st.box_pairing.device_name),
+            ),
+        )
+
+    def _main_with_text_from_chrome(self) -> np.ndarray:
+        """Copy keyboard chrome and paint current field text (no SVG raster)."""
+        assert self._cached_kb_chrome_bgra is not None
+        frame = self._cached_kb_chrome_bgra.copy()
+        _draw_text_entry_content(frame, self._state)
+        _draw_dual_bar_network_prompt(frame, self._state)
+        return frame
+
+    def _compose_keyboard_over_main(
+        self, main_frame: np.ndarray, kb_frame: np.ndarray, kb_sig: tuple[object, ...] | None
+    ) -> np.ndarray:
+        """Alpha-compose keyboard overlay; opaque overlays skip float blend."""
+        opaque = None if kb_sig is None else self._kb_frame_opaque.get(kb_sig)
+        if opaque is None:
+            opaque = int(kb_frame[:, :, 3].min()) == 255
+            if kb_sig is not None:
+                self._kb_frame_opaque[kb_sig] = opaque
+        out = main_frame.copy()
+        if opaque:
+            out[:, :, :3] = kb_frame[:, :, :3]
+            out[:, :, 3] = 255
+            return out
+        base_bgr = out[:, :, :3]
+        blended = alpha_blend_bgra_over_bgr(base_bgr, kb_frame)
+        alpha = kb_frame[:, :, 3:4].astype(np.float32) / 255.0
+        out_a = np.clip(
+            alpha * 255.0 + (1.0 - alpha) * out[:, :, 3:4].astype(np.float32),
+            0,
+            255,
+        ).astype(np.uint8)
+        return np.dstack([blended, out_a[:, :, 0]])
 
     def _keyboard_overlay_sig_for(
         self, mode: object, focus_index: int
@@ -5301,7 +5396,7 @@ class MainSettingsWidget:
         if kb is not None:
             kb_main = (
                 getattr(kb, "mode", None),
-                str(getattr(kb, "buffer", "")),
+                # Buffer is Pillow-patched on chrome — not SVG structure.
                 str(getattr(kb, "target", "")),
                 str(getattr(kb, "initial_text", "")),
                 bool(getattr(kb, "supports_lowercase", True)),
@@ -5455,7 +5550,22 @@ class MainSettingsWidget:
             return
         if st.show_pigeon_settings:
             st.navigate_pigeon(forward=forward)
-            self.invalidate()
+            # Soft nav — reuse per-focus pigeon bitmaps like main chrome.
+            self._cached_bgra = None
+            self._cached_sig = None
+            self._paste_fully_opaque = None
+            focus_key = self._focus_cache_key()
+            structure = self._structure_sig()
+            if (
+                structure == self._focus_cache_structure
+                and focus_key in self._focus_frame_cache
+            ):
+                self._cached_main_bgra = self._focus_frame_cache[focus_key]
+                self._cached_main_sig = self._main_state_sig()
+            else:
+                self._cached_main_bgra = None
+                self._cached_main_sig = None
+            self._prewarm_neighbor_focus(forward=forward)
             return
         st.navigate(forward=forward)
         # Drop composed frame so PhotoImage refreshes; reuse focus bitmap when available.
@@ -5487,9 +5597,57 @@ class MainSettingsWidget:
         if self._prewarm_all_inflight:
             return
         st = self._state
-        if st.keyboard_open or st.show_pigeon_settings:
+        if st.keyboard_open:
             return
         structure = self._structure_sig()
+        if st.show_pigeon_settings:
+            from pigeon.widgets.pigeon_settings import pigeon_focus_ring, render_pigeon_settings_bgra
+
+            ring = pigeon_focus_ring()
+            n = len(ring)
+            if n <= 1:
+                return
+            missing = []
+            for idx in range(n):
+                probe = copy.deepcopy(st)
+                probe.pigeon_focus_index = idx
+                if self._focus_key_for_state(probe) not in self._focus_frame_cache:
+                    missing.append(idx)
+            if not missing:
+                return
+            self._prewarm_all_inflight = True
+            state_snap = copy.deepcopy(st)
+            assets_dir = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_pigeon() -> None:
+                try:
+                    for idx in missing:
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        state_snap.pigeon_focus_index = idx
+                        key = self._focus_key_for_state(state_snap)
+                        if key in cache:
+                            continue
+                        try:
+                            frame = render_pigeon_settings_bgra(
+                                state_snap, assets_dir=assets_dir
+                            )
+                        except Exception:
+                            return
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        if self._focus_cache_structure is None:
+                            self._focus_cache_structure = struct_ref
+                        cache[key] = frame
+                finally:
+                    self._prewarm_all_inflight = False
+
+            threading.Thread(
+                target=_work_pigeon, name="pigeon-submenu-prewarm", daemon=True
+            ).start()
+            return
         row_count = self._list_row_count()
         # Search results: focus ring is length 1 — prewarm selection rows instead.
         if row_count is not None:
@@ -5591,6 +5749,35 @@ class MainSettingsWidget:
             return
         st = self._state
         if st.keyboard_open:
+            return
+
+        if st.show_pigeon_settings:
+            from pigeon.widgets.pigeon_settings import pigeon_focus_ring, render_pigeon_settings_bgra
+
+            ring = pigeon_focus_ring()
+            n = len(ring)
+            nxt = (int(st.pigeon_focus_index) + (1 if forward else -1)) % n
+            snap = copy.deepcopy(st)
+            snap.pigeon_focus_index = nxt
+            key_probe = self._focus_key_for_state(snap)
+            if key_probe in self._focus_frame_cache:
+                return
+            assets = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_pigeon_n() -> None:
+                try:
+                    frame = render_pigeon_settings_bgra(snap, assets_dir=assets)
+                except Exception:
+                    return
+                if self._focus_cache_structure != struct_ref:
+                    return
+                cache.setdefault(key_probe, frame)
+
+            threading.Thread(
+                target=_work_pigeon_n, name="pigeon-submenu-prewarm-n", daemon=True
+            ).start()
             return
 
         row_count = self._list_row_count()
@@ -6166,13 +6353,31 @@ class MainSettingsWidget:
                     and st.network_password_error
                 ):
                     st.network_password_error = False
-                self._cached_main_bgra = None
-                self._cached_main_sig = None
-                self._cached_bgra = None
-                # Text field changed — drop composed overlays; keep per-key kb bitmaps.
-                self._kb_composed_cache.clear()
+                    # Error chrome changed — rebuild chrome under the keyboard.
+                    self._cached_kb_chrome_bgra = None
+                    self._cached_kb_chrome_sig = None
+                chrome_sig = self._keyboard_chrome_sig()
+                if (
+                    self._cached_kb_chrome_bgra is not None
+                    and self._cached_kb_chrome_sig == chrome_sig
+                ):
+                    frame = self._main_with_text_from_chrome()
+                    self._cached_main_bgra = frame
+                    self._cached_main_sig = self._main_state_sig()
+                    self._cached_bgra = None
+                    self._kb_composed_cache.clear()
+                    self._paste_fully_opaque = None
+                else:
+                    self._cached_main_bgra = None
+                    self._cached_main_sig = None
+                    self._cached_bgra = None
+                    self._kb_composed_cache.clear()
             elif result.startswith("mode:"):
-                self.invalidate()
+                # Keep main chrome; only rebuild keyboard overlays for the new layout.
+                self._clear_keyboard_focus_caches()
+                self._cached_bgra = None
+                self._paste_fully_opaque = None
+                self._want_prewarm_after_paint = True
             else:
                 self.invalidate()
             if result == "cancel":
@@ -6419,7 +6624,16 @@ class MainSettingsWidget:
             st = self._state
             if st.show_pigeon_settings:
                 main_sig = self._main_state_sig()
-                if self._cached_main_bgra is not None and self._cached_main_sig == main_sig:
+                structure = self._structure_sig()
+                focus_key = self._focus_cache_key()
+                if structure != self._focus_cache_structure:
+                    self._focus_frame_cache.clear()
+                    self._focus_cache_structure = structure
+                if focus_key in self._focus_frame_cache:
+                    frame = self._focus_frame_cache[focus_key]
+                    self._cached_main_bgra = frame
+                    self._cached_main_sig = main_sig
+                elif self._cached_main_bgra is not None and self._cached_main_sig == main_sig:
                     frame = self._cached_main_bgra
                 else:
                     from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
@@ -6430,7 +6644,11 @@ class MainSettingsWidget:
                     )
                     self._cached_main_bgra = frame
                     self._cached_main_sig = main_sig
+                    self._store_focus_frame(frame)
                 self._cached_bgra = frame
+                if self._want_prewarm_after_paint:
+                    self._want_prewarm_after_paint = False
+                    self.prewarm_focus_ring()
                 return frame
 
             main_sig = self._main_state_sig()
@@ -6445,6 +6663,25 @@ class MainSettingsWidget:
                 self._cached_main_sig = main_sig
             elif self._cached_main_bgra is not None and self._cached_main_sig == main_sig:
                 frame = self._cached_main_bgra
+            elif st.keyboard is not None:
+                chrome_sig = self._keyboard_chrome_sig()
+                if (
+                    self._cached_kb_chrome_bgra is not None
+                    and self._cached_kb_chrome_sig == chrome_sig
+                ):
+                    frame = self._main_with_text_from_chrome()
+                else:
+                    chrome = render_main_settings_bgra(
+                        self._state,
+                        svg_path=self._svg_path,
+                        assets_dir=self._assets_dir,
+                        skip_text_entry=True,
+                    )
+                    self._cached_kb_chrome_bgra = chrome
+                    self._cached_kb_chrome_sig = chrome_sig
+                    frame = self._main_with_text_from_chrome()
+                self._cached_main_bgra = frame
+                self._cached_main_sig = main_sig
             else:
                 frame = render_main_settings_bgra(
                     self._state,
@@ -6500,16 +6737,7 @@ class MainSettingsWidget:
                         self._cached_kb_sig = kb_sig
                         if kb_sig is not None:
                             self._store_kb_frame(kb_sig, kb_frame)
-                    frame = frame.copy()
-                    base_bgr = frame[:, :, :3]
-                    blended = alpha_blend_bgra_over_bgr(base_bgr, kb_frame)
-                    alpha = kb_frame[:, :, 3:4].astype(np.float32) / 255.0
-                    out_a = np.clip(
-                        alpha * 255.0 + (1.0 - alpha) * frame[:, :, 3:4].astype(np.float32),
-                        0,
-                        255,
-                    ).astype(np.uint8)
-                    frame = np.dstack([blended, out_a[:, :, 0]])
+                    frame = self._compose_keyboard_over_main(frame, kb_frame, kb_sig)
                     if kb_sig is not None:
                         self._store_kb_composed(compose_key, frame)
         except Exception:
