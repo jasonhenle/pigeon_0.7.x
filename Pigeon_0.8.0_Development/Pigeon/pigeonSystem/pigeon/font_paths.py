@@ -263,26 +263,33 @@ def resolve_digital7_font() -> str | None:
     LCD-style font for the clock saver time (e.g. Digital-7).
 
     Set ``PIGEON_FONT_CLOCK_SAVER`` to a ``.ttf`` path to override. Otherwise searches
-    ``pigeonAssets/`` next to the package, then common font directories for names like
-    ``Digital-7.ttf`` / ``digital-7.ttf`` / ``*Digital*7*.ttf``.
+    ``pigeonAssets/fonts`` and ``pigeonAssets/`` next to the package, then common font
+    directories for names like ``Digital-7.ttf`` / ``digital-7.ttf`` / ``*Digital*7*.ttf``.
     """
     env = os.environ.get("PIGEON_FONT_CLOCK_SAVER")
     if env and Path(env).is_file():
         return env
 
-    pkg_root = Path(__file__).resolve().parent.parent
+    pkg_root = Path(__file__).resolve().parents[2]  # app folder (sibling of pigeonSystem)
     assets = pkg_root / "pigeonAssets"
+    name_candidates = (
+        "Digital-7.ttf",
+        "digital-7.ttf",
+        "Digital-7 (mono).ttf",
+        "digital-7 (mono).ttf",
+    )
+    search_dirs: list[Path] = []
     if assets.is_dir():
-        for name in (
-            "Digital-7.ttf",
-            "digital-7.ttf",
-            "Digital-7 (mono).ttf",
-            "digital-7 (mono).ttf",
-        ):
-            p = assets / name
+        fonts_subdir = assets / "fonts"
+        if fonts_subdir.is_dir():
+            search_dirs.append(fonts_subdir)
+        search_dirs.append(assets)
+    for folder in search_dirs:
+        for name in name_candidates:
+            p = folder / name
             if p.is_file():
                 return str(p)
-        for p in sorted(assets.glob("*Digital*7*.ttf")) + sorted(assets.glob("*digital*7*.ttf")):
+        for p in sorted(folder.glob("*Digital*7*.ttf")) + sorted(folder.glob("*digital*7*.ttf")):
             if p.is_file() and "italic" not in p.name.lower():
                 return str(p)
 

@@ -597,6 +597,18 @@ class SceneFit:
 
 def _default_render_fps() -> float:
     """Tk timer cadence for static landing + composited widgets (no scene video)."""
+    import os
+    import sys
+
+    env = os.environ.get("PIGEON_UI_FPS", "").strip()
+    if env:
+        try:
+            return max(5.0, min(60.0, float(env)))
+        except ValueError:
+            pass
+    # Pi / Linux: keep PhotoImage uploads and settings SVG compositing lighter.
+    if sys.platform.startswith("linux"):
+        return 12.0
     return 30.0
 
 
@@ -10563,7 +10575,7 @@ def main() -> int:
             def _next_render_ms() -> int:
                 if playing:
                     return frame_interval_ms
-                # WiFi scan spinner: smooth 60 FPS while scanning.
+                # WiFi / box scan spinner: keep responsive without 60 FPS full-frame uploads on Pi.
                 if (
                     dev_phase == DevPhase.MAIN_SETTINGS
                     and main_settings_widget is not None
@@ -10574,7 +10586,10 @@ def main() -> int:
                         or main_settings_widget.state.box3_devices.scanning
                     )
                 ):
-                    return 16
+                    return 50 if sys.platform.startswith("linux") else 16
+                # Static settings UI: Pi is SVG+PhotoImage bound — refresh only on input/ticks.
+                if dev_phase == DevPhase.MAIN_SETTINGS and sys.platform.startswith("linux"):
+                    return 200
                 # Audio meter sim animates continuously; keep ~30 FPS while active.
                 if _audio_sim_active() and _view_one_uses_now_playing_screen():
                     return 33
