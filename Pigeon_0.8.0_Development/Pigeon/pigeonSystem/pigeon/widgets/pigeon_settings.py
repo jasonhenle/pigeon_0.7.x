@@ -123,14 +123,29 @@ def pigeon_focus_ring() -> tuple[str, ...]:
     return _PIGEON_FOCUS_RING
 
 
+_PIGEON_SVG_TREE_TEMPLATES: dict[tuple[str, int, int], ET.Element] = {}
+_PIGEON_SVG_TREE_TEMPLATE_MAX = 4
+
+
 def _pigeon_svg_tree_from_path(path: Path) -> ET.Element:
-    tree = ET.parse(path)
-    root = tree.getroot()
-    x, y, w, h = _PIGEON_VIEWBOX
-    root.set("viewBox", f"{x} {y} {w} {h}")
-    root.set("width", str(DESIGN_W))
-    root.set("height", str(DESIGN_H))
-    return root
+    try:
+        st = path.stat()
+        key = (str(path.resolve()), int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        key = (str(path), 0, 0)
+    template = _PIGEON_SVG_TREE_TEMPLATES.get(key)
+    if template is None:
+        tree = ET.parse(path)
+        root = tree.getroot()
+        x, y, w, h = _PIGEON_VIEWBOX
+        root.set("viewBox", f"{x} {y} {w} {h}")
+        root.set("width", str(DESIGN_W))
+        root.set("height", str(DESIGN_H))
+        if len(_PIGEON_SVG_TREE_TEMPLATES) >= _PIGEON_SVG_TREE_TEMPLATE_MAX:
+            _PIGEON_SVG_TREE_TEMPLATES.clear()
+        _PIGEON_SVG_TREE_TEMPLATES[key] = root
+        template = root
+    return copy.deepcopy(template)
 
 
 def _ensure_back_selected_text_contrast(root: ET.Element) -> None:
