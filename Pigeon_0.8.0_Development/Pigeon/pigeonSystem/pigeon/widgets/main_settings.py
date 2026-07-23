@@ -1852,26 +1852,30 @@ def _set_visible(el: ET.Element | None, visible: bool) -> None:
     Hide marks only the subtree root — ``_prune_display_none`` drops the whole
     branch before PyMuPDF (which ignores inherited ``display``).
 
-    Show clears ``display:none`` on the root and descendants: Illustrator often
-    bakes ``display:none`` into child ``style`` (e.g. darker container stripes),
-    and those must be cleared or the red menu background renders as a wedge.
+    Show clears ``display:none`` on the root and descendants that actually have
+    it (Illustrator often bakes ``display:none`` into child ``style``). Skipping
+    clean nodes keeps focus navigation cheap on Pi.
     """
     if el is None:
         return
-    nodes = [el, *(child for child in el.iter() if child is not el)] if visible else [el]
-    for node in nodes:
-        if visible:
+    if not visible:
+        el.set("display", "none")
+        return
+    for node in (el, *(child for child in el.iter() if child is not el)):
+        had_attr = "display" in node.attrib
+        style = node.get("style") or ""
+        had_style = "display:" in style
+        if not had_attr and not had_style:
+            continue
+        if had_attr:
             node.attrib.pop("display", None)
-            style = node.get("style") or ""
-            if "display:" in style:
-                cleaned = re.sub(r"display\s*:\s*[^;]+;?\s*", "", style, flags=re.IGNORECASE)
-                cleaned = cleaned.strip().rstrip(";")
-                if cleaned:
-                    node.set("style", cleaned)
-                elif "style" in node.attrib:
-                    node.attrib.pop("style")
-        else:
-            node.set("display", "none")
+        if had_style:
+            cleaned = re.sub(r"display\s*:\s*[^;]+;?\s*", "", style, flags=re.IGNORECASE)
+            cleaned = cleaned.strip().rstrip(";")
+            if cleaned:
+                node.set("style", cleaned)
+            elif "style" in node.attrib:
+                node.attrib.pop("style")
 
 
 def _prune_display_none(root: ET.Element) -> None:
@@ -3141,16 +3145,14 @@ def _composite_stroke_mask(
     mask: np.ndarray,
     color_bgr: tuple[int, int, int],
 ) -> None:
-    alpha = mask.astype(np.float32) / 255.0
-    if not np.any(alpha > 0):
+    """Paint ``color_bgr`` where ``mask`` is non-zero (opaque). Avoids full-frame float blends."""
+    sel = mask > 0
+    if not np.any(sel):
         return
-    alpha3 = alpha[..., np.newaxis]
-    background = dst[:, :, :3].astype(np.float32)
-    foreground = np.array(color_bgr, dtype=np.float32)
-    dst[:, :, :3] = np.clip(foreground * alpha3 + background * (1.0 - alpha3), 0, 255).astype(
-        np.uint8
-    )
-    dst[:, :, 3] = np.where(mask > 0, 255, dst[:, :, 3]).astype(np.uint8)
+    dst[sel, 0] = color_bgr[0]
+    dst[sel, 1] = color_bgr[1]
+    dst[sel, 2] = color_bgr[2]
+    dst[sel, 3] = 255
 
 
 @lru_cache(maxsize=4)
@@ -3574,6 +3576,7 @@ def _transform_rect_corners_svg(
     return tuple(out)
 
 
+@lru_cache(maxsize=1)
 def _menu_container_mask() -> np.ndarray:
     """Inside=255 mask for the red menu container (PyMuPDF inverts SVG clip-path)."""
     from PIL import Image, ImageDraw
@@ -3583,6 +3586,81 @@ def _menu_container_mask() -> np.ndarray:
     x0, y0, x1, y1 = _MENU_CONTAINER_BBOX
     draw.rounded_rectangle((x0, y0, x1, y1), radius=_MENU_CONTAINER_RADIUS_PX, fill=255)
     return np.asarray(mask, dtype=np.uint8)
+
+
+_CONTAINER_BG_PLATE_CACHE: dict[tuple[object, ...], np.ndarray] = {}
+
+
+def _container_stripe_cache_key(stripes: tuple[_ContainerStripeSpec, ...]) -> tuple[object, ...]:
+    return tuple(
+        (
+            round(s.x_svg, 3),
+            round(s.y_svg, 3),
+            round(s.width_svg, 3),
+            round(s.height_svg, 3),
+            tuple(round(v, 5) for v in s.matrix),
+            s.fill_hex,
+        )
+        for s in stripes
+    )
+
+
+def _draw_container_background_bgra(
+    bgra: np.ndarray,
+    stripes: tuple[_ContainerStripeSpec, ...] | None = None,
+) -> None:
+    """Paint solid red menu plate + clipped diagonal stripes (PyMuPDF clip-path fix)."""
+    stripe_tuple = stripes or ()
+    key = _container_stripe_cache_key(stripe_tuple)
+    cached = _CONTAINER_BG_PLATE_CACHE.get(key)
+    if cached is not None:
+        bgra[:] = cached
+        return
+
+    plate = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
+    plate[:, :, 3] = 255
+    mask = _menu_container_mask()
+    _composite_stroke_mask(plate, mask, _hex_to_bgr(COLOR_UI_DEFAULT))
+    for stripe in stripe_tuple:
+        corners = _transform_rect_corners_svg(
+            stripe.x_svg,
+            stripe.y_svg,
+            stripe.width_svg,
+            stripe.height_svg,
+            stripe.matrix,
+        )
+        pts = np.array([_svg_to_px(x, y) for x, y in corners], dtype=np.int32)
+        poly_mask = np.zeros((DESIGN_H, DESIGN_W), dtype=np.uint8)
+        cv2.fillConvexPoly(poly_mask, pts, 255)
+        poly_mask = cv2.bitwise_and(poly_mask, mask)
+        _composite_stroke_mask(plate, poly_mask, _hex_to_bgr(stripe.fill_hex))
+    if len(_CONTAINER_BG_PLATE_CACHE) >= 8:
+        _CONTAINER_BG_PLATE_CACHE.clear()
+    _CONTAINER_BG_PLATE_CACHE[key] = plate
+    bgra[:] = plate
+
+
+def _composite_bgra_over_bgra(base: np.ndarray, overlay: np.ndarray) -> np.ndarray:
+    """Alpha-composite overlay onto base. Fast paths for empty / fully opaque pixels."""
+    a = overlay[:, :, 3]
+    if not np.any(a):
+        return base
+    out = base.copy()
+    opaque = a == 255
+    if np.any(opaque):
+        out[opaque, :3] = overlay[opaque, :3]
+        out[opaque, 3] = 255
+    partial = (a > 0) & (a < 255)
+    if np.any(partial):
+        fg = overlay[partial].astype(np.float32)
+        bg = out[partial].astype(np.float32)
+        alpha = fg[:, 3:4] * (1.0 / 255.0)
+        inv = 1.0 - alpha
+        blended = fg[:, :3] * alpha + bg[:, :3] * inv
+        out_a = np.clip(fg[:, 3] + bg[:, 3] * inv[:, 0], 0, 255)
+        out[partial, :3] = blended
+        out[partial, 3] = out_a
+    return out.astype(np.uint8)
 
 
 def _discover_container_stripe_specs(root: ET.Element, container_id: str) -> tuple[_ContainerStripeSpec, ...]:
@@ -3658,40 +3736,6 @@ def _remove_canvas_background_rect(root: ET.Element) -> None:
             parent = parents.get(el)
             if parent is not None:
                 parent.remove(el)
-
-
-def _draw_container_background_bgra(bgra: np.ndarray, stripes: tuple[_ContainerStripeSpec, ...] | None = None) -> None:
-    """Paint solid red menu plate + clipped diagonal stripes (PyMuPDF clip-path fix)."""
-    mask = _menu_container_mask()
-    # Base plate — without this, only uncovered stripe wedges show on black.
-    brand = _hex_to_bgr(COLOR_UI_DEFAULT)
-    _composite_stroke_mask(bgra, mask, brand)
-    if not stripes:
-        return
-    for stripe in stripes:
-        corners = _transform_rect_corners_svg(
-            stripe.x_svg,
-            stripe.y_svg,
-            stripe.width_svg,
-            stripe.height_svg,
-            stripe.matrix,
-        )
-        pts = np.array([_svg_to_px(x, y) for x, y in corners], dtype=np.int32)
-        poly_mask = np.zeros(bgra.shape[:2], dtype=np.uint8)
-        cv2.fillConvexPoly(poly_mask, pts, 255)
-        poly_mask = cv2.bitwise_and(poly_mask, mask)
-        _composite_stroke_mask(bgra, poly_mask, _hex_to_bgr(stripe.fill_hex))
-
-
-def _composite_bgra_over_bgra(base: np.ndarray, overlay: np.ndarray) -> np.ndarray:
-    fg = overlay.astype(np.float32)
-    bg = base.astype(np.float32)
-    alpha = fg[:, :, 3:4] / 255.0
-    inv = 1.0 - alpha
-    out = bg.copy()
-    out[:, :, :3] = fg[:, :, :3] * alpha + bg[:, :, :3] * inv
-    out[:, :, 3] = np.clip(fg[:, :, 3] + bg[:, :, 3] * inv[..., 0], 0, 255)
-    return out.astype(np.uint8)
 
 
 def _is_box_chrome_logical(logical: str) -> bool:
@@ -5022,6 +5066,9 @@ class MainSettingsWidget:
         self._box_scan_pending: set[int] = set()
         self._pre_scan_main_bgra: dict[int, np.ndarray] = {}
         self._last_tick_mono: float = time.monotonic()
+        # Per-focus bitmaps for the current structure — left/right nav revisits are free.
+        self._focus_frame_cache: dict[tuple[object, ...], np.ndarray] = {}
+        self._focus_cache_structure: tuple[object, ...] | None = None
 
     @property
     def state(self) -> MainSettingsState:
@@ -5034,6 +5081,8 @@ class MainSettingsWidget:
         self._cached_main_sig = None
         self._cached_kb_bgra = None
         self._cached_kb_sig = None
+        self._focus_frame_cache.clear()
+        self._focus_cache_structure = None
 
     def frame_cache_token(self) -> tuple[object, ...]:
         """Stable token for skip-cache while the settings bitmap is unchanged."""
@@ -5140,6 +5189,100 @@ class MainSettingsWidget:
             str(self._assets_dir or ""),
         )
 
+    def _structure_sig(self) -> tuple[object, ...]:
+        """State that forces a full SVG rebuild (everything except pure focus indices)."""
+        st = self._state
+        th = st.theme
+        kb = st.keyboard
+        kb_main: tuple[object, ...] = ()
+        if kb is not None:
+            kb_main = (
+                getattr(kb, "mode", None),
+                str(getattr(kb, "buffer", "")),
+                str(getattr(kb, "target", "")),
+                str(getattr(kb, "initial_text", "")),
+                bool(getattr(kb, "supports_lowercase", True)),
+            )
+        return (
+            st.focus_ring,
+            th.ui,
+            th.selected,
+            th.deselected,
+            th.inactive,
+            th.accent,
+            int(st.wifi_level),
+            st.location_name,
+            st.wifi_password,
+            st.selected_wifi_ssid,
+            st.pending_wifi_ssid,
+            bool(st.network_password_error),
+            bool(st.wifi_connecting),
+            st.version_string,
+            bool(st.show_network_picker),
+            int(st.network_picker_scroll),
+            str(st.network_picker_arrow),
+            bool(st.show_instructions),
+            bool(st.wifi_onboarding),
+            bool(st.wifi_scanning),
+            st.wifi_networks,
+            bool(st.show_box1_panel),
+            bool(st.show_box2_panel),
+            bool(st.show_box3_panel),
+            bool(st.show_location_picker),
+            tuple(st.location_slots),
+            str(st.renaming_location_id),
+            int(st.renaming_location_slot),
+            tuple(st.box2_devices.devices),
+            st.box2_devices.phase,
+            bool(st.box2_devices.scanning),
+            int(st.box2_devices.scroll),
+            st.box2_devices.picked,
+            tuple(st.box3_devices.devices),
+            st.box3_devices.phase,
+            bool(st.box3_devices.scanning),
+            int(st.box3_devices.scroll),
+            st.box3_devices.picked,
+            bool(st.show_pigeon_settings),
+            bool(st.keyboard_open),
+            str(self._svg_path or ""),
+            str(self._assets_dir or ""),
+            kb_main,
+            None
+            if st.box_pairing is None
+            else (
+                int(st.box_pairing.box_num),
+                str(st.box_pairing.step),
+                str(st.box_pairing.session_key),
+                str(st.box_pairing.device_name),
+            ),
+        )
+
+    def _focus_cache_key(self) -> tuple[object, ...]:
+        st = self._state
+        return (
+            int(st.focus_index) if not st.keyboard_open else -1,
+            int(st.network_picker_row),
+            int(st.box2_devices.row),
+            str(st.box2_devices.arrow),
+            int(st.box3_devices.row),
+            str(st.box3_devices.arrow),
+            int(st.pigeon_focus_index),
+        )
+
+    def _store_focus_frame(self, frame: np.ndarray) -> None:
+        structure = self._structure_sig()
+        if structure != self._focus_cache_structure:
+            self._focus_frame_cache.clear()
+            self._focus_cache_structure = structure
+        key = self._focus_cache_key()
+        if key not in self._focus_frame_cache:
+            self._focus_frame_cache[key] = frame.copy()
+            # Bound memory: keep a ring of recent focus bitmaps.
+            if len(self._focus_frame_cache) > 12:
+                oldest = next(iter(self._focus_frame_cache))
+                if oldest != key:
+                    self._focus_frame_cache.pop(oldest, None)
+
     def navigate(self, forward: bool = True) -> None:
         st = self._state
         if st.keyboard is not None:
@@ -5151,7 +5294,54 @@ class MainSettingsWidget:
             self.invalidate()
             return
         st.navigate(forward=forward)
-        self.invalidate()
+        # Keep structure caches; only drop the composed frame so the new focus can hit the focus cache.
+        self._cached_bgra = None
+        self._cached_sig = None
+        self._cached_main_bgra = None
+        self._cached_main_sig = None
+        self._prewarm_neighbor_focus(forward=forward)
+
+    def _prewarm_neighbor_focus(self, *, forward: bool) -> None:
+        """Rasterize the next focus target off-thread so the following keypress is cached."""
+        import copy
+        import threading
+
+        structure = self._structure_sig()
+        if structure != self._focus_cache_structure:
+            return
+        st = self._state
+        if st.keyboard_open or not st.focus_ring:
+            return
+        n = len(st.focus_ring)
+        nxt = (int(st.focus_index) + (1 if forward else -1)) % n
+        key_probe = (
+            nxt,
+            int(st.network_picker_row),
+            int(st.box2_devices.row),
+            str(st.box2_devices.arrow),
+            int(st.box3_devices.row),
+            str(st.box3_devices.arrow),
+            int(st.pigeon_focus_index),
+        )
+        if key_probe in self._focus_frame_cache:
+            return
+        snap = copy.deepcopy(st)
+        snap.focus_index = nxt
+        assets = self._assets_dir
+        svg = self._svg_path
+        cache = self._focus_frame_cache
+        struct_ref = structure
+
+        def _work() -> None:
+            try:
+                frame = render_main_settings_bgra(snap, svg_path=svg, assets_dir=assets)
+            except Exception:
+                return
+            if self._focus_cache_structure != struct_ref:
+                return
+            cache.setdefault(key_probe, frame)
+
+        threading.Thread(target=_work, name="pigeon-settings-prewarm", daemon=True).start()
 
     def navigate_vertical(self, *, up: bool) -> None:
         """Vertical navigation disabled — use left/right only."""
@@ -5734,7 +5924,16 @@ class MainSettingsWidget:
                 return frame
 
             main_sig = self._main_state_sig()
-            if self._cached_main_bgra is not None and self._cached_main_sig == main_sig:
+            structure = self._structure_sig()
+            focus_key = self._focus_cache_key()
+            if structure != self._focus_cache_structure:
+                self._focus_frame_cache.clear()
+                self._focus_cache_structure = structure
+            if focus_key in self._focus_frame_cache:
+                frame = self._focus_frame_cache[focus_key]
+                self._cached_main_bgra = frame
+                self._cached_main_sig = main_sig
+            elif self._cached_main_bgra is not None and self._cached_main_sig == main_sig:
                 frame = self._cached_main_bgra
             else:
                 frame = render_main_settings_bgra(
@@ -5744,6 +5943,7 @@ class MainSettingsWidget:
                 )
                 self._cached_main_bgra = frame
                 self._cached_main_sig = main_sig
+                self._store_focus_frame(frame)
 
             if self._state.wifi_scanning or self._state.wifi_connecting:
                 frame = frame.copy()
