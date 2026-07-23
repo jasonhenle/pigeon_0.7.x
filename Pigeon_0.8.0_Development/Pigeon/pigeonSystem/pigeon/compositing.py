@@ -62,11 +62,24 @@ def alpha_blend_bgra_over_bgr(base_bgr: np.ndarray, overlay_bgra: np.ndarray) ->
     if base_bgr.shape[:2] != overlay_bgra.shape[:2]:
         raise ValueError("Overlay and base frame sizes must match")
 
-    overlay_bgr = overlay_bgra[:, :, :3].astype(np.float32)
-    alpha = overlay_bgra[:, :, 3:4].astype(np.float32) / 255.0
-    base = base_bgr.astype(np.float32)
-    out = overlay_bgr * alpha + base * (1.0 - alpha)
-    return np.clip(out, 0, 255).astype(np.uint8)
+    alpha_u8 = overlay_bgra[:, :, 3]
+    # Fully opaque settings UI (common case): skip float convert of the whole frame.
+    if int(alpha_u8.min()) == 255:
+        return overlay_bgra[:, :, :3].copy()
+    if not np.any(alpha_u8):
+        return base_bgr.copy()
+
+    opaque = alpha_u8 == 255
+    partial = (alpha_u8 > 0) & (alpha_u8 < 255)
+    out = base_bgr.copy()
+    if np.any(opaque):
+        out[opaque] = overlay_bgra[opaque, :3]
+    if np.any(partial):
+        alpha = overlay_bgra[partial, 3:4].astype(np.float32) * (1.0 / 255.0)
+        fg = overlay_bgra[partial, :3].astype(np.float32)
+        bg = out[partial].astype(np.float32)
+        out[partial] = fg * alpha + bg * (1.0 - alpha)
+    return out.astype(np.uint8)
 
 
 def scale_height_and_center_crop(image: np.ndarray, target_w: int, target_h: int) -> np.ndarray:

@@ -1125,7 +1125,9 @@ def _strip_ai_uniqueness(decoded_id: str) -> str:
     return _AI_SUFFIX_RE.sub("", decoded_id)
 
 
+@lru_cache(maxsize=16384)
 def _normalize_logical(raw_or_logical: str) -> str:
+    """Cache Illustrator id decode — each apply/raster normalizes the same ids thousands of times."""
     return _strip_ai_uniqueness(decode_svg_id(raw_or_logical))
 
 
@@ -4194,23 +4196,21 @@ def _apply_scene_layer_visibility(root: ET.Element, state: MainSettingsState) ->
 
     parents = _parent_map(root)
     add_group = _find_by_logical_id(root, "main_box2_add_search_icon")
-    for el in root.iter():
-        if not el.tag.endswith("g"):
-            continue
-        raw = el.get("id") or ""
-        if not raw:
-            continue
-        logical = _normalize_logical(raw)
+    # Walk indexed chrome ids only — avoid normalizing every <g> in the 3.7k-node tree.
+    for logical, els in _logical_id_index(root).items():
         if logical in _BOX_CONTAINER_LOGICALS:
-            _set_visible(el, not no_wifi and state.manual_device_entry is None)
-            continue
-        if add_group is not None and _is_descendant_of(el, add_group, parents):
+            show = not no_wifi and state.manual_device_entry is None
+            for el in els:
+                _set_visible(el, show)
             continue
         if not _is_box_chrome_logical(logical):
             continue
         box_num = _box_num_from_chrome_logical(logical)
-        # Dual-location picker: only location_group + container (search/results stay off).
-        _set_visible(el, False if location_picker else bool(box_num and panel_open.get(box_num, False)))
+        show = False if location_picker else bool(box_num and panel_open.get(box_num, False))
+        for el in els:
+            if add_group is not None and _is_descendant_of(el, add_group, parents):
+                continue
+            _set_visible(el, show)
 
     if location_picker:
         # Match Illustrator dual-location visibility: location + container on; device/search off.
@@ -4791,13 +4791,11 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
         _apply_box_location_group_labels(root, state, box_num)
 
     # Apply theme accent globally to *_accent layers (selection does not change accent).
-    for el in root.iter():
-        raw = el.get("id") or ""
-        if not raw:
-            continue
-        logical = _normalize_logical(raw)
+    # Prefer the logical-id index over a full-tree normalize walk on every paint.
+    for logical, els in _logical_id_index(root).items():
         if logical.endswith("_accent") or re.search(r"_accent(_|$)", logical):
-            _apply_accent_paint(el, theme.accent)
+            for el in els:
+                _apply_accent_paint(el, theme.accent)
 
     entry = state.manual_device_entry
     pairing_pin = state.box_pairing is not None and kb_target == "pin"
@@ -4935,6 +4933,25 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
 
 _SVG_TREE_TEMPLATES: dict[tuple[str, int], ET.Element] = {}
 _SVG_TREE_TEMPLATE_MAX = 2
+# Stable art discovers (stars / wifi / onboarding) keyed by SVG path+mtime.
+_SVG_GEOMETRY_CACHE: dict[tuple[str, int], dict[str, object]] = {}
+
+
+def _svg_geometry_bundle(path: Path, root: ET.Element) -> dict[str, object]:
+    key = (str(path.resolve()), path.stat().st_mtime_ns)
+    hit = _SVG_GEOMETRY_CACHE.get(key)
+    if hit is not None:
+        return hit
+    bundle = {
+        "stars": _discover_star_masked_circles(root),
+        "onboarding_arcs": _discover_onboarding_search_arc_specs(root),
+        "onboarding_tris": _discover_onboarding_search_triangle_specs(root),
+        "wifi_layouts": _discover_wifi_icon_layouts(root),
+    }
+    if len(_SVG_GEOMETRY_CACHE) >= 4:
+        _SVG_GEOMETRY_CACHE.clear()
+    _SVG_GEOMETRY_CACHE[key] = bundle
+    return bundle
 
 
 def _svg_tree_from_path(path: Path) -> ET.Element:
@@ -4991,10 +5008,11 @@ def render_main_settings_bgra(
     stripe_specs = _discover_container_stripe_specs(root, active_container)
     _hide_container_stripe_rects(root)
     _remove_canvas_background_rect(root)
-    star_specs = _discover_star_masked_circles(root)
-    onboarding_arc_specs = _discover_onboarding_search_arc_specs(root)
-    onboarding_triangle_specs = _discover_onboarding_search_triangle_specs(root)
-    wifi_layouts = _discover_wifi_icon_layouts(root)
+    geom = _svg_geometry_bundle(path, root)
+    star_specs = geom["stars"]  # type: ignore[assignment]
+    onboarding_arc_specs = geom["onboarding_arcs"]  # type: ignore[assignment]
+    onboarding_triangle_specs = geom["onboarding_tris"]  # type: ignore[assignment]
+    wifi_layouts = geom["wifi_layouts"]  # type: ignore[assignment]
     _hide_svg_wifi_icons(root)
     _hide_star_masked_svg_circles(root, star_specs)
     _prune_display_none(root)
@@ -5064,11 +5082,21 @@ class MainSettingsWidget:
         self._wifi_search_rotated_cache: tuple[np.ndarray, ...] | None = None
         self._box_search_rotated_cache: dict[int, tuple[np.ndarray, ...]] = {}
         self._box_scan_pending: set[int] = set()
+        self._wifi_prefetch_inflight: bool = False
+        self._box_prefetch_inflight: set[int] = set()
         self._pre_scan_main_bgra: dict[int, np.ndarray] = {}
         self._last_tick_mono: float = time.monotonic()
         # Per-focus bitmaps for the current structure — left/right nav revisits are free.
         self._focus_frame_cache: dict[tuple[object, ...], np.ndarray] = {}
         self._focus_cache_structure: tuple[object, ...] | None = None
+        self._prewarm_all_inflight: bool = False
+        # Warm LAN IP off the first settings paint (hostname/ipconfig can take tens of ms).
+        try:
+            from pigeon.local_ip import local_ipv4_address
+
+            local_ipv4_address()
+        except Exception:
+            pass
 
     @property
     def state(self) -> MainSettingsState:
@@ -5083,9 +5111,11 @@ class MainSettingsWidget:
         self._cached_kb_sig = None
         self._focus_frame_cache.clear()
         self._focus_cache_structure = None
+        self._prewarm_all_inflight = False
 
     def frame_cache_token(self) -> tuple[object, ...]:
         """Stable token for skip-cache while the settings bitmap is unchanged."""
+        kb_open = self._state.keyboard is not None
         return (
             self._cached_main_sig,
             self._cached_kb_sig,
@@ -5098,7 +5128,9 @@ class MainSettingsWidget:
             round(float(self._state.box3_devices.scan_angle_deg), 0)
             if self._state.box3_devices.scanning
             else 0,
-            1 if self._state.keyboard is not None else 0,
+            # Drive caret blink without forcing a full redraw every wake.
+            int(time.monotonic() * 2) % 2 if kb_open else 0,
+            1 if kb_open else 0,
         )
 
     def _invalidate_keyboard_cache(self) -> None:
@@ -5299,7 +5331,67 @@ class MainSettingsWidget:
         self._cached_sig = None
         self._cached_main_bgra = None
         self._cached_main_sig = None
+        self.prefetch_scans_for_focus(st.focused_id)
         self._prewarm_neighbor_focus(forward=forward)
+
+    def prewarm_focus_ring(self) -> None:
+        """Rasterize every focus target for the current structure off-thread."""
+        import copy
+        import threading
+
+        if self._prewarm_all_inflight:
+            return
+        st = self._state
+        if st.keyboard_open or st.show_pigeon_settings or not st.focus_ring:
+            return
+        structure = self._structure_sig()
+        if structure != self._focus_cache_structure and self._focus_cache_structure is not None:
+            # Wait until the first live paint establishes the structure key.
+            pass
+        n = len(st.focus_ring)
+        if n <= 1:
+            return
+        self._prewarm_all_inflight = True
+        state_snap = copy.deepcopy(st)
+        svg_path = self._svg_path
+        assets_dir = self._assets_dir
+        cache = self._focus_frame_cache
+        struct_ref = structure
+
+        def _work() -> None:
+            try:
+                for idx in range(n):
+                    if self._focus_cache_structure not in (None, struct_ref):
+                        return
+                    state_snap.focus_index = idx
+                    key = (
+                        idx,
+                        int(state_snap.network_picker_row),
+                        int(state_snap.box2_devices.row),
+                        str(state_snap.box2_devices.arrow),
+                        int(state_snap.box3_devices.row),
+                        str(state_snap.box3_devices.arrow),
+                        int(state_snap.pigeon_focus_index),
+                    )
+                    if key in cache:
+                        continue
+                    try:
+                        frame = render_main_settings_bgra(
+                            state_snap,
+                            svg_path=svg_path,
+                            assets_dir=assets_dir,
+                        )
+                    except Exception:
+                        return
+                    if self._focus_cache_structure not in (None, struct_ref):
+                        return
+                    if self._focus_cache_structure is None:
+                        self._focus_cache_structure = struct_ref
+                    cache[key] = frame
+            finally:
+                self._prewarm_all_inflight = False
+
+        threading.Thread(target=_work, name="pigeon-settings-prewarm-all", daemon=True).start()
 
     def _prewarm_neighbor_focus(self, *, forward: bool) -> None:
         """Rasterize the next focus target off-thread so the following keypress is cached."""
@@ -5468,6 +5560,83 @@ class MainSettingsWidget:
             return None
         return display, rows
 
+    def _wifi_prefetch_needed(self) -> bool:
+        return self._cached_wifi_scan() is None and not getattr(self, "_wifi_prefetch_inflight", False)
+
+    def _box_prefetch_needed(self, box_num: int) -> bool:
+        return (
+            self._cached_box_scan(box_num) is None
+            and box_num not in getattr(self, "_box_prefetch_inflight", set())
+        )
+
+    def prefetch_scans_for_settings(self) -> None:
+        """Silent background scans so Space on WiFi/box buttons can finish from cache."""
+        st = self._state
+        if not st.wifi_configured:
+            self._prefetch_wifi_into_cache()
+        else:
+            self._prefetch_box_into_cache(2)
+            self._prefetch_box_into_cache(3)
+        self.prewarm_focus_ring()
+
+    def prefetch_scans_for_focus(self, focused: str) -> None:
+        """Prefetch when the user lands on a search-capable control."""
+        if focused in ("main_dual_network_button", "main_box2_add_search_icon"):
+            if not self._state.wifi_configured:
+                self._prefetch_wifi_into_cache()
+            return
+        if focused == "main_box2_button":
+            self._prefetch_box_into_cache(2)
+        elif focused == "main_box3_button":
+            self._prefetch_box_into_cache(3)
+
+    def _prefetch_wifi_into_cache(self) -> None:
+        if not self._wifi_prefetch_needed():
+            return
+        import threading
+
+        self._wifi_prefetch_inflight = True
+
+        def worker() -> None:
+            try:
+                from pigeon.wifi_scan import scan_wifi_networks
+
+                result = scan_wifi_networks()
+            except Exception:
+                result = ()
+            finally:
+                self._wifi_prefetch_inflight = False
+            if result:
+                self._wifi_scan_cache = (result, time.monotonic())
+
+        threading.Thread(target=worker, name="pigeon-wifi-prefetch", daemon=True).start()
+
+    def _prefetch_box_into_cache(self, box_num: int) -> None:
+        if box_num not in (2, 3) or not self._box_prefetch_needed(box_num):
+            return
+        import threading
+
+        inflight = getattr(self, "_box_prefetch_inflight", None)
+        if inflight is None:
+            inflight = set()
+            self._box_prefetch_inflight = inflight
+        inflight.add(box_num)
+
+        def worker() -> None:
+            try:
+                result = scan_lan_devices(box_num)
+            except Exception:
+                result = (), ()
+            finally:
+                self._box_prefetch_inflight.discard(box_num)
+            display, rows = result
+            if display or rows:
+                self._box_scan_cache[box_num] = (*result, time.monotonic())
+
+        threading.Thread(
+            target=worker, name=f"pigeon-box{box_num}-prefetch", daemon=True
+        ).start()
+
     def _start_wifi_scan_async(self) -> None:
         import threading
 
@@ -5479,6 +5648,8 @@ class MainSettingsWidget:
             except Exception:
                 result = ()
             self._wifi_scan_result = result
+            if result:
+                self._wifi_scan_cache = (result, time.monotonic())
 
         self._wifi_scan_result = None
         threading.Thread(target=worker, daemon=True).start()
@@ -5492,12 +5663,21 @@ class MainSettingsWidget:
             except Exception:
                 result = (), ()
             self._box_scan_result[box_num] = result
+            display, rows = result
+            if display or rows:
+                self._box_scan_cache[box_num] = (*result, time.monotonic())
 
         self._box_scan_result[box_num] = None
         threading.Thread(target=worker, daemon=True).start()
 
     def _begin_wifi_scan(self) -> None:
         st = self._state
+        cached = self._cached_wifi_scan()
+        if cached is not None:
+            # Prefetch hit — open the picker immediately (no spinner).
+            st.complete_wifi_scan(cached)
+            self.invalidate()
+            return
         st.show_network_picker = False
         st.wifi_networks = ()
         st.spinner_glyph_capture = True
@@ -5510,15 +5690,23 @@ class MainSettingsWidget:
         finally:
             st.spinner_glyph_capture = False
         st.start_wifi_scan()
-        cached = self._cached_wifi_scan()
-        if cached is not None:
-            self._wifi_scan_result = cached
-        else:
-            self._start_wifi_scan_async()
+        self._start_wifi_scan_async()
         self.invalidate()
 
     def _start_box_device_scan(self, box_num: int) -> None:
         st = self._state
+        cached = self._cached_box_scan(box_num)
+        if cached is not None:
+            # Prefetch hit — open results immediately (no spinner).
+            if box_num == 2:
+                st.show_box2_panel = True
+            elif box_num == 3:
+                st.show_box3_panel = True
+            panel = st._box_panel(box_num)
+            panel.active = True
+            st.complete_box_device_scan(box_num, cached)
+            self.invalidate()
+            return
         # Snapshot the idle UI so abort can restore it without a mid-spin freeze frame.
         if self._cached_main_bgra is not None:
             self._pre_scan_main_bgra[box_num] = self._cached_main_bgra.copy()
@@ -5540,13 +5728,8 @@ class MainSettingsWidget:
         finally:
             st.spinner_glyph_capture = False
         st.start_box_device_scan(box_num)
-        cached = self._cached_box_scan(box_num)
-        if cached is not None:
-            self._box_scan_result[box_num] = cached
-            self._box_scan_pending.discard(box_num)
-        else:
-            self._box_scan_pending.add(box_num)
-            self._start_box_device_scan_async(box_num)
+        self._box_scan_pending.add(box_num)
+        self._start_box_device_scan_async(box_num)
 
     def _abort_box_device_scan_ui(self, box_num: int) -> bool:
         """Dismiss the spinner immediately; restore prior device/idle state."""
@@ -5995,7 +6178,12 @@ class MainSettingsWidget:
         ch, cw = int(canvas_bgr.shape[0]), int(canvas_bgr.shape[1])
         fh, fw = int(frame.shape[0]), int(frame.shape[1])
         if fh == ch and fw == cw:
-            canvas_bgr[:] = alpha_blend_bgra_over_bgr(canvas_bgr, frame)
+            alpha_u8 = frame[:, :, 3]
+            # Settings is usually fully opaque over black — avoid full-frame float blend.
+            if int(alpha_u8.min()) == 255:
+                canvas_bgr[:] = frame[:, :, :3]
+            else:
+                canvas_bgr[:] = alpha_blend_bgra_over_bgr(canvas_bgr, frame)
             return
         scale = min(cw / float(fw), ch / float(fh))
         tw = max(1, int(round(fw * scale)))
@@ -6004,7 +6192,11 @@ class MainSettingsWidget:
         x0 = max(0, (cw - tw) // 2)
         y0 = max(0, (ch - th) // 2)
         roi = canvas_bgr[y0 : y0 + th, x0 : x0 + tw]
-        roi[:] = alpha_blend_bgra_over_bgr(roi, resized)
+        alpha_u8 = resized[:, :, 3]
+        if int(alpha_u8.min()) == 255:
+            roi[:] = resized[:, :, :3]
+        else:
+            roi[:] = alpha_blend_bgra_over_bgr(roi, resized)
 
     # Alias used by ``pigeon_0_8`` composite paths.
     render_on_bgr = render

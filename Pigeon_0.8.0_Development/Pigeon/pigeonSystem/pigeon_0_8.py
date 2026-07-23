@@ -5405,6 +5405,9 @@ def main() -> int:
                 main_settings_widget.invalidate()
             if dev_phase == DevPhase.OFF or dev_phase == DevPhase.GRID:
                 dev_phase = DevPhase.MAIN_SETTINGS
+                if main_settings_widget is not None:
+                    # Silent WiFi/box scans so activate from a box is usually cache-hit.
+                    main_settings_widget.prefetch_scans_for_settings()
             elif dev_phase == DevPhase.MAIN_SETTINGS:
                 dev_phase = DevPhase.SETTINGS
             else:
@@ -10726,7 +10729,6 @@ def main() -> int:
                             or st_ms.wifi_connecting
                             or st_ms.box2_devices.scanning
                             or st_ms.box3_devices.scanning
-                            or st_ms.keyboard is not None
                         )
                     scene_off_key = (
                         int(dev_phase),

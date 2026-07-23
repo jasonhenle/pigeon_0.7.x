@@ -37,6 +37,17 @@ def _candidate_ipv4_addresses() -> tuple[str, ...]:
     except OSError:
         pass
 
+    # Fast path: UDP connect usually yields the primary LAN address immediately.
+    if any(ip and not ip.startswith("127.") for ip in ips):
+        seen: set[str] = set()
+        out: list[str] = []
+        for ip in ips:
+            if ip in seen:
+                continue
+            seen.add(ip)
+            out.append(ip)
+        return tuple(out)
+
     if platform.system() == "Darwin":
         for iface in ("en0", "en1", "en2", "en3", "bridge100", "bridge101"):
             try:
@@ -52,6 +63,7 @@ def _candidate_ipv4_addresses() -> tuple[str, ...]:
             value = (proc.stdout or "").strip()
             if _IPV4_RE.match(value):
                 ips.append(value)
+                break
     else:
         try:
             proc = subprocess.run(
@@ -68,12 +80,13 @@ def _candidate_ipv4_addresses() -> tuple[str, ...]:
                 if _IPV4_RE.match(part):
                     ips.append(part)
 
-    try:
-        host = socket.gethostname()
-        for res in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM):
-            ips.append(str(res[4][0]))
-    except OSError:
-        pass
+    if not any(ip and not ip.startswith("127.") for ip in ips):
+        try:
+            host = socket.gethostname()
+            for res in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM):
+                ips.append(str(res[4][0]))
+        except OSError:
+            pass
 
     seen: set[str] = set()
     out: list[str] = []
