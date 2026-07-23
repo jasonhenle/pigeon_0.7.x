@@ -47,7 +47,11 @@ def filter_scan_results_for_picker(
     *,
     exclude_connected: bool = True,
 ) -> tuple[str, ...]:
-    """Drop blanks/dupes and omit the currently connected SSID from picker rows."""
+    """Drop blanks/dupes and omit the currently connected SSID from picker rows.
+
+    If excluding the connected SSID would leave the list empty (common on a Pi
+    that only sees its own AP), keep the connected name so the picker is not blank.
+    """
     cleaned = _dedupe_preserve_order(names)
     if not exclude_connected or not cleaned:
         return cleaned
@@ -55,7 +59,8 @@ def filter_scan_results_for_picker(
     if not connected:
         return cleaned
     connected_cf = connected.casefold()
-    return tuple(n for n in cleaned if n.casefold() != connected_cf)
+    filtered = tuple(n for n in cleaned if n.casefold() != connected_cf)
+    return filtered if filtered else cleaned
 
 
 def _current_connected_ssid() -> str:

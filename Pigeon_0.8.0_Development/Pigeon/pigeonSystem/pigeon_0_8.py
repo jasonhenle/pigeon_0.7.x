@@ -10587,9 +10587,9 @@ def main() -> int:
                     )
                 ):
                     return 50 if sys.platform.startswith("linux") else 16
-                # Static settings UI: Pi is SVG+PhotoImage bound — refresh only on input/ticks.
+                # Static settings UI: wake often enough for input, but avoid busy PhotoImage paste.
                 if dev_phase == DevPhase.MAIN_SETTINGS and sys.platform.startswith("linux"):
-                    return 200
+                    return 500
                 # Audio meter sim animates continuously; keep ~30 FPS while active.
                 if _audio_sim_active() and _view_one_uses_now_playing_screen():
                     return 33
@@ -10641,6 +10641,36 @@ def main() -> int:
 
             if not scene_enabled:
                 if _PIGEON_EXT:
+                    settings_tok = (
+                        main_settings_widget.frame_cache_token()
+                        if (
+                            dev_phase == DevPhase.MAIN_SETTINGS
+                            and main_settings_widget is not None
+                        )
+                        else ()
+                    )
+                    no_anim = True
+                    if (
+                        dev_phase == DevPhase.MAIN_SETTINGS
+                        and main_settings_widget is not None
+                    ):
+                        st_ms = main_settings_widget.state
+                        no_anim = not (
+                            st_ms.wifi_scanning
+                            or st_ms.wifi_connecting
+                            or st_ms.box2_devices.scanning
+                            or st_ms.box3_devices.scanning
+                            or st_ms.keyboard is not None
+                        )
+                    scene_off_key = (
+                        int(dev_phase),
+                        settings_tok,
+                        display_dims[0],
+                        display_dims[1],
+                    )
+                    if no_anim and skip_cache == scene_off_key:
+                        _schedule_next_render()
+                        return
                     out_bgr = _compose_shown_frame(None, 1.0)
                     out_bgr = _blend_view_four_debug(out_bgr)
                     if lerp_bgr_red_monochrome is not None:
@@ -10648,6 +10678,7 @@ def main() -> int:
                         if sm > 1e-6 and _effective_display_view() != DisplayView.FOUR:
                             out_bgr = lerp_bgr_red_monochrome(out_bgr, sm)
                     _update_label_photo_from_bgr(label, out_bgr, label_live_photo)
+                    skip_cache = scene_off_key
                 else:
                     if black_photo is None:
                         black_photo = _bgr_to_tk_image(_black_screen_bgr())
@@ -10697,7 +10728,15 @@ def main() -> int:
             b_scene = BACKDROP_BRIGHTNESS if _backdrop_active else brightness_current
             b_key = round(float(b_scene), 4)
             # Clock text changes every second; include wall time when widgets are active.
-            tick_key = int(time.time()) if _PIGEON_EXT else 0
+            # Main settings has no clock — use its frame token so static UI can skip uploads.
+            if (
+                _PIGEON_EXT
+                and dev_phase == DevPhase.MAIN_SETTINGS
+                and main_settings_widget is not None
+            ):
+                tick_key = main_settings_widget.frame_cache_token()
+            else:
+                tick_key = int(time.time()) if _PIGEON_EXT else 0
             idle_s_here = (
                 max(0.0, min(1.0, _compose_idle_strength_holder[0])) if _PIGEON_EXT else 0.0
             )
