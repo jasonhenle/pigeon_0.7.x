@@ -11,6 +11,7 @@ import io
 import math
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,6 +29,12 @@ from pigeon.widgets.playback_overlay import (
     _receiver_volume_display_line,
     receiver_audio_config_display_line,
     volume_fraction_from_display_line,
+)
+from pigeon.widgets.search_spinner import (
+    advance_angle_deg,
+    blit_spinner_patch,
+    build_search_spinner_frames,
+    rotated_patch_for_angle,
 )
 
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -135,6 +142,9 @@ class ViewCirclesState:
     config: str = ""
     chrome_visible: bool = False
     cast: list[tuple[str, str]] = field(default_factory=list)
+    # True while a TMDb fetch is in flight — poster shows the searching spinner.
+    searching: bool = False
+    search_angle_deg: float = 0.0
 
 
 def default_view_circles_svg_path(assets_dir: Path | str | None = None) -> Path:
@@ -636,10 +646,17 @@ class ViewCirclesWidget:
         self._cached_sig: tuple[object, ...] | None = None
         self._svg_chrome_bgra: np.ndarray | None = None
         self._svg_chrome_sig: tuple[object, ...] | None = None
+        self._search_frames: tuple[np.ndarray, ...] | None = None
+        self._search_frames_tried = False
+        self._last_tick_mono: float | None = None
 
     @property
     def chrome_visible(self) -> bool:
         return self._state.chrome_visible
+
+    @property
+    def searching(self) -> bool:
+        return bool(self._state.searching)
 
     def clear_cache(self) -> None:
         self._cached_bgra = None
@@ -681,6 +698,7 @@ class ViewCirclesWidget:
         cast: list[tuple[str, str]] | None = None,
         poster_bgra: np.ndarray | None = None,
         has_now_playing: bool = True,
+        searching: bool | None = None,
     ) -> bool:
         changed = False
         if self.set_now_playing_chrome_visible(has_now_playing):
@@ -727,17 +745,59 @@ class ViewCirclesWidget:
             if norm != self._state.cast:
                 self._state.cast = norm
                 changed = True
-        if self.set_poster_bgra(poster_bgra):
+        if searching is not None:
+            want = bool(searching)
+            if want != self._state.searching:
+                self._state.searching = want
+                if want:
+                    self._state.search_angle_deg = 0.0
+                    self._last_tick_mono = None
+                    self._ensure_search_frames()
+                changed = True
+        # While searching, keep the poster empty so the spinner is the only art.
+        if self._state.searching:
+            if self.set_poster_bgra(None):
+                changed = True
+        elif self.set_poster_bgra(poster_bgra):
             changed = True
         if changed:
             self.clear_cache()
         return changed
+
+    def tick(self) -> None:
+        """Advance searching spinner angle when a TMDb fetch is in flight."""
+        if not self._state.searching:
+            self._last_tick_mono = None
+            return
+        now = time.monotonic()
+        if self._last_tick_mono is None:
+            self._last_tick_mono = now
+            return
+        dt = max(0.0, now - self._last_tick_mono)
+        self._last_tick_mono = now
+        prev = self._state.search_angle_deg
+        self._state.search_angle_deg = advance_angle_deg(prev, dt)
+        # Quantize to spinner frame steps so we only invalidate when the blit changes.
+        if int(round(prev / 10.0)) != int(round(self._state.search_angle_deg / 10.0)):
+            self.clear_cache()
+
+    def _ensure_search_frames(self) -> tuple[np.ndarray, ...] | None:
+        if self._search_frames is not None:
+            return self._search_frames
+        if self._search_frames_tried:
+            return None
+        self._search_frames_tried = True
+        self._search_frames = build_search_spinner_frames(self._assets_dir)
+        return self._search_frames
 
     def _cache_sig(self) -> tuple[object, ...]:
         st = self._state
         cast_sig = tuple(st.cast[:3])
         poster_id = id(self._poster_bgra) if self._poster_bgra is not None else None
         now = datetime.now()
+        search_frame = (
+            int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
+        )
         return (
             round(st.progress, 6),
             st.elapsed_text,
@@ -750,6 +810,8 @@ class ViewCirclesWidget:
             st.chrome_visible,
             cast_sig,
             poster_id,
+            st.searching,
+            search_frame,
             int(now.strftime("%H%M")),
             f"{now.month}/{now.day}/{now.strftime('%y')}",
         )
@@ -777,33 +839,40 @@ class ViewCirclesWidget:
 
     def _draw_poster(self, out: np.ndarray) -> None:
         src = self._poster_bgra
-        if src is None or src.size == 0:
-            return
-        if src.ndim == 3 and src.shape[2] == 3:
-            src = cv2.cvtColor(src, cv2.COLOR_BGR2BGRA)
-        # Cover-fit into poster rect.
-        sh, sw = src.shape[:2]
-        if sh < 1 or sw < 1:
-            return
-        scale = max(_POSTER_W / float(sw), _POSTER_H / float(sh))
-        nw = max(1, int(round(sw * scale)))
-        nh = max(1, int(round(sh * scale)))
-        resized = cv2.resize(
-            src,
-            (nw, nh),
-            interpolation=cv_resize_interp(sw, sh, nw, nh),
-        )
-        x0 = max(0, (nw - _POSTER_W) // 2)
-        y0 = max(0, (nh - _POSTER_H) // 2)
-        crop = resized[y0 : y0 + _POSTER_H, x0 : x0 + _POSTER_W]
-        if crop.shape[0] != _POSTER_H or crop.shape[1] != _POSTER_W:
-            crop = cv2.resize(crop, (_POSTER_W, _POSTER_H), interpolation=cv2.INTER_AREA)
-        mask = _rounded_rect_mask(_POSTER_W, _POSTER_H, _POSTER_RX)
-        patch = crop.copy()
-        if patch.shape[2] == 3:
-            patch = cv2.cvtColor(patch, cv2.COLOR_BGR2BGRA)
-        patch[:, :, 3] = np.minimum(patch[:, :, 3], mask)
-        _paste_patch_bgra(out, patch, _POSTER_X, _POSTER_Y)
+        if src is not None and src.size > 0 and not self._state.searching:
+            if src.ndim == 3 and src.shape[2] == 3:
+                src = cv2.cvtColor(src, cv2.COLOR_BGR2BGRA)
+            # Cover-fit into poster rect.
+            sh, sw = src.shape[:2]
+            if sh >= 1 and sw >= 1:
+                scale = max(_POSTER_W / float(sw), _POSTER_H / float(sh))
+                nw = max(1, int(round(sw * scale)))
+                nh = max(1, int(round(sh * scale)))
+                resized = cv2.resize(
+                    src,
+                    (nw, nh),
+                    interpolation=cv_resize_interp(sw, sh, nw, nh),
+                )
+                x0 = max(0, (nw - _POSTER_W) // 2)
+                y0 = max(0, (nh - _POSTER_H) // 2)
+                crop = resized[y0 : y0 + _POSTER_H, x0 : x0 + _POSTER_W]
+                if crop.shape[0] != _POSTER_H or crop.shape[1] != _POSTER_W:
+                    crop = cv2.resize(
+                        crop, (_POSTER_W, _POSTER_H), interpolation=cv2.INTER_AREA
+                    )
+                mask = _rounded_rect_mask(_POSTER_W, _POSTER_H, _POSTER_RX)
+                patch = crop.copy()
+                if patch.shape[2] == 3:
+                    patch = cv2.cvtColor(patch, cv2.COLOR_BGR2BGRA)
+                patch[:, :, 3] = np.minimum(patch[:, :, 3], mask)
+                _paste_patch_bgra(out, patch, _POSTER_X, _POSTER_Y)
+        if self._state.searching:
+            frames = self._ensure_search_frames()
+            if frames:
+                cx = int(round(_POSTER_X + _POSTER_W / 2.0))
+                cy = int(round(_POSTER_Y + _POSTER_H / 2.0))
+                patch = rotated_patch_for_angle(frames, self._state.search_angle_deg)
+                blit_spinner_patch(out, patch, cx=cx, cy=cy)
         # White stroke is provided by SVG ``poster_accent`` chrome.
 
     def _draw_status_bar(self, out: np.ndarray) -> None:
@@ -962,6 +1031,7 @@ class ViewCirclesWidget:
     def render(self, canvas_bgr: np.ndarray) -> None:
         if canvas_bgr is None or canvas_bgr.size == 0:
             return
+        self.tick()
         if not self._state.chrome_visible:
             canvas_bgr[:] = (0, 0, 0)
             return

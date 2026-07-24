@@ -1562,6 +1562,8 @@ def main() -> int:
             "query": None,
             "prefer": "auto",
             "tmdb_fetch_in_flight": False,
+            # Latest requested fetch while a worker is already running (drained in finish_tmdb).
+            "pending_tmdb": None,
             "last_metadata": None,
             # Last TMDb worker actually started (see spawn_tmdb_poster_fetch); for view 4 debug.
             "last_tmdb_fetch_input": None,
@@ -2664,6 +2666,7 @@ def main() -> int:
                     _np_badge_bgra_cache[0] = fn
                 badge_bgra = _np_badge_bgra_cache[1]
             poster_bgra = _active_tmdb_poster_bgra()
+            circles_poster_bgra = _circles_poster_bgra()
             backdrop_bgr = None
             if backdrop_master_bgr is not None:
                 backdrop_bgr = np.asarray(backdrop_master_bgr, dtype=np.uint8)
@@ -2741,6 +2744,10 @@ def main() -> int:
                     vol_frac = float(volume_fraction_from_display_line(vol))
                 except Exception:
                     vol_frac = 0.0
+                fetch_busy = bool(
+                    apple_tv_auto_state.get("tmdb_fetch_in_flight")
+                    or apple_tv_auto_state.get("pending_tmdb")
+                )
                 if view_circles_widget.update_state(
                     progress=progress,
                     elapsed_text=played_text,
@@ -2750,8 +2757,9 @@ def main() -> int:
                     incoming_audio=inc,
                     playback_config=cfg,
                     cast=cast_rows,
-                    poster_bgra=poster_bgra,
+                    poster_bgra=circles_poster_bgra,
                     has_now_playing=has_np,
+                    searching=fetch_busy,
                 ):
                     changed = True
             if changed:
@@ -3276,18 +3284,38 @@ def main() -> int:
             return out
 
         def _active_tmdb_poster_bgra() -> np.ndarray | None:
-            """Return cached TMDb poster BGRA for the active title key (or ``None``)."""
+            """Return cached TMDb *poster* BGRA for the active title key (or ``None``).
+
+            Tries the active key, then a year-stripped alias — Apple TV raw titles often
+            keep ``(YYYY)`` while assets are stored under the clean TMDb display name.
+            Never falls back to backdrop art (circles poster slot is poster-only).
+            """
             if not active_tmdb_title_key:
                 return None
             try:
                 from pigeon.media_cache import ASSET_POSTER_ART, find_cached_reformatted_asset
                 from pigeon.image_ui_protocol import load_image_bgra
+                from pigeon.tmdb_poster import split_query_and_year
             except Exception:
                 return None
-            poster_path = find_cached_reformatted_asset(
-                str(active_tmdb_title_key), ASSET_POSTER_ART
-            )
-            if poster_path is None or not poster_path.is_file():
+            keys: list[str] = []
+            tk0 = str(active_tmdb_title_key).strip()
+            if tk0:
+                keys.append(tk0)
+            try:
+                cleaned, _year = split_query_and_year(tk0)
+                cleaned = (cleaned or "").strip()
+                if cleaned and cleaned not in keys:
+                    keys.append(cleaned)
+            except Exception:
+                pass
+            poster_path = None
+            for tk in keys:
+                poster_path = find_cached_reformatted_asset(tk, ASSET_POSTER_ART)
+                if poster_path is not None and poster_path.is_file():
+                    break
+                poster_path = None
+            if poster_path is None:
                 return None
             try:
                 mtime = poster_path.stat().st_mtime
@@ -3305,6 +3333,14 @@ def main() -> int:
             _tmdb_poster_cache["key"] = key
             _tmdb_poster_cache["bgra"] = raw
             return raw
+
+        def _circles_poster_bgra() -> np.ndarray | None:
+            """Poster slot for view_circles — poster art only (no backdrop fill)."""
+            if apple_tv_auto_state.get("tmdb_fetch_in_flight") or apple_tv_auto_state.get(
+                "pending_tmdb"
+            ):
+                return None
+            return _active_tmdb_poster_bgra()
 
         def _resolve_streaming_app_logo_bgra() -> np.ndarray | None:
             """Resolve the streaming-service badge source BGRA (same filename resolution as the
@@ -5783,6 +5819,34 @@ def main() -> int:
                 except Exception:
                     pass
 
+        def _clear_displayed_tmdb_art_for_content_change() -> None:
+            """Drop on-screen TMDb art/cast when the playing title changes.
+
+            Clears the active title key and live backdrop master so circles/classic
+            stop showing the prior poster/cast. Leaves ``saved_backdrop_master_bgr``
+            for classic scene restore after a full idle. Resets ``tmdb_key`` so the
+            next spawn is not suppressed as “same identity”.
+            """
+            nonlocal active_tmdb_title_key, active_tmdb_display_title, tmdb_logo_patch_bgra
+            nonlocal tmdb_logo_app_fallback_active, skip_cache, backdrop_master_bgr
+            active_tmdb_title_key = None
+            active_tmdb_display_title = None
+            tmdb_logo_app_fallback_active = False
+            backdrop_master_bgr = None
+            apple_tv_auto_state["tmdb_key"] = None
+            _tmdb_poster_cache["key"] = None
+            _tmdb_poster_cache["bgra"] = None
+            if tmdb_logo_widget is not None:
+                tmdb_logo_widget.clear_cache()
+            if tmdb_logo_widget_view_six is not None:
+                tmdb_logo_widget_view_six.clear_cache()
+            tmdb_logo_patch_bgra = None
+            _warm_tmdb_logo_patch()
+            if _view_one_uses_now_playing_screen():
+                _clear_now_playing_view_caches()
+                _sync_now_playing_screen_state()
+            skip_cache = None
+
         def spawn_tmdb_poster_fetch(
             query: str, *, prefer: str = "auto", force: bool = False
         ) -> None:
@@ -5795,11 +5859,17 @@ def main() -> int:
             here also avoids ~1–3 s of background network work per track
             change plus the misleading retry-log entries that a music title
             would otherwise generate against a TV/movie-only index.
+
+            Only one worker runs at a time. If a fetch is already in flight,
+            the latest request is stored in ``pending_tmdb`` and started when
+            the current worker finishes (``force`` still queues; it no longer
+            starts a concurrent second worker). ``tmdb_key`` is set only when a
+            worker actually starts, so a skipped in-flight poll cannot poison
+            the next identity check.
             """
             from pigeon.tmdb_poster import is_degenerate_tmdb_query, refine_tmdb_search_query
 
-            if not force and apple_tv_auto_state.get("tmdb_fetch_in_flight"):
-                return
+            del force  # kept for call-site compat; queueing replaces concurrent force
 
             if _vv_is_music():
                 # Clear any prior fetch breadcrumbs so the debug view doesn't
@@ -5807,6 +5877,7 @@ def main() -> int:
                 apple_tv_auto_state["last_tmdb_fetch_input"] = None
                 apple_tv_auto_state["last_tmdb_fetch_refined"] = None
                 apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
+                apple_tv_auto_state["pending_tmdb"] = None
                 return
 
             q_in = (query or "").strip()
@@ -5836,16 +5907,57 @@ def main() -> int:
                     except Exception:
                         pass
                 return
+            prefer_n = str(prefer or "auto").strip() or "auto"
+            if apple_tv_auto_state.get("tmdb_fetch_in_flight"):
+                # Keep spinner up; run this title as soon as the worker ends.
+                apple_tv_auto_state["pending_tmdb"] = {"query": q_in, "prefer": prefer_n}
+                try:
+                    from pigeon.pi_diagnostics import append_pigeon_log
+
+                    append_pigeon_log(
+                        f"tmdb fetch queued (in flight): {q!r} prefer={prefer_n!r}"
+                    )
+                except Exception:
+                    pass
+                if _view_one_uses_now_playing_screen():
+                    _sync_now_playing_screen_state()
+                    try:
+                        render_once()
+                    except Exception:
+                        pass
+                return
+            apple_tv_auto_state["pending_tmdb"] = None
+            apple_tv_auto_state["tmdb_key"] = _tmdb_spawn_identity(q_in, prefer_n)
+            apple_tv_auto_state["query"] = q_in
+            apple_tv_auto_state["prefer"] = prefer_n
             apple_tv_auto_state["last_tmdb_fetch_input"] = q_in
             apple_tv_auto_state["last_tmdb_fetch_refined"] = q
-            apple_tv_auto_state["last_tmdb_fetch_prefer"] = str(prefer or "auto").strip() or "auto"
+            apple_tv_auto_state["last_tmdb_fetch_prefer"] = prefer_n
             apple_tv_auto_state["tmdb_fetch_in_flight"] = True
             try:
                 from pigeon.pi_diagnostics import append_pigeon_log
 
-                append_pigeon_log(f"tmdb fetch started: {q!r} prefer={prefer!r}")
+                append_pigeon_log(f"tmdb fetch started: {q!r} prefer={prefer_n!r}")
             except Exception:
                 pass
+            # Show searching spinner in the poster immediately.
+            if _view_one_uses_now_playing_screen():
+                _sync_now_playing_screen_state()
+                try:
+                    render_once()
+                except Exception:
+                    pass
+
+            def _drain_pending_tmdb_spawn() -> None:
+                pend = apple_tv_auto_state.get("pending_tmdb")
+                apple_tv_auto_state["pending_tmdb"] = None
+                if not isinstance(pend, dict):
+                    return
+                pq = str(pend.get("query") or "").strip()
+                pp = str(pend.get("prefer") or "auto").strip() or "auto"
+                if not pq:
+                    return
+                root.after(0, lambda: spawn_tmdb_poster_fetch(pq, prefer=pp, force=True))
 
             def finish_tmdb(
                 ok_m: bool,
@@ -5864,6 +5976,32 @@ def main() -> int:
                     append_pigeon_log(f"tmdb → {msg_m}")
                 except Exception:
                     pass
+                # Only ignore results when a newer title is already queued. Do not use
+                # live ``query`` alternation (pyatv show vs episode) — that was marking
+                # successful fetches stale and leaving the poster empty forever.
+                pending_raw = apple_tv_auto_state.get("pending_tmdb")
+                result_stale = False
+                if isinstance(pending_raw, dict):
+                    pq = str(pending_raw.get("query") or "").strip()
+                    if pq and pq != q_in:
+                        try:
+                            from pigeon.tmdb_poster import equivalent_tmdb_search_queries
+
+                            if not equivalent_tmdb_search_queries(pq, q_in):
+                                result_stale = True
+                        except Exception:
+                            result_stale = True
+                if result_stale:
+                    try:
+                        from pigeon.pi_diagnostics import append_pigeon_log
+
+                        append_pigeon_log(
+                            f"tmdb result ignored (stale/pending): worker={q_in!r}"
+                        )
+                    except Exception:
+                        pass
+                    _drain_pending_tmdb_spawn()
+                    return
                 tier_ok = _tmdb_match_tier_acceptable(search_query or q, int(match_tier))
                 if not ok_m:
                     # No show title found: do not interrupt with an error dialog. Surface the
@@ -5901,10 +6039,16 @@ def main() -> int:
                         render_once()
                         if dev_phase == DevPhase.SETTINGS:
                             sync_developer_chrome()
+                        # Allow a later poll to retry this title (identity not stuck).
+                        apple_tv_auto_state["tmdb_key"] = None
+                        _drain_pending_tmdb_spawn()
                         return
                     active_tmdb_title_key = None
                     active_tmdb_display_title = None
                     tmdb_logo_app_fallback_active = True
+                    # Failed match must not poison identity — otherwise content stays
+                    # empty until the streaming app is force-quit (idle clears tmdb_key).
+                    apple_tv_auto_state["tmdb_key"] = None
                     if tmdb_logo_widget is not None:
                         tmdb_logo_widget.clear_cache()
                     if tmdb_logo_widget_view_six is not None:
@@ -5917,6 +6061,7 @@ def main() -> int:
                     render_once()
                     if dev_phase == DevPhase.SETTINGS:
                         sync_developer_chrome()
+                    _drain_pending_tmdb_spawn()
                     return
                 tmdb_logo_app_fallback_active = False
                 # msg_m includes a prefix when successful: "<title_key>::<display_title>::<summary>"
@@ -6025,6 +6170,7 @@ def main() -> int:
                     _sync_now_playing_screen_state()
                 skip_cache = None
                 render_once()
+                _drain_pending_tmdb_spawn()
 
             def worker() -> None:
                 used_q = q
@@ -6178,7 +6324,11 @@ def main() -> int:
             raw = (rt.raw_title or "").strip()
             if not raw:
                 return False
-            active_tmdb_title_key = title_key(raw)
+            # TT/display can use the Apple TV raw label, but do not replace an existing
+            # TMDb media key — poster/cast are cached under the clean match title
+            # (e.g. ``Game Night``), while raw often keeps ``(YYYY)``.
+            if not active_tmdb_title_key:
+                active_tmdb_title_key = title_key(raw)
             active_tmdb_display_title = raw
             tmdb_logo_app_fallback_active = False
             return True
@@ -9350,6 +9500,7 @@ def main() -> int:
                 # Keep displayed TMDB art through brief idle polls, but clear the spawn
                 # identity so the next title is not suppressed as "same tmdb_key".
                 apple_tv_auto_state["tmdb_key"] = None
+                apple_tv_auto_state["pending_tmdb"] = None
                 clk = apple_tv_playback_clock
                 clk["has_sync"] = False
                 clk["playing"] = False
@@ -9369,6 +9520,7 @@ def main() -> int:
             apple_tv_auto_state["tmdb_key"] = None
             apple_tv_auto_state["query"] = None
             apple_tv_auto_state["prefer"] = "auto"
+            apple_tv_auto_state["pending_tmdb"] = None
             apple_tv_auto_state["last_tmdb_fetch_input"] = None
             apple_tv_auto_state["last_tmdb_fetch_refined"] = None
             apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
@@ -9704,38 +9856,35 @@ def main() -> int:
                             content_changed = bool(content_key and content_key != prev_key)
                             if content_changed:
                                 apple_tv_auto_state["content_key"] = content_key
-                            if _tmdb_spawn_identity_changed(
-                                query,
-                                prefer,
-                                md_for_spawn,
-                                prev_content_key=prev_key,
-                            ):
-                                spawn_id = _tmdb_spawn_identity(query, prefer)
-                                apple_tv_auto_state["tmdb_key"] = spawn_id
-                                apple_tv_auto_state["query"] = query
-                                apple_tv_auto_state["prefer"] = prefer
-                                spawn_tmdb_poster_fetch(query, prefer=prefer)
-                            elif content_changed and not apple_tv_auto_state.get(
-                                "tmdb_fetch_in_flight"
-                            ):
-                                # Distinct content_key but equivalence guards suppressed a
-                                # normal spawn — still pull art for the new title.
-                                spawn_id = _tmdb_spawn_identity(query, prefer)
-                                apple_tv_auto_state["tmdb_key"] = spawn_id
-                                apple_tv_auto_state["query"] = query
-                                apple_tv_auto_state["prefer"] = prefer
-                                spawn_tmdb_poster_fetch(query, prefer=prefer, force=True)
-                            elif (
-                                active_tmdb_title_key is None
-                                and backdrop_master_bgr is None
-                                and saved_backdrop_master_bgr is None
+                                # Clear prior poster/cast and unlock spawn identity so the
+                                # new title can fetch (force-quit was previously the only
+                                # path that cleared tmdb_key after a stuck empty state).
+                                _clear_displayed_tmdb_art_for_content_change()
+                            apple_tv_auto_state["query"] = query
+                            apple_tv_auto_state["prefer"] = prefer
+                            needs_spawn = bool(
+                                content_changed
+                                or _tmdb_spawn_identity_changed(
+                                    query,
+                                    prefer,
+                                    md_for_spawn,
+                                    prev_content_key=prev_key,
+                                )
+                            )
+                            # Empty display with active playback: always retry. Do not
+                            # require backdrop_master is None — saved backdrop from the
+                            # previous title was blocking recovery forever.
+                            if (
+                                not needs_spawn
+                                and active_tmdb_title_key is None
                                 and not apple_tv_auto_state.get("tmdb_fetch_in_flight")
+                                and not apple_tv_auto_state.get("pending_tmdb")
                             ):
-                                spawn_id = _tmdb_spawn_identity(query, prefer)
-                                apple_tv_auto_state["tmdb_key"] = spawn_id
-                                apple_tv_auto_state["query"] = query
-                                apple_tv_auto_state["prefer"] = prefer
-                                spawn_tmdb_poster_fetch(query, prefer=prefer, force=True)
+                                needs_spawn = True
+                            if needs_spawn:
+                                spawn_tmdb_poster_fetch(
+                                    query, prefer=prefer, force=content_changed
+                                )
                         if ok_w:
                             _return_to_landing_if_atv_idle(md_for_spawn)
                     if not pyatv_tmdb_eligible and wk_roku_title is not None:
@@ -9773,25 +9922,27 @@ def main() -> int:
                                 r_changed = bool(r_ck and r_ck != prev_rk)
                                 if r_changed:
                                     apple_tv_auto_state["content_key"] = r_ck
+                                    _clear_displayed_tmdb_art_for_content_change()
                                 r_q = str(rtitle).strip()
-                                if _tmdb_spawn_identity_changed(
-                                    r_q, "auto", r_md, prev_content_key=prev_rk
-                                ):
-                                    apple_tv_auto_state["tmdb_key"] = _tmdb_spawn_identity(
-                                        r_q, "auto"
+                                apple_tv_auto_state["query"] = r_q
+                                apple_tv_auto_state["prefer"] = "auto"
+                                r_needs = bool(
+                                    r_changed
+                                    or _tmdb_spawn_identity_changed(
+                                        r_q, "auto", r_md, prev_content_key=prev_rk
                                     )
-                                    apple_tv_auto_state["query"] = r_q
-                                    apple_tv_auto_state["prefer"] = "auto"
-                                    spawn_tmdb_poster_fetch(r_q, prefer="auto")
-                                elif r_changed and not apple_tv_auto_state.get(
-                                    "tmdb_fetch_in_flight"
+                                )
+                                if (
+                                    not r_needs
+                                    and active_tmdb_title_key is None
+                                    and not apple_tv_auto_state.get("tmdb_fetch_in_flight")
+                                    and not apple_tv_auto_state.get("pending_tmdb")
                                 ):
-                                    apple_tv_auto_state["tmdb_key"] = _tmdb_spawn_identity(
-                                        r_q, "auto"
+                                    r_needs = True
+                                if r_needs:
+                                    spawn_tmdb_poster_fetch(
+                                        r_q, prefer="auto", force=r_changed
                                     )
-                                    apple_tv_auto_state["query"] = r_q
-                                    apple_tv_auto_state["prefer"] = "auto"
-                                    spawn_tmdb_poster_fetch(r_q, prefer="auto", force=True)
                                 if not pyatv_ok:
                                     apple_tv_dashboard_track["last_poll_ok"] = True
                                     apple_tv_dashboard_track["consecutive_fail"] = 0
@@ -10792,6 +10943,13 @@ def main() -> int:
                     )
                 ):
                     return 50 if sys.platform.startswith("linux") else 16
+                # Circles poster searching spinner while TMDb fetch is in flight.
+                if (
+                    _view_one_uses_now_playing_screen()
+                    and view_circles_widget is not None
+                    and view_circles_widget.searching
+                ):
+                    return 50 if sys.platform.startswith("linux") else 16
                 # Static settings UI: wake often enough for input, but avoid busy PhotoImage paste.
                 if dev_phase == DevPhase.MAIN_SETTINGS and sys.platform.startswith("linux"):
                     return 500
@@ -10866,11 +11024,21 @@ def main() -> int:
                             or st_ms.box2_devices.scanning
                             or st_ms.box3_devices.scanning
                         )
+                    if (
+                        no_anim
+                        and view_circles_widget is not None
+                        and view_circles_widget.searching
+                    ):
+                        no_anim = False
                     scene_off_key = (
                         int(dev_phase),
                         settings_tok,
                         display_dims[0],
                         display_dims[1],
+                        bool(
+                            view_circles_widget is not None
+                            and view_circles_widget.searching
+                        ),
                     )
                     if no_anim and skip_cache == scene_off_key:
                         _schedule_next_render()
