@@ -395,6 +395,49 @@ def _query_preference_from_playing(playing) -> str:
     return "auto"
 
 
+def _media_type_is_music(media_type: object) -> bool:
+    """True when pyatv (or stringified) media type is Music."""
+    mt = str(media_type or "").strip().lower()
+    if not mt:
+        return False
+    return mt == "music" or mt.endswith(".music")
+
+
+async def _attach_music_artwork_bytes(atv, metadata: dict[str, object]) -> dict[str, object]:
+    """Best-effort: attach ``artwork_bytes`` when metadata is Music.
+
+    Uses ``await atv.metadata.artwork()``. Failures are swallowed — caller still
+    gets title/artist/album. Artwork bytes are JPEG/PNG raw; decode at the host.
+    """
+    if not isinstance(metadata, dict):
+        return metadata
+    if not _media_type_is_music(metadata.get("media_type")):
+        return metadata
+    if metadata.get("artwork_bytes"):
+        return metadata
+    try:
+        art = await atv.metadata.artwork(width=400, height=400)
+    except Exception:
+        return metadata
+    if art is None:
+        return metadata
+    raw = getattr(art, "bytes", None)
+    if not raw:
+        return metadata
+    out = dict(metadata)
+    try:
+        out["artwork_bytes"] = bytes(raw)
+    except Exception:
+        return metadata
+    try:
+        aid = getattr(atv.metadata, "artwork_id", None)
+        if aid is not None and str(aid).strip():
+            out["artwork_id"] = str(aid).strip()
+    except Exception:
+        pass
+    return out
+
+
 def _playing_metadata(playing) -> dict[str, object]:
     meta: dict[str, object] = {
         "query": _tmdb_query_from_playing(playing),
@@ -1178,8 +1221,15 @@ async def _async_fetch_now_playing_info_for_device(
                 # Perfect enough: title + position + total + playing-ish.
                 if score >= 7:
                     assert best_metadata is not None
+                    best_metadata = await _attach_music_artwork_bytes(atv, best_metadata)
                     return True, f'Now playing on "{name}" via {protocol_label}', best_metadata
                 await asyncio.sleep(0.4)
+            # Music artwork while still connected (lower scores never hit the early return).
+            if (
+                best_metadata is not None
+                and best_metadata.get("protocol") == protocol_label
+            ):
+                best_metadata = await _attach_music_artwork_bytes(atv, best_metadata)
             if last_metadata is not None:
                 attempt_notes.append(
                     f"{protocol_label}: {_playing_debug_summary(playing)}"

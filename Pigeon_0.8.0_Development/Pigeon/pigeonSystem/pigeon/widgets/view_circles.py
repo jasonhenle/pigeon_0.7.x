@@ -1,8 +1,9 @@
 """
 Pigeon 0.8 ``view_circles`` now-playing skin (800×480).
 
-Static chrome is rasterized from ``pigeonAssets/view_circles.svg``. Dynamic layers
-(cast, clock, volume, progress rings, status bar, poster art) are drawn on top.
+Static chrome is rasterized from ``pigeonAssets/view_circles.svg`` (video) or
+``pigeonAssets/view_circles_music.svg`` (music). Dynamic layers (cast / track
+titles, clock, volume, progress rings, status bar, poster art) are drawn on top.
 """
 
 from __future__ import annotations
@@ -59,11 +60,36 @@ _CIRCLE1_CY = 158.37
 _CIRCLE2_CX = 646.958
 _CIRCLE2_CY = 158.37
 
-_POSTER_X = 300
-_POSTER_Y = 23
-_POSTER_W = 200
-_POSTER_H = 300
-_POSTER_RX = 10
+# Video poster (portrait TMDb).
+_POSTER_VIDEO_X = 300
+_POSTER_VIDEO_Y = 23
+_POSTER_VIDEO_W = 200
+_POSTER_VIDEO_H = 300
+_POSTER_VIDEO_RX = 10
+
+# Music poster: true 1:1 album-art frame (centered on design x=400).
+_POSTER_MUSIC_X = 300
+_POSTER_MUSIC_Y = 53
+_POSTER_MUSIC_W = 200
+_POSTER_MUSIC_H = 200
+_POSTER_MUSIC_RX = 10
+
+# Back-compat aliases (video geometry).
+_POSTER_X = _POSTER_VIDEO_X
+_POSTER_Y = _POSTER_VIDEO_Y
+_POSTER_W = _POSTER_VIDEO_W
+_POSTER_H = _POSTER_VIDEO_H
+_POSTER_RX = _POSTER_VIDEO_RX
+
+# Music track titles — centered at cx=400 (SVG baselines ≈ song/album/artist y).
+_TRACK_CX = 400.0
+_TRACK_MAX_W = 360
+_SONG_CY, _SONG_SIZE = 302.0, 36
+_ALBUM_CY, _ALBUM_SIZE = 329.0, 24
+_ARTIST_CY, _ARTIST_SIZE = 356.0, 24
+
+_CONTENT_MODE_VIDEO = "video"
+_CONTENT_MODE_MUSIC = "music"
 
 _BAR_L = 76
 _BAR_R = 724
@@ -101,7 +127,7 @@ _ELAPSED_TEXT_Y = 448
 _REMAINING_TEXT_Y = 448
 
 # Dynamic SVG layer ids (Illustrator-encoded) to strip before rasterize.
-_STRIP_SVG_IDS: tuple[str, ...] = (
+_STRIP_SVG_IDS_COMMON: tuple[str, ...] = (
     "time_x5F_text",
     "date_x5F_text",
     "remaining_x5F_time_x5F_text",
@@ -130,6 +156,16 @@ _STRIP_SVG_IDS: tuple[str, ...] = (
     "circle1_x5F_botton_00000082351325665415078510000008606994160936758171_",
 )
 
+# Music demo track titles (redrawn programmatically). Keep ``poster_x5F_1X1_x5F_accent``.
+_STRIP_SVG_IDS_MUSIC_EXTRA: tuple[str, ...] = (
+    "song_x5F_title_x5F_text",
+    "album_x5F_title_x5F_text",
+    "artist_x5F_title",
+)
+
+_STRIP_SVG_IDS: tuple[str, ...] = _STRIP_SVG_IDS_COMMON
+_STRIP_SVG_IDS_MUSIC: tuple[str, ...] = _STRIP_SVG_IDS_COMMON + _STRIP_SVG_IDS_MUSIC_EXTRA
+
 
 @dataclass
 class ViewCirclesState:
@@ -143,19 +179,58 @@ class ViewCirclesState:
     config: str = ""
     chrome_visible: bool = False
     cast: list[tuple[str, str]] = field(default_factory=list)
-    # True while a TMDb fetch is in flight — poster shows the searching spinner.
+    content_mode: str = _CONTENT_MODE_VIDEO  # "video" | "music"
+    song_title: str = ""
+    album_title: str = ""
+    artist_title: str = ""
+    # True while a TMDb / artwork fetch is in flight — poster shows the searching spinner.
     searching: bool = False
     search_angle_deg: float = 0.0
 
 
-def default_view_circles_svg_path(assets_dir: Path | str | None = None) -> Path:
-    env = os.environ.get("PIGEON_VIEW_CIRCLES_SVG", "").strip()
+def _normalize_content_mode(mode: str | None) -> str:
+    m = str(mode or "").strip().lower()
+    if m == _CONTENT_MODE_MUSIC:
+        return _CONTENT_MODE_MUSIC
+    return _CONTENT_MODE_VIDEO
+
+
+def default_view_circles_svg_path(
+    assets_dir: Path | str | None = None,
+    *,
+    content_mode: str = _CONTENT_MODE_VIDEO,
+) -> Path:
+    mode = _normalize_content_mode(content_mode)
+    if mode == _CONTENT_MODE_MUSIC:
+        env = os.environ.get("PIGEON_VIEW_CIRCLES_MUSIC_SVG", "").strip()
+        filename = "view_circles_music.svg"
+    else:
+        env = os.environ.get("PIGEON_VIEW_CIRCLES_SVG", "").strip()
+        filename = "view_circles.svg"
     if env:
         return Path(env).expanduser().resolve()
     if assets_dir is not None:
-        return Path(assets_dir) / "view_circles.svg"
+        return Path(assets_dir) / filename
     pigeon_root = Path(__file__).resolve().parents[3]
-    return pigeon_root / "pigeonAssets" / "view_circles.svg"
+    return pigeon_root / "pigeonAssets" / filename
+
+
+def _poster_geometry(content_mode: str) -> tuple[int, int, int, int, int]:
+    if _normalize_content_mode(content_mode) == _CONTENT_MODE_MUSIC:
+        return (
+            _POSTER_MUSIC_X,
+            _POSTER_MUSIC_Y,
+            _POSTER_MUSIC_W,
+            _POSTER_MUSIC_H,
+            _POSTER_MUSIC_RX,
+        )
+    return (
+        _POSTER_VIDEO_X,
+        _POSTER_VIDEO_Y,
+        _POSTER_VIDEO_W,
+        _POSTER_VIDEO_H,
+        _POSTER_VIDEO_RX,
+    )
 
 
 def _find_by_id(root: ET.Element, layer_id: str) -> ET.Element | None:
@@ -258,10 +333,18 @@ def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
     raise RuntimeError(msg)
 
 
-def apply_view_circles_svg_state(root: ET.Element) -> None:
+def apply_view_circles_svg_state(
+    root: ET.Element,
+    *,
+    content_mode: str = _CONTENT_MODE_VIDEO,
+) -> None:
     root.set("style", f"background:{_COLOR_BG_HEX}")
     _replace_background_with_black(root)
-    for element_id in _STRIP_SVG_IDS:
+    mode = _normalize_content_mode(content_mode)
+    strip_ids = (
+        _STRIP_SVG_IDS_MUSIC if mode == _CONTENT_MODE_MUSIC else _STRIP_SVG_IDS
+    )
+    for element_id in strip_ids:
         _remove_element_by_id(root, element_id)
 
 
@@ -269,15 +352,17 @@ def render_view_circles_svg_base_bgra(
     *,
     svg_path: Path | str | None = None,
     assets_dir: Path | str | None = None,
+    content_mode: str = _CONTENT_MODE_VIDEO,
 ) -> np.ndarray:
+    mode = _normalize_content_mode(content_mode)
     if svg_path is not None:
         path = Path(svg_path)
     else:
-        path = default_view_circles_svg_path(assets_dir)
+        path = default_view_circles_svg_path(assets_dir, content_mode=mode)
     if not path.is_file():
         raise FileNotFoundError(f"view_circles SVG not found: {path}")
     root = _svg_tree_from_path(path)
-    apply_view_circles_svg_state(root)
+    apply_view_circles_svg_state(root, content_mode=mode)
     return _rasterize_svg_tree(root)
 
 
@@ -645,8 +730,9 @@ class ViewCirclesWidget:
         self._poster_bgra: np.ndarray | None = None
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
-        self._svg_chrome_bgra: np.ndarray | None = None
-        self._svg_chrome_sig: tuple[object, ...] | None = None
+        # Dual chrome caches keyed by content_mode ("video" | "music").
+        self._svg_chrome_by_mode: dict[str, np.ndarray] = {}
+        self._svg_chrome_sig_by_mode: dict[str, tuple[object, ...]] = {}
         self._search_frames: tuple[np.ndarray, ...] | None = None
         self._search_frames_tried = False
         self._last_tick_mono: float | None = None
@@ -658,6 +744,10 @@ class ViewCirclesWidget:
     @property
     def searching(self) -> bool:
         return bool(self._state.searching)
+
+    @property
+    def content_mode(self) -> str:
+        return _normalize_content_mode(self._state.content_mode)
 
     def clear_cache(self) -> None:
         self._cached_bgra = None
@@ -700,10 +790,20 @@ class ViewCirclesWidget:
         poster_bgra: np.ndarray | None = None,
         has_now_playing: bool = True,
         searching: bool | None = None,
+        content_mode: str | None = None,
+        song_title: str | None = None,
+        album_title: str | None = None,
+        artist_title: str | None = None,
     ) -> bool:
         changed = False
         if self.set_now_playing_chrome_visible(has_now_playing):
             changed = True
+        if content_mode is not None:
+            mode = _normalize_content_mode(content_mode)
+            if mode != self._state.content_mode:
+                self._state.content_mode = mode
+                changed = True
+        is_music = self._state.content_mode == _CONTENT_MODE_MUSIC
         pf = max(0.0, min(1.0, float(progress)))
         if abs(pf - self._state.progress) > 1e-9:
             self._state.progress = pf
@@ -739,13 +839,39 @@ class ViewCirclesWidget:
         if cfg != self._state.config:
             self._state.config = cfg
             changed = True
-        if cast is not None:
-            norm = [(str(a or ""), str(c or "")) for a, c in cast[:3]]
-            while len(norm) < 3:
-                norm.append(("", ""))
-            if norm != self._state.cast:
-                self._state.cast = norm
+        if is_music:
+            if song_title is not None:
+                st = str(song_title or "")
+                if st != self._state.song_title:
+                    self._state.song_title = st
+                    changed = True
+            if album_title is not None:
+                al = str(album_title or "")
+                if al != self._state.album_title:
+                    self._state.album_title = al
+                    changed = True
+            if artist_title is not None:
+                ar = str(artist_title or "")
+                if ar != self._state.artist_title:
+                    self._state.artist_title = ar
+                    changed = True
+            # Music layout has no cast row.
+            if self._state.cast:
+                self._state.cast = []
                 changed = True
+        else:
+            if self._state.song_title or self._state.album_title or self._state.artist_title:
+                self._state.song_title = ""
+                self._state.album_title = ""
+                self._state.artist_title = ""
+                changed = True
+            if cast is not None:
+                norm = [(str(a or ""), str(c or "")) for a, c in cast[:3]]
+                while len(norm) < 3:
+                    norm.append(("", ""))
+                if norm != self._state.cast:
+                    self._state.cast = norm
+                    changed = True
         if searching is not None:
             want = bool(searching)
             if want != self._state.searching:
@@ -800,6 +926,8 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
+            4,  # cache schema version (music mode + track titles)
+            st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
             st.remaining_text,
@@ -810,6 +938,9 @@ class ViewCirclesWidget:
             st.config,
             st.chrome_visible,
             cast_sig,
+            st.song_title,
+            st.album_title,
+            st.artist_title,
             poster_id,
             st.searching,
             search_frame,
@@ -817,28 +948,35 @@ class ViewCirclesWidget:
             f"{now.month}/{now.day}/{now.strftime('%y')}",
         )
 
-    def _svg_chrome_cache_sig(self) -> tuple[object, ...]:
-        path = default_view_circles_svg_path(self._assets_dir)
+    def _svg_chrome_cache_sig(self, content_mode: str) -> tuple[object, ...]:
+        mode = _normalize_content_mode(content_mode)
+        path = default_view_circles_svg_path(self._assets_dir, content_mode=mode)
         try:
             mtime = path.stat().st_mtime_ns
         except OSError:
             mtime = -1
         # Bump when strip/redraw pipeline changes so cached chrome is not reused.
-        return (str(path), mtime, 3)
+        return (str(path), mtime, mode, 5)
 
     def _render_svg_base(self) -> np.ndarray:
-        sig = self._svg_chrome_cache_sig()
-        if self._svg_chrome_bgra is not None and self._svg_chrome_sig == sig:
-            return self._svg_chrome_bgra
+        mode = self.content_mode
+        sig = self._svg_chrome_cache_sig(mode)
+        cached = self._svg_chrome_by_mode.get(mode)
+        if cached is not None and self._svg_chrome_sig_by_mode.get(mode) == sig:
+            return cached
         try:
-            base = render_view_circles_svg_base_bgra(assets_dir=self._assets_dir)
+            base = render_view_circles_svg_base_bgra(
+                assets_dir=self._assets_dir,
+                content_mode=mode,
+            )
         except Exception:
             base = _fallback_base_bgra()
-        self._svg_chrome_bgra = base
-        self._svg_chrome_sig = sig
+        self._svg_chrome_by_mode[mode] = base
+        self._svg_chrome_sig_by_mode[mode] = sig
         return base
 
     def _draw_poster(self, out: np.ndarray) -> None:
+        px, py, pw, ph, prx = _poster_geometry(self.content_mode)
         src = self._poster_bgra
         if src is not None and src.size > 0 and not self._state.searching:
             if src.ndim == 3 and src.shape[2] == 3:
@@ -846,7 +984,7 @@ class ViewCirclesWidget:
             # Cover-fit into poster rect.
             sh, sw = src.shape[:2]
             if sh >= 1 and sw >= 1:
-                scale = max(_POSTER_W / float(sw), _POSTER_H / float(sh))
+                scale = max(pw / float(sw), ph / float(sh))
                 nw = max(1, int(round(sw * scale)))
                 nh = max(1, int(round(sh * scale)))
                 resized = cv2.resize(
@@ -854,27 +992,25 @@ class ViewCirclesWidget:
                     (nw, nh),
                     interpolation=cv_resize_interp(sw, sh, nw, nh),
                 )
-                x0 = max(0, (nw - _POSTER_W) // 2)
-                y0 = max(0, (nh - _POSTER_H) // 2)
-                crop = resized[y0 : y0 + _POSTER_H, x0 : x0 + _POSTER_W]
-                if crop.shape[0] != _POSTER_H or crop.shape[1] != _POSTER_W:
-                    crop = cv2.resize(
-                        crop, (_POSTER_W, _POSTER_H), interpolation=cv2.INTER_AREA
-                    )
-                mask = _rounded_rect_mask(_POSTER_W, _POSTER_H, _POSTER_RX)
+                x0 = max(0, (nw - pw) // 2)
+                y0 = max(0, (nh - ph) // 2)
+                crop = resized[y0 : y0 + ph, x0 : x0 + pw]
+                if crop.shape[0] != ph or crop.shape[1] != pw:
+                    crop = cv2.resize(crop, (pw, ph), interpolation=cv2.INTER_AREA)
+                mask = _rounded_rect_mask(pw, ph, prx)
                 patch = crop.copy()
                 if patch.shape[2] == 3:
                     patch = cv2.cvtColor(patch, cv2.COLOR_BGR2BGRA)
                 patch[:, :, 3] = np.minimum(patch[:, :, 3], mask)
-                _paste_patch_bgra(out, patch, _POSTER_X, _POSTER_Y)
+                _paste_patch_bgra(out, patch, px, py)
         if self._state.searching:
             frames = self._ensure_search_frames()
             if frames:
-                cx = int(round(_POSTER_X + _POSTER_W / 2.0))
-                cy = int(round(_POSTER_Y + _POSTER_H / 2.0))
+                cx = int(round(px + pw / 2.0))
+                cy = int(round(py + ph / 2.0))
                 patch = rotated_patch_for_angle(frames, self._state.search_angle_deg)
                 blit_spinner_patch(out, patch, cx=cx, cy=cy)
-        # Gray stroke is provided by SVG ``poster_accent`` chrome.
+        # Gray stroke is provided by SVG poster accent chrome.
 
     def _draw_status_bar(self, out: np.ndarray) -> None:
         st = self._state
@@ -948,6 +1084,9 @@ class ViewCirclesWidget:
         _paste_centered(out, date_p, _DATE_CX, _DATE_CY)
         time_p, _, _ = _text_patch_digital7(_clock_hhmm_ampm(now), size_px=48)
         _paste_centered(out, time_p, _TIME_CX, _TIME_CY)
+        # Music layout has no remaining-time label under circle1.
+        if st.content_mode == _CONTENT_MODE_MUSIC:
+            return
         rem = str(st.remaining_text or "").strip()
         if rem:
             # Prefer leading minus for remaining under circle (matches mock).
@@ -994,6 +1133,23 @@ class ViewCirclesWidget:
                 )
                 _paste_patch_bgra(out, cp, int(round(center_x - cw / 2.0)), char_y)
 
+    def _draw_track_titles(self, out: np.ndarray) -> None:
+        st = self._state
+        for text, cy, size in (
+            (st.song_title, _SONG_CY, _SONG_SIZE),
+            (st.album_title, _ALBUM_CY, _ALBUM_SIZE),
+            (st.artist_title, _ARTIST_CY, _ARTIST_SIZE),
+        ):
+            label = str(text or "").strip()
+            if not label:
+                continue
+            patch, _, _ = _text_patch_digital7(
+                label.upper(),
+                size_px=size,
+                max_width_px=_TRACK_MAX_W,
+            )
+            _paste_centered(out, patch, _TRACK_CX, cy)
+
     def _render_static_bgra(self) -> np.ndarray:
         out = _fallback_base_bgra()
         _paste_patch_bgra(out, self._render_svg_base(), 0, 0)
@@ -1017,7 +1173,10 @@ class ViewCirclesWidget:
         self._draw_status_bar(out)
         self._draw_clock_group(out)
         self._draw_audio_group(out)
-        self._draw_cast(out)
+        if self.content_mode == _CONTENT_MODE_MUSIC:
+            self._draw_track_titles(out)
+        else:
+            self._draw_cast(out)
         return out
 
     def bgra_frame(self) -> np.ndarray | None:
