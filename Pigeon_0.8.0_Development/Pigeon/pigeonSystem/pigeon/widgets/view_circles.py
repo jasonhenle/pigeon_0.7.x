@@ -74,6 +74,11 @@ _POSTER_MUSIC_W = 200
 _POSTER_MUSIC_H = 200
 _POSTER_MUSIC_RX = 10
 
+# Full-frame artwork backdrop under SVG chrome (music album art / video poster).
+_ARTWORK_BG_OPACITY = 0.20
+_ARTWORK_BG_BLUR_DOWNSCALE = 4
+_ARTWORK_BG_BLUR_SIGMA = 6.0
+
 # Back-compat aliases (video geometry).
 _POSTER_X = _POSTER_VIDEO_X
 _POSTER_Y = _POSTER_VIDEO_Y
@@ -233,6 +238,52 @@ def _poster_geometry(content_mode: str) -> tuple[int, int, int, int, int]:
     )
 
 
+def _cover_fit_bgra(src: np.ndarray, tw: int, th: int) -> np.ndarray:
+    """Scale ``src`` to cover ``tw×th`` (centered crop). Returns BGRA."""
+    if src is None or src.size == 0 or tw < 1 or th < 1:
+        return np.zeros((max(1, th), max(1, tw), 4), dtype=np.uint8)
+    arr = src
+    if arr.ndim == 2:
+        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGRA)
+    elif arr.ndim == 3 and arr.shape[2] == 3:
+        arr = cv2.cvtColor(arr, cv2.COLOR_BGR2BGRA)
+    sh, sw = arr.shape[:2]
+    if sh < 1 or sw < 1:
+        return np.zeros((th, tw, 4), dtype=np.uint8)
+    scale = max(tw / float(sw), th / float(sh))
+    nw = max(1, int(round(sw * scale)))
+    nh = max(1, int(round(sh * scale)))
+    resized = cv2.resize(
+        arr,
+        (nw, nh),
+        interpolation=cv_resize_interp(sw, sh, nw, nh),
+    )
+    x0 = max(0, (nw - tw) // 2)
+    y0 = max(0, (nh - th) // 2)
+    crop = resized[y0 : y0 + th, x0 : x0 + tw]
+    if crop.shape[0] != th or crop.shape[1] != tw:
+        crop = cv2.resize(crop, (tw, th), interpolation=cv2.INTER_AREA)
+    return crop
+
+
+def _build_artwork_blur_bgra(src: np.ndarray) -> np.ndarray:
+    """Full-frame cover-fit artwork, Gaussian-blurred, ~20% opacity (BGRA)."""
+    tw, th = int(DESIGN_W), int(DESIGN_H)
+    cover = _cover_fit_bgra(src, tw, th)
+    dw = max(1, tw // _ARTWORK_BG_BLUR_DOWNSCALE)
+    dh = max(1, th // _ARTWORK_BG_BLUR_DOWNSCALE)
+    small = cv2.resize(cover, (dw, dh), interpolation=cv2.INTER_AREA)
+    bgr = small[:, :, :3]
+    sigma = float(_ARTWORK_BG_BLUR_SIGMA)
+    k = max(3, int(round(sigma * 2)) | 1)
+    blurred = cv2.GaussianBlur(bgr, (k, k), sigmaX=sigma, sigmaY=sigma)
+    up = cv2.resize(blurred, (tw, th), interpolation=cv2.INTER_LINEAR)
+    out = np.zeros((th, tw, 4), dtype=np.uint8)
+    out[:, :, :3] = up
+    out[:, :, 3] = int(round(255.0 * _ARTWORK_BG_OPACITY))
+    return out
+
+
 def _find_by_id(root: ET.Element, layer_id: str) -> ET.Element | None:
     for el in root.iter():
         if el.get("id") == layer_id:
@@ -286,7 +337,8 @@ def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
         doc = fitz.open(stream=svg_bytes, filetype="svg")
         page = doc[0]
         pix = page.get_pixmap(
-            matrix=fitz.Matrix(src_w / page.rect.width, src_h / page.rect.height)
+            matrix=fitz.Matrix(src_w / page.rect.width, src_h / page.rect.height),
+            alpha=True,
         )
         rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
         if pix.n == 4:
@@ -333,14 +385,30 @@ def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
     raise RuntimeError(msg)
 
 
+def _decanvas_white_bgra(src: np.ndarray, *, threshold: int = 252) -> np.ndarray:
+    """Make PyMuPDF/cairosvg white canvas pixels transparent before compositing."""
+    if src is None or src.size == 0 or src.ndim != 3 or src.shape[2] < 4:
+        return src
+    out = src.copy()
+    rgb = out[:, :, :3]
+    white = (
+        (rgb[:, :, 0] >= threshold)
+        & (rgb[:, :, 1] >= threshold)
+        & (rgb[:, :, 2] >= threshold)
+    )
+    out[white, 3] = 0
+    return out
+
+
 def apply_view_circles_svg_state(
     root: ET.Element,
     *,
     content_mode: str = _CONTENT_MODE_VIDEO,
 ) -> None:
-    root.set("style", f"background:{_COLOR_BG_HEX}")
-    _replace_background_with_black(root)
     mode = _normalize_content_mode(content_mode)
+    # Transparent page so the artwork blur layer can sit under chrome.
+    root.set("style", "background:transparent")
+    _remove_element_by_id(root, "background")
     strip_ids = (
         _STRIP_SVG_IDS_MUSIC if mode == _CONTENT_MODE_MUSIC else _STRIP_SVG_IDS
     )
@@ -363,7 +431,10 @@ def render_view_circles_svg_base_bgra(
         raise FileNotFoundError(f"view_circles SVG not found: {path}")
     root = _svg_tree_from_path(path)
     apply_view_circles_svg_state(root, content_mode=mode)
-    return _rasterize_svg_tree(root)
+    bgra = _rasterize_svg_tree(root)
+    # Rasterizers often paint a white page behind transparent SVG roots.
+    bgra = _decanvas_white_bgra(bgra)
+    return bgra
 
 
 @lru_cache(maxsize=32)
@@ -733,6 +804,9 @@ class ViewCirclesWidget:
         # Dual chrome caches keyed by content_mode ("video" | "music").
         self._svg_chrome_by_mode: dict[str, np.ndarray] = {}
         self._svg_chrome_sig_by_mode: dict[str, tuple[object, ...]] = {}
+        # Cached artwork blur backdrop (keyed by id of ``_poster_bgra``).
+        self._artwork_blur_bgra: np.ndarray | None = None
+        self._artwork_blur_poster_id: int | None = None
         self._search_frames: tuple[np.ndarray, ...] | None = None
         self._search_frames_tried = False
         self._last_tick_mono: float | None = None
@@ -753,6 +827,10 @@ class ViewCirclesWidget:
         self._cached_bgra = None
         self._cached_sig = None
 
+    def _clear_artwork_blur_cache(self) -> None:
+        self._artwork_blur_bgra = None
+        self._artwork_blur_poster_id = None
+
     def set_now_playing_chrome_visible(self, visible: bool) -> bool:
         v = bool(visible)
         if v == self._state.chrome_visible:
@@ -766,6 +844,7 @@ class ViewCirclesWidget:
             if self._poster_bgra is None:
                 return False
             self._poster_bgra = None
+            self._clear_artwork_blur_cache()
             self.clear_cache()
             return True
         arr = np.asarray(poster_bgra, dtype=np.uint8)
@@ -773,8 +852,21 @@ class ViewCirclesWidget:
             if np.array_equal(self._poster_bgra, arr):
                 return False
         self._poster_bgra = arr.copy()
+        self._clear_artwork_blur_cache()
         self.clear_cache()
         return True
+
+    def _ensure_artwork_blur_bgra(self) -> np.ndarray | None:
+        src = self._poster_bgra
+        if src is None or src.size == 0:
+            self._clear_artwork_blur_cache()
+            return None
+        pid = id(src)
+        if self._artwork_blur_bgra is not None and self._artwork_blur_poster_id == pid:
+            return self._artwork_blur_bgra
+        self._artwork_blur_bgra = _build_artwork_blur_bgra(src)
+        self._artwork_blur_poster_id = pid
+        return self._artwork_blur_bgra
 
     def update_state(
         self,
@@ -926,7 +1018,7 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
-            4,  # cache schema version (music mode + track titles)
+            6,  # cache schema version (artwork blur backdrop for video + music)
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -956,7 +1048,7 @@ class ViewCirclesWidget:
         except OSError:
             mtime = -1
         # Bump when strip/redraw pipeline changes so cached chrome is not reused.
-        return (str(path), mtime, mode, 5)
+        return (str(path), mtime, mode, 7)
 
     def _render_svg_base(self) -> np.ndarray:
         mode = self.content_mode
@@ -1152,6 +1244,15 @@ class ViewCirclesWidget:
 
     def _render_static_bgra(self) -> np.ndarray:
         out = _fallback_base_bgra()
+        # Blurred cover-fit artwork under chrome (music album art / video poster).
+        if (
+            self._poster_bgra is not None
+            and self._poster_bgra.size > 0
+            and not self._state.searching
+        ):
+            blur = self._ensure_artwork_blur_bgra()
+            if blur is not None:
+                _paste_patch_bgra(out, blur, 0, 0)
         _paste_patch_bgra(out, self._render_svg_base(), 0, 0)
         self._draw_poster(out)
         # Identical pie-ring pipeline for playback (circle1) and volume (circle2).
