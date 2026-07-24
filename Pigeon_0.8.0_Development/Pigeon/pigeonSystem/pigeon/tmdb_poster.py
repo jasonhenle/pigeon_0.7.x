@@ -1595,11 +1595,24 @@ _CAST_CACHE: dict[str, list[tuple[str, str]]] = {}
 
 
 def get_cached_tmdb_cast(title_key_s: str) -> list[tuple[str, str]]:
-    """Return top cast cached for a reformatted-media title key (may be empty)."""
+    """Return top cast cached for a reformatted-media title key (may be empty).
+
+    Also tries a year-stripped alias so Apple TV ``Title (YYYY)`` keys still hit
+    cast cached under the clean TMDb display name.
+    """
     tk = str(title_key_s or "").strip()
     if not tk:
         return []
-    return list(_CAST_CACHE.get(tk) or [])
+    hit = _CAST_CACHE.get(tk)
+    if hit:
+        return list(hit)
+    cleaned, _year = split_query_and_year(tk)
+    cleaned = (cleaned or "").strip()
+    if cleaned and cleaned != tk:
+        hit = _CAST_CACHE.get(cleaned)
+        if hit:
+            return list(hit)
+    return []
 
 
 def clear_cached_tmdb_cast(title_key_s: str | None = None) -> None:
@@ -1686,7 +1699,12 @@ def cache_tmdb_cast_for_title(title_key_s: str, cast: list[tuple[str, str]]) -> 
     tk = str(title_key_s or "").strip()
     if not tk:
         return
-    _CAST_CACHE[tk] = [(str(a or ""), str(c or "")) for a, c in cast[:3]]
+    rows = [(str(a or ""), str(c or "")) for a, c in cast[:3]]
+    _CAST_CACHE[tk] = rows
+    cleaned, _year = split_query_and_year(tk)
+    cleaned = (cleaned or "").strip()
+    if cleaned and cleaned != tk:
+        _CAST_CACHE[cleaned] = list(rows)
 
 
 def _logo_path_from_images(images: dict) -> str | None:
