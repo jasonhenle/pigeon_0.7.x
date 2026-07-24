@@ -1585,6 +1585,9 @@ def main() -> int:
             "last_tmdb_fetch_input": None,
             "last_tmdb_fetch_refined": None,
             "last_tmdb_fetch_prefer": None,
+            # Music album art from pyatv ``metadata.artwork()`` (BGRA + track key).
+            "music_artwork_bgra": None,
+            "music_artwork_key": None,
         }
         tmdb_retry_rule_idx = [0]
         tmdb_adv_manual_btn_holder: list[tk.Button | None] = [None]
@@ -2758,15 +2761,6 @@ def main() -> int:
             ):
                 changed = True
             if view_circles_widget is not None:
-                cast_rows: list[tuple[str, str]] = []
-                try:
-                    from pigeon.tmdb_poster import get_cached_tmdb_cast
-
-                    tk = str(active_tmdb_title_key or "").strip()
-                    if tk:
-                        cast_rows = get_cached_tmdb_cast(tk)
-                except Exception:
-                    cast_rows = []
                 vol_frac = 0.0
                 try:
                     from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
@@ -2774,24 +2768,66 @@ def main() -> int:
                     vol_frac = float(volume_fraction_from_display_line(vol))
                 except Exception:
                     vol_frac = 0.0
-                fetch_busy = bool(
-                    apple_tv_auto_state.get("tmdb_fetch_in_flight")
-                    or apple_tv_auto_state.get("pending_tmdb")
-                )
-                if view_circles_widget.update_state(
-                    progress=progress,
-                    elapsed_text=played_text,
-                    remaining_text=remaining_text,
-                    volume_text=vol,
-                    volume_fraction=vol_frac,
-                    incoming_audio=inc,
-                    playback_config=cfg,
-                    cast=cast_rows,
-                    poster_bgra=circles_poster_bgra,
-                    has_now_playing=has_np,
-                    searching=fetch_busy,
-                ):
-                    changed = True
+                if _vv_is_music():
+                    lm_music = apple_tv_auto_state.get("last_metadata")
+                    song_t = album_t = artist_t = ""
+                    if isinstance(lm_music, dict):
+                        song_t = str(lm_music.get("title") or "").strip()
+                        album_t = str(lm_music.get("album") or "").strip()
+                        artist_t = str(lm_music.get("artist") or "").strip()
+                        # Match classic music text: promote album when title is empty.
+                        if not song_t and album_t:
+                            song_t, album_t = album_t, ""
+                    if view_circles_widget.update_state(
+                        progress=progress,
+                        elapsed_text=played_text,
+                        remaining_text=remaining_text,
+                        volume_text=vol,
+                        volume_fraction=vol_frac,
+                        incoming_audio=inc,
+                        playback_config=cfg,
+                        cast=[],
+                        poster_bgra=circles_poster_bgra,
+                        has_now_playing=has_np,
+                        searching=False,
+                        content_mode="music",
+                        song_title=song_t,
+                        album_title=album_t,
+                        artist_title=artist_t,
+                    ):
+                        changed = True
+                else:
+                    cast_rows: list[tuple[str, str]] = []
+                    try:
+                        from pigeon.tmdb_poster import get_cached_tmdb_cast
+
+                        tk = str(active_tmdb_title_key or "").strip()
+                        if tk:
+                            cast_rows = get_cached_tmdb_cast(tk)
+                    except Exception:
+                        cast_rows = []
+                    fetch_busy = bool(
+                        apple_tv_auto_state.get("tmdb_fetch_in_flight")
+                        or apple_tv_auto_state.get("pending_tmdb")
+                    )
+                    if view_circles_widget.update_state(
+                        progress=progress,
+                        elapsed_text=played_text,
+                        remaining_text=remaining_text,
+                        volume_text=vol,
+                        volume_fraction=vol_frac,
+                        incoming_audio=inc,
+                        playback_config=cfg,
+                        cast=cast_rows,
+                        poster_bgra=circles_poster_bgra,
+                        has_now_playing=has_np,
+                        searching=fetch_busy,
+                        content_mode="video",
+                        song_title="",
+                        album_title="",
+                        artist_title="",
+                    ):
+                        changed = True
             if changed:
                 skip_cache = None
 
@@ -3364,8 +3400,75 @@ def main() -> int:
             _tmdb_poster_cache["bgra"] = raw
             return raw
 
+        def _clear_music_artwork_cache() -> None:
+            """Drop cached pyatv music artwork (leaving music / idle / track miss)."""
+            if (
+                apple_tv_auto_state.get("music_artwork_bgra") is None
+                and apple_tv_auto_state.get("music_artwork_key") is None
+            ):
+                return
+            apple_tv_auto_state["music_artwork_bgra"] = None
+            apple_tv_auto_state["music_artwork_key"] = None
+
+        def _music_artwork_track_key(md: dict[str, object]) -> str:
+            return "|".join(
+                (
+                    str(md.get("hash") or "").strip(),
+                    str(md.get("artwork_id") or "").strip(),
+                    str(md.get("title") or "").strip(),
+                    str(md.get("artist") or "").strip(),
+                    str(md.get("album") or "").strip(),
+                )
+            )
+
+        def _decode_artwork_bytes_bgra(raw: object) -> np.ndarray | None:
+            if not isinstance(raw, (bytes, bytearray)) or not raw:
+                return None
+            try:
+                data = np.frombuffer(raw, dtype=np.uint8)
+                img = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+            except Exception:
+                return None
+            if img is None or img.size == 0:
+                return None
+            if img.ndim == 2:
+                return cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+            if img.shape[2] == 3:
+                return cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+            if img.shape[2] >= 4:
+                return img[:, :, :4].copy()
+            return None
+
+        def _store_music_artwork_from_metadata(md: dict[str, object] | None) -> None:
+            """Decode/store pyatv artwork bytes for Music; clear when not music."""
+            if not isinstance(md, dict):
+                _clear_music_artwork_cache()
+                return
+            mt = str(md.get("media_type") or "").strip().lower()
+            is_music = mt == "music" or mt.endswith(".music")
+            if not is_music or _atv_metadata_is_content_idle(md):
+                _clear_music_artwork_cache()
+                return
+            track_key = _music_artwork_track_key(md)
+            art_bytes = md.get("artwork_bytes")
+            bgra = _decode_artwork_bytes_bgra(art_bytes)
+            prev_key = apple_tv_auto_state.get("music_artwork_key")
+            if bgra is not None:
+                apple_tv_auto_state["music_artwork_bgra"] = bgra
+                apple_tv_auto_state["music_artwork_key"] = track_key
+                return
+            # Track changed without artwork this poll — drop stale cover.
+            if track_key != prev_key:
+                apple_tv_auto_state["music_artwork_bgra"] = None
+                apple_tv_auto_state["music_artwork_key"] = track_key
+
         def _circles_poster_bgra() -> np.ndarray | None:
             """Poster slot for view_circles — poster art only (no backdrop fill)."""
+            if _vv_is_music():
+                bgra = apple_tv_auto_state.get("music_artwork_bgra")
+                if isinstance(bgra, np.ndarray) and bgra.size > 0:
+                    return bgra
+                return None
             if apple_tv_auto_state.get("tmdb_fetch_in_flight") or apple_tv_auto_state.get(
                 "pending_tmdb"
             ):
@@ -9531,6 +9634,7 @@ def main() -> int:
                 # identity so the next title is not suppressed as "same tmdb_key".
                 apple_tv_auto_state["tmdb_key"] = None
                 apple_tv_auto_state["pending_tmdb"] = None
+                _clear_music_artwork_cache()
                 clk = apple_tv_playback_clock
                 clk["has_sync"] = False
                 clk["playing"] = False
@@ -9554,6 +9658,7 @@ def main() -> int:
             apple_tv_auto_state["last_tmdb_fetch_input"] = None
             apple_tv_auto_state["last_tmdb_fetch_refined"] = None
             apple_tv_auto_state["last_tmdb_fetch_prefer"] = None
+            _clear_music_artwork_cache()
             lm = apple_tv_auto_state.get("last_metadata")
             if isinstance(lm, dict):
                 lm["query"] = ""
@@ -9827,6 +9932,16 @@ def main() -> int:
                             _bump_clock_saver_significant_device_from_metadata(merged_md)
                         md_for_spawn = merged_md
                         apple_tv_auto_state["last_metadata"] = merged_md
+                        # Music artwork (bytes live only on the poll dict; not stored in last_metadata).
+                        try:
+                            art_md = dict(merged_md)
+                            if isinstance(metadata_w, dict) and metadata_w.get("artwork_bytes"):
+                                art_md["artwork_bytes"] = metadata_w.get("artwork_bytes")
+                                if metadata_w.get("artwork_id"):
+                                    art_md["artwork_id"] = metadata_w.get("artwork_id")
+                            _store_music_artwork_from_metadata(art_md)
+                        except Exception:
+                            pass
                         _update_status_bar_from_metadata(metadata_w)
                         if playback_overlay_widget is not None:
                             row_av = streaming_slot_holder[0]
