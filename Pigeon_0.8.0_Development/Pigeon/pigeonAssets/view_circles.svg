@@ -118,19 +118,19 @@
 </g>
 <g id="circle1_x5F_group">
 	
-		<circle id="circle1_x5F_botton_00000082351325665415078510000008606994160936758171_" style="fill:#939393;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" cx="152.958" cy="158.37" r="114.26"/>
+		<circle id="circle1_x5F_botton_00000082351325665415078510000008606994160936758171_" style="fill:#939393;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" cx="152.958" cy="158.37" r="114.26"/>
 	<g id="now_x5F_playing_x5F_circle_x5F_group">
 		
-			<circle id="now_x5F_playing_x5F_played_x5F_icon" style="fill:#FF0000;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" cx="152.958" cy="158.37" r="114.26"/>
+			<circle id="now_x5F_playing_x5F_played_x5F_icon" style="fill:#FF0000;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" cx="152.958" cy="158.37" r="114.26"/>
 	</g>
 	
-		<circle id="clock_x5F_button" style="fill:#232323;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" cx="152.958" cy="158.37" r="93.54"/>
+		<circle id="clock_x5F_button" style="fill:#232323;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" cx="152.958" cy="158.37" r="93.54"/>
 	
-		<text id="time_x5F_text" transform="matrix(1 0 0 1 80.9921 191.1337)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:48px;">12:55 PM</text>
+		<text id="time_x5F_text" transform="matrix(1 0 0 1 80.9921 191.1337)" style="fill:#939393; font-family:'Digital-7'; font-size:48px;">12:55 PM</text>
 	
-		<text id="date_x5F_text" transform="matrix(1 0 0 1 92.5555 141.1337)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:36px;">7/23/26</text>
+		<text id="date_x5F_text" transform="matrix(1 0 0 1 92.5555 141.1337)" style="fill:#939393; font-family:'Digital-7'; font-size:36px;">7/23/26</text>
 	
-		<text id="remaining_x5F_time_x5F_text" transform="matrix(1 0 0 1 78.7779 315.828)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:48px;">-2:38:22</text>
+		<text id="remaining_x5F_time_x5F_text" transform="matrix(1 0 0 1 78.7779 315.828)" style="fill:#939393; font-family:'Digital-7'; font-size:48px;">-2:38:22</text>
 </g>
 <g id="poster_x5F_group">
 	<g id="poster_x5F_group_00000048477813392085205510000001499980612498249878_">
@@ -1099,47 +1099,47 @@ s979swv/AHvrP0T+4/8AQ+8P0j8z9I/uFf731h+nfmfrL8z/AKt/sbv9VF7/AFc+R98sf2I1L+qj
 			</image>
 		</g>
 	</g>
-	<path id="poster_x5F_accent" style="fill:none;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" d="M490.076,323.116H310.347
+	<path id="poster_x5F_accent" style="fill:none;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" d="M490.076,323.116H310.347
 		c-5.598,0-10.135-4.538-10.135-10.135V33.251c0-5.598,4.538-10.135,10.135-10.135h179.729c5.598,0,10.135,4.538,10.135,10.135
 		V312.98C500.211,318.578,495.674,323.116,490.076,323.116z"/>
 </g>
 <g id="circle2_x5F_group">
 	
-		<circle id="circle2_x5F_volume_x5F_headroom_x5F_buton" style="fill:#939393;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" cx="646.958" cy="158.37" r="114.26"/>
+		<circle id="circle2_x5F_volume_x5F_headroom_x5F_buton" style="fill:#939393;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" cx="646.958" cy="158.37" r="114.26"/>
 	
-		<circle id="circle2_x5F_accent" style="fill:#FF0000;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" cx="646.958" cy="158.37" r="114.26"/>
+		<circle id="circle2_x5F_accent" style="fill:#FF0000;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" cx="646.958" cy="158.37" r="114.26"/>
 	
-		<circle id="circle2_x5F_button" style="fill:#232323;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" cx="646.958" cy="158.37" r="93.54"/>
+		<circle id="circle2_x5F_button" style="fill:#232323;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" cx="646.958" cy="158.37" r="93.54"/>
 	
-		<text id="volume_x5F_text" transform="matrix(1 0 0 1 571.5803 165.5203)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:72px;">-22.5</text>
+		<text id="volume_x5F_text" transform="matrix(1 0 0 1 571.5803 165.5203)" style="fill:#939393; font-family:'Digital-7'; font-size:72px;">-22.5</text>
 	
-		<text id="audio_x5F_config_x5F_text" transform="matrix(1 0 0 1 575.4736 194.2524)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:21px;">multi-in &gt; auro3d</text>
+		<text id="audio_x5F_config_x5F_text" transform="matrix(1 0 0 1 575.4736 194.2524)" style="fill:#939393; font-family:'Digital-7'; font-size:21px;">multi-in &gt; auro3d</text>
 </g>
 <g id="now_x5F_playing_x5F_group">
-	<path id="remainikng_x5F_icon" style="fill:#939393;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" d="M723.822,432.8
+	<path id="remainikng_x5F_icon" style="fill:#939393;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" d="M723.822,432.8
 		H76.095c-4.493,0-8.136-3.643-8.136-8.136v-24.494c0-4.493,3.643-8.136,8.136-8.136h647.727c4.493,0,8.136,3.643,8.136,8.136
 		v24.494C731.958,429.157,728.315,432.8,723.822,432.8z"/>
-	<path id="elapsed_x5F_icon" style="fill:#FF0000;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" d="M398.618,432.8H76.095
+	<path id="elapsed_x5F_icon" style="fill:#FF0000;stroke:#939393;stroke-width:2;stroke-miterlimit:10;" d="M398.618,432.8H76.095
 		c-4.493,0-8.136-3.643-8.136-8.136v-24.494c0-4.493,3.643-8.136,8.136-8.136h322.523c4.493,0,8.136,3.643,8.136,8.136v24.494
 		C406.754,429.157,403.112,432.8,398.618,432.8z"/>
-	<rect id="cti_x5F_icon" x="401.144" y="382.519" style="fill:#FFFFFF;" width="7.61" height="60.827"/>
+	<rect id="cti_x5F_icon" x="401.144" y="382.519" style="fill:#939393;" width="7.61" height="60.827"/>
 	
-		<text id="remaining_x5F_text" transform="matrix(1 0 0 1 689.5377 467.6574)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:24px;">-2:38:22</text>
+		<text id="remaining_x5F_text" transform="matrix(1 0 0 1 689.5377 467.6574)" style="fill:#939393; font-family:'Digital-7'; font-size:24px;">-2:38:22</text>
 	
-		<text id="elapsed_x5F_text" transform="matrix(1 0 0 1 367.5377 467.6574)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:24px;">-2:38:22</text>
+		<text id="elapsed_x5F_text" transform="matrix(1 0 0 1 367.5377 467.6574)" style="fill:#939393; font-family:'Digital-7'; font-size:24px;">-2:38:22</text>
 </g>
 <g id="cast_x5F_group">
 	
-		<text id="character3_x5F_text" transform="matrix(1 0 0 1 609.6497 378.0231)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:18px;">fey marvin</text>
+		<text id="character3_x5F_text" transform="matrix(1 0 0 1 609.6497 378.0231)" style="fill:#939393; font-family:'Digital-7'; font-size:18px;">fey marvin</text>
 	
-		<text id="actor3_x5F_text" transform="matrix(1 0 0 1 580.2063 360.0231)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:24px;">julie hagerty</text>
+		<text id="actor3_x5F_text" transform="matrix(1 0 0 1 580.2063 360.0231)" style="fill:#939393; font-family:'Digital-7'; font-size:24px;">julie hagerty</text>
 	
-		<text id="character2_x5F_text" transform="matrix(1 0 0 1 371.1187 378.0227)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:18px;">leo marvin</text>
+		<text id="character2_x5F_text" transform="matrix(1 0 0 1 371.1187 378.0227)" style="fill:#939393; font-family:'Digital-7'; font-size:18px;">leo marvin</text>
 	
-		<text id="actor2_x5F_text" transform="matrix(1 0 0 1 325.4107 360.0227)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:24px;">richard dreyfuss</text>
+		<text id="actor2_x5F_text" transform="matrix(1 0 0 1 325.4107 360.0227)" style="fill:#939393; font-family:'Digital-7'; font-size:24px;">richard dreyfuss</text>
 	
-		<text id="character1_x5F_text" transform="matrix(1 0 0 1 90.867 378.0233)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:18px;">bob wiley</text>
+		<text id="character1_x5F_text" transform="matrix(1 0 0 1 90.867 378.0233)" style="fill:#939393; font-family:'Digital-7'; font-size:18px;">bob wiley</text>
 	
-		<text id="actor1_x5F_text" transform="matrix(1 0 0 1 67.9588 360.0233)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:24px;">bill murray</text>
+		<text id="actor1_x5F_text" transform="matrix(1 0 0 1 67.9588 360.0233)" style="fill:#939393; font-family:'Digital-7'; font-size:24px;">bill murray</text>
 </g>
 </svg>
