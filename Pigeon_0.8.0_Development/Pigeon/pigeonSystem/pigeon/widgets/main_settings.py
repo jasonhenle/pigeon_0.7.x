@@ -682,6 +682,61 @@ class MainSettingsState:
         self.location_name = name
         return True
 
+    def select_location_slot(self, box_num: int) -> bool:
+        """Make the nest in ``box_num`` the active location (dual-location picker)."""
+        slot = self.location_slot(box_num)
+        if slot is None:
+            self.refresh_location_slots()
+            slot = self.location_slot(box_num)
+        if slot is None:
+            return False
+        lid, name = slot
+        try:
+            from pigeon.app_state import set_current_location_id
+
+            if not set_current_location_id(str(lid)):
+                return False
+        except Exception:
+            return False
+        self.location_name = str(name or "").strip() or self.location_name
+        self.renaming_location_id = ""
+        self.renaming_location_slot = 0
+        try:
+            self.load_saved_box_devices()
+        except Exception:
+            pass
+        return True
+
+    def begin_rename_current_location(self) -> bool:
+        """Prepare rename keyboard for the currently active location."""
+        try:
+            from pigeon.app_state import read_current_location_id, read_current_location_name
+
+            lid = str(read_current_location_id() or "").strip()
+            name = str(read_current_location_name() or "").strip()
+        except Exception:
+            lid, name = "", ""
+        if not lid:
+            # Fall back to slot 1 if current id is missing.
+            slot = self.location_slot(1)
+            if slot is None:
+                self.refresh_location_slots()
+                slot = self.location_slot(1)
+            if slot is None:
+                return False
+            lid, name = slot
+        self.renaming_location_id = lid
+        self.renaming_location_slot = 0
+        for box_num in (1, 2, 3):
+            slot = self.location_slot(box_num)
+            if slot is not None and str(slot[0]) == str(lid):
+                self.renaming_location_slot = int(box_num)
+                if not name:
+                    name = str(slot[1] or "")
+                break
+        self.location_name = str(name or "").strip() or "Room"
+        return True
+
     def ensure_focus_ring(self) -> None:
         locked_box = self.box_device_results_locked()
         if locked_box is not None:
@@ -4074,6 +4129,8 @@ def _hide_all_box_chrome(root: ET.Element) -> None:
 
 def _network_field_text(state: MainSettingsState) -> str | None:
     """Dual-network label text, or ``None`` to preserve SVG placeholder art."""
+    if state.show_location_picker and not _needs_wifi_setup(state):
+        return "RENAME"
     if state.wifi_configured:
         return "CONNECTED"
     if state.wifi_connecting or state.keyboard_open:
@@ -4152,7 +4209,7 @@ def _apply_wifi_onboarding_visibility(root: ET.Element, state: MainSettingsState
         show_rename_hint = bool(state.show_instructions or state.show_location_picker)
         nest_el = _find_by_logical_id(root, "rename_your_nest_text")
         if nest_el is not None and state.show_location_picker:
-            _set_text_content(nest_el, "rename your nest")
+            _set_text_content(nest_el, "select your nest")
             _force_layer_white(nest_el)
         _set_visible(nest_el, show_rename_hint)
         _set_box_columns_visible(root, True)
@@ -4547,7 +4604,21 @@ def _box_nav_button_selected(
             return True
     if state.keyboard_open:
         return False
-    return focused == logical
+    if focused == logical:
+        return True
+    # While picking nests, also highlight the currently active location.
+    if state.show_location_picker:
+        try:
+            from pigeon.app_state import read_current_location_id
+
+            cur = str(read_current_location_id() or "").strip()
+        except Exception:
+            cur = ""
+        if cur:
+            slot = state.location_slot(box_num)
+            if slot is not None and str(slot[0]) == cur:
+                return True
+    return False
 
 
 def _apply_box_column_nav_fills(
@@ -4852,11 +4923,14 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
                     _set_svg_text_horiz_centered(node, (loc_x0 + loc_x1) * 0.5, baseline)
         _set_visible(loc_el, True)
     hide_net_svg = (
-        (state.keyboard_open and kb_target in ("network", "device_ip", "pin"))
+        (state.keyboard_open and kb_target in ("network", "device_ip", "pin", "location", "wifi_logout"))
         or state.wifi_connecting
         or entry is not None
         or pairing_pin
     )
+    if state.show_location_picker and not _needs_wifi_setup(state):
+        # Dual-network becomes the RENAME CTA while picking a nest.
+        _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
     if hide_net_svg:
         _set_visible(_find_by_logical_id(root, "main_dual_network_name_text"), False)
     else:
@@ -4865,7 +4939,9 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
         if net_text == "CONNECT TO WIFI":
             _set_visible(net_el, False)
         elif net_text is not None:
-            display = net_text.upper() if not state.wifi_configured else net_text
+            display = net_text.upper() if not state.wifi_configured or net_text == "RENAME" else net_text
+            if net_text == "RENAME":
+                display = "RENAME"
             _set_text_content(net_el, display)
             cx = (_DUAL_NETWORK_TEXT_X0_SVG + _DUAL_NETWORK_TEXT_X1_SVG) * 0.5
             baseline = float(_TEXT_ENTRY_FIELDS["location"]["baseline_y_svg"])
@@ -4876,6 +4952,8 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
                         _set_svg_text_font_size_px(node, _field_font_size_px(fit_size))
                     _set_svg_text_horiz_centered(node, cx, baseline)
                     if state.wifi_configured and display == "CONNECTED":
+                        _set_paint(node, fill="#FFFFFF")
+                    elif display == "RENAME":
                         _set_paint(node, fill="#FFFFFF")
                     elif not state.wifi_configured:
                         _set_paint(node, fill="#808080")
@@ -6511,7 +6589,15 @@ class MainSettingsWidget:
             return "location_picker"
         if action == "focus_network":
             if st.show_location_picker:
-                st.exit_location_picker()
+                if st.begin_rename_current_location():
+                    st.open_keyboard(
+                        "location",
+                        assets_dir=self._assets_dir,
+                        trigger_button="main_dual_location_button",
+                    )
+                    self.invalidate()
+                    return "keyboard_open:location"
+                return action
             if not st.wifi_configured:
                 self._begin_wifi_scan()
                 return "wifi_scan_start"
@@ -6539,28 +6625,18 @@ class MainSettingsWidget:
             return action
         if action == "focus_box1":
             if st.show_location_picker:
-                if st.begin_rename_location_slot(1):
-                    st.open_keyboard(
-                        "location",
-                        assets_dir=self._assets_dir,
-                        trigger_button="main_dual_location_button",
-                    )
+                if st.select_location_slot(1):
                     self.invalidate()
-                    return "keyboard_open:location"
+                    return "location_switch"
                 return action
             st.enter_pigeon_settings()
             self.invalidate()
             return "pigeon_settings"
         if action in ("pick_box2_device", "focus_box2"):
             if st.show_location_picker and action == "focus_box2":
-                if st.begin_rename_location_slot(2):
-                    st.open_keyboard(
-                        "location",
-                        assets_dir=self._assets_dir,
-                        trigger_button="main_dual_location_button",
-                    )
+                if st.select_location_slot(2):
                     self.invalidate()
-                    return "keyboard_open:location"
+                    return "location_switch"
                 return action
             if st.box2_devices.results_locked or action == "pick_box2_device":
                 row = st.pick_box_device(2)
@@ -6586,14 +6662,9 @@ class MainSettingsWidget:
             return action
         if action in ("pick_box3_device", "focus_box3"):
             if st.show_location_picker and action == "focus_box3":
-                if st.begin_rename_location_slot(3):
-                    st.open_keyboard(
-                        "location",
-                        assets_dir=self._assets_dir,
-                        trigger_button="main_dual_location_button",
-                    )
+                if st.select_location_slot(3):
                     self.invalidate()
-                    return "keyboard_open:location"
+                    return "location_switch"
                 return action
             if st.box3_devices.results_locked or action == "pick_box3_device":
                 row = st.pick_box_device(3)
