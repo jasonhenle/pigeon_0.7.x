@@ -315,9 +315,19 @@ def _composite_cap_dims(display_w: int, display_h: int) -> tuple[int, int, bool]
 
 
 def _present_frame_to_display(image: np.ndarray, display_w: int, display_h: int) -> np.ndarray:
-    """Scale entire frame into the window with black letterbox/pillarbox bars."""
+    """Scale entire frame into the window with black letterbox/pillarbox bars.
+
+    Applies pixel-aspect compensation when the panel PAR is non-square (e.g. official
+    Pi 7″ touchscreen) so designed circles stay round on glass.
+    """
     dw = max(1, int(display_w))
     dh = max(1, int(display_h))
+    try:
+        from pigeon.display_par import apply_par_compensation
+
+        return apply_par_compensation(image, display_w=dw, display_h=dh)
+    except Exception:
+        pass
     if int(image.shape[1]) == dw and int(image.shape[0]) == dh:
         return image
     if _PIGEON_EXT and scale_uniform_letterbox is not None:
@@ -331,6 +341,12 @@ def _bgra_to_display_window(bgra: np.ndarray) -> np.ndarray:
         return bgra
     assert resize_bgra_if_needed is not None
     fitted = resize_bgra_if_needed(bgra, UI_TARGET_W, UI_TARGET_H)
+    try:
+        from pigeon.display_par import apply_par_compensation
+
+        return apply_par_compensation(fitted, display_w=WINDOW_W, display_h=WINDOW_H)
+    except Exception:
+        pass
     if scale_uniform_letterbox is not None:
         return scale_uniform_letterbox(fitted, WINDOW_W, WINDOW_H)
     return resize_bgra_if_needed(fitted, WINDOW_W, WINDOW_H)
@@ -2124,6 +2140,20 @@ def main() -> int:
         fps_sched = _default_render_fps()
         display_dims = [WINDOW_W, WINDOW_H]
         fit_holder = [SceneFit(target_w=WINDOW_W, target_h=WINDOW_H)]
+        try:
+            from pigeon.display_par import read_par_mode, resolve_display_par
+
+            _par0, _par_reason0 = resolve_display_par(
+                display_w=int(display_dims[0]), display_h=int(display_dims[1])
+            )
+            sys.stderr.write(
+                f"pigeon: display PAR mode={read_par_mode()}  "
+                f"effective={_par0:.4f}  ({_par_reason0})  "
+                f"[hold P+A+R to toggle auto/off]\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
 
         if _PIGEON_EXT:
             from pigeon.design import DESIGN_W as _DESIGN_W_L, DESIGN_H as _DESIGN_H_L
@@ -10858,6 +10888,57 @@ def main() -> int:
         root.bind_all("<Control-Shift-KeyPress-s>", lambda e: toggle_scene(require_overlay=False))
         root.bind_all("<Control-Shift-KeyPress-S>", lambda e: toggle_scene(require_overlay=False))
 
+        # Pixel-aspect override: hold P+A+R together to toggle auto ↔ off.
+        _par_chord_held: set[str] = set()
+        _par_chord_fired = [False]
+
+        def _on_par_chord_press(event: tk.Event) -> str | None:
+            nonlocal skip_cache
+            if _widget_accepts_typing(event.widget):
+                return None
+            ks = (getattr(event, "keysym", "") or "").lower()
+            if ks not in ("p", "a", "r"):
+                return None
+            _par_chord_held.add(ks)
+            if not ({"p", "a", "r"} <= _par_chord_held) or _par_chord_fired[0]:
+                return None
+            _par_chord_fired[0] = True
+            try:
+                from pigeon.display_par import cycle_par_mode
+
+                mode, par, reason = cycle_par_mode()
+            except Exception as exc:
+                sys.stderr.write(f"pigeon: PAR chord failed: {exc}\n")
+                sys.stderr.flush()
+                return "break"
+            msg = f"pigeon: display PAR → mode={mode}  effective={par:.4f}  ({reason})"
+            sys.stderr.write(msg + "\n")
+            sys.stderr.flush()
+            try:
+                from pigeon.pi_diagnostics import append_pigeon_log
+
+                append_pigeon_log(msg)
+            except Exception:
+                pass
+            skip_cache = None
+            try:
+                render_once()
+            except Exception:
+                pass
+            return "break"
+
+        def _on_par_chord_release(event: tk.Event) -> str | None:
+            ks = (getattr(event, "keysym", "") or "").lower()
+            if ks in ("p", "a", "r"):
+                _par_chord_held.discard(ks)
+            if not _par_chord_held:
+                _par_chord_fired[0] = False
+            return None
+
+        for _par_ch in ("p", "a", "r", "P", "A", "R"):
+            root.bind_all(f"<KeyPress-{_par_ch}>", _on_par_chord_press, add="+")
+            root.bind_all(f"<KeyRelease-{_par_ch}>", _on_par_chord_release, add="+")
+
         def _focus_when_mapped(_event=None) -> None:
             try:
                 root.focus_force()
@@ -10878,6 +10959,13 @@ def main() -> int:
                 return
             display_dims[0] = w
             display_dims[1] = h
+            # Display geometry changed — re-resolve auto PAR next present.
+            try:
+                from pigeon.display_par import clear_auto_par_cache
+
+                clear_auto_par_cache()
+            except Exception:
+                pass
             fit_holder[0] = SceneFit(target_w=w, target_h=h)
             black_photo = None
             skip_cache = None
