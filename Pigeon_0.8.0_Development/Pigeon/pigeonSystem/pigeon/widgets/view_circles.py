@@ -47,8 +47,9 @@ _COLOR_BG_HEX = "#000000"
 _COLOR_ACCENT_BGR = (0, 0, 255)  # #FF0000
 _COLOR_UNPLAYED_BGR = (147, 147, 147)  # #939393
 _COLOR_BUTTON_BGR = (35, 35, 35)  # #232323
-_COLOR_WHITE_BGR = (255, 255, 255)
-_COLOR_WHITE_RGB = (255, 255, 255)
+# Strokes, CTI, Digital-7 labels — gray accents (was pure white).
+_COLOR_CHROME_BGR = (147, 147, 147)  # #939393
+_COLOR_CHROME_RGB = (147, 147, 147)
 
 # Geometry from ``view_circles.svg`` (design coords = SVG 800×480).
 _RING_OUTER_R = 114.26
@@ -306,7 +307,7 @@ def _text_patch_digital7(
     text: str,
     *,
     size_px: int,
-    fill_rgb: tuple[int, int, int] = _COLOR_WHITE_RGB,
+    fill_rgb: tuple[int, int, int] = _COLOR_CHROME_RGB,
     max_width_px: int | None = None,
 ) -> tuple[np.ndarray, int, int]:
     draw_text = str(text or "")
@@ -486,7 +487,7 @@ def _draw_filled_circle_bgra(
     cy: float,
     r: float,
     fill_bgr: tuple[int, int, int],
-    stroke_bgr: tuple[int, int, int] = _COLOR_WHITE_BGR,
+    stroke_bgr: tuple[int, int, int] = _COLOR_CHROME_BGR,
     stroke: int = 2,
 ) -> None:
     radius = max(1, int(round(r)))
@@ -511,7 +512,7 @@ def _draw_progress_ring(
     inner_r: float,
     fraction: float,
     fill_bgr: tuple[int, int, int] = _COLOR_ACCENT_BGR,
-    stroke_bgr: tuple[int, int, int] = _COLOR_WHITE_BGR,
+    stroke_bgr: tuple[int, int, int] = _COLOR_CHROME_BGR,
     stroke: int = 2,
 ) -> None:
     """Annular pie from 12-o'clock, clockwise — shared by circle1 (progress) and circle2 (volume)."""
@@ -823,7 +824,7 @@ class ViewCirclesWidget:
         except OSError:
             mtime = -1
         # Bump when strip/redraw pipeline changes so cached chrome is not reused.
-        return (str(path), mtime, 2)
+        return (str(path), mtime, 3)
 
     def _render_svg_base(self) -> np.ndarray:
         sig = self._svg_chrome_cache_sig()
@@ -873,7 +874,7 @@ class ViewCirclesWidget:
                 cy = int(round(_POSTER_Y + _POSTER_H / 2.0))
                 patch = rotated_patch_for_angle(frames, self._state.search_angle_deg)
                 blit_spinner_patch(out, patch, cx=cx, cy=cy)
-        # White stroke is provided by SVG ``poster_accent`` chrome.
+        # Gray stroke is provided by SVG ``poster_accent`` chrome.
 
     def _draw_status_bar(self, out: np.ndarray) -> None:
         st = self._state
@@ -887,7 +888,7 @@ class ViewCirclesWidget:
             h=_BAR_H,
             fill_bgr=_COLOR_UNPLAYED_BGR,
             radius=_BAR_RX,
-            stroke_bgr=_COLOR_WHITE_BGR,
+            stroke_bgr=_COLOR_CHROME_BGR,
             stroke=2,
         )
         # Elapsed grows from left; own full perimeter stroke (including leading edge).
@@ -903,14 +904,14 @@ class ViewCirclesWidget:
                 h=_BAR_H,
                 fill_bgr=_COLOR_ACCENT_BGR,
                 radius=_BAR_RX,
-                stroke_bgr=_COLOR_WHITE_BGR,
+                stroke_bgr=_COLOR_CHROME_BGR,
                 stroke=2,
             )
         # CTI: short vertical tick centered on the bar (does not reach elapsed text).
         cti_x = _BAR_L + min(elapsed_w, _BAR_W) - _CTI_W // 2
         cti_x = max(_BAR_L, min(_BAR_R - _CTI_W, cti_x))
         cti = np.zeros((_CTI_H, _CTI_W, 4), dtype=np.uint8)
-        cti[:, :, :3] = _COLOR_WHITE_BGR
+        cti[:, :, :3] = _COLOR_CHROME_BGR
         cti[:, :, 3] = 255
         _paste_patch_bgra(out, cti, cti_x, _CTI_Y)
 
