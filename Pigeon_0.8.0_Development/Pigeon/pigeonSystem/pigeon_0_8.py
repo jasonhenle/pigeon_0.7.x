@@ -170,6 +170,10 @@ try:
     )
     from pigeon.widgets.now_playing_screen import NowPlayingScreenWidget
     try:
+        from pigeon.widgets.view_circles import ViewCirclesWidget
+    except ImportError:
+        ViewCirclesWidget = None  # type: ignore[misc, assignment]
+    try:
         from pigeon.widgets.main_settings import MainSettingsWidget
     except ImportError:
         MainSettingsWidget = None  # type: ignore[misc, assignment]
@@ -221,6 +225,7 @@ except ImportError:
     StatusBarWidget = None  # type: ignore[misc, assignment]
     PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
     NowPlayingScreenWidget = None  # type: ignore[misc, assignment]
+    ViewCirclesWidget = None  # type: ignore[misc, assignment]
     MainSettingsWidget = None  # type: ignore[misc, assignment]
     compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
     PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"  # type: ignore[misc, assignment]
@@ -2584,20 +2589,11 @@ def main() -> int:
                 volume_top_right_col_1based=float(VIEW_ONE_CLOCK_COL_RIGHT),
             )
 
-        # Now-playing screen (070326): sole View 1 chrome.
+        # Now-playing screen (070326): classic View 1 chrome.
+        # view_circles is the default skin; key [1] toggles circles ↔ classic.
         audio_levels_sim_holder: list[bool] = [False]
-        # Manual View 1 layout override, cycled with [1]. None = auto-detect from
-        # connections. "full" also runs the placeholder audio-meter animation
-        # (stand-in until HDMI audio extraction is wired up).
+        view_one_np_skin_holder: list[str] = ["circles"]  # "circles" | "classic"
         view_one_np_layout_force_holder: list[str | None] = [None]
-        _VIEW_ONE_NP_LAYOUT_CYCLE: tuple[str | None, ...] = (
-            None,
-            "full",
-            "np_rv_ck",
-            "np_ck",
-            "rv_ck",
-            "ck",
-        )
 
         def _audio_sim_active() -> bool:
             """Placeholder meter animation: key-6 toggle or a forced 'full' layout."""
@@ -2612,20 +2608,31 @@ def main() -> int:
             now_playing_screen_widget = NowPlayingScreenWidget(
                 assets_dir=Path(_PROJECT_DIR) / "pigeonAssets",
             )
+        view_circles_widget = None
+        if _PIGEON_EXT and ViewCirclesWidget is not None:
+            view_circles_widget = ViewCirclesWidget(
+                assets_dir=Path(_PROJECT_DIR) / "pigeonAssets",
+            )
         main_settings_widget = None
         if _PIGEON_EXT and MainSettingsWidget is not None:
             main_settings_widget = MainSettingsWidget(
                 assets_dir=Path(_PROJECT_DIR) / "pigeonAssets",
             )
 
+        def _view_one_np_skin() -> str:
+            s = str(view_one_np_skin_holder[0] or "").strip().lower()
+            return s if s in ("circles", "classic") else "circles"
+
         def _view_one_uses_now_playing_screen() -> bool:
-            if now_playing_screen_widget is None:
+            if _effective_display_view() != DisplayView.ONE:
                 return False
-            return _effective_display_view() == DisplayView.ONE
+            if _view_one_np_skin() == "circles":
+                return view_circles_widget is not None or now_playing_screen_widget is not None
+            return now_playing_screen_widget is not None
 
         def _sync_now_playing_screen_state() -> None:
             nonlocal skip_cache
-            if now_playing_screen_widget is None:
+            if now_playing_screen_widget is None and view_circles_widget is None:
                 return
             prog = _playback_progress_fraction_for_bar()
             progress = float(prog) if prog is not None else 0.0
@@ -2672,10 +2679,8 @@ def main() -> int:
             badge_label = str(sb.get("label") or "").strip()
             sim_on = _audio_sim_active()
             forced_mode = view_one_np_layout_force_holder[0]
-            # Layout adapts to what is connected, unless [1] forced a specific
-            # variation. HDMI audio extraction is not wired up yet, so "full"
-            # (meters) only appears via the sim/placeholder; the default with
-            # player + receiver data is np_rv_ck per the 070426 mocks.
+            # Classic layout adapts to what is connected. HDMI audio extraction is not
+            # wired up yet, so "full" (meters) only appears via the sim/placeholder.
             if forced_mode is not None:
                 layout_mode = forced_mode
             elif sim_on:
@@ -2689,7 +2694,8 @@ def main() -> int:
             else:
                 layout_mode = "ck"
             sim_render = sim_on and layout_mode == "full"
-            if now_playing_screen_widget.update_state(
+            changed = False
+            if now_playing_screen_widget is not None and now_playing_screen_widget.update_state(
                 progress=progress,
                 remaining_text=remaining_text,
                 played_text=played_text,
@@ -2717,12 +2723,52 @@ def main() -> int:
                 layout_mode=layout_mode,
                 indicator_now_playing=atv_live,
             ):
+                changed = True
+            if view_circles_widget is not None:
+                cast_rows: list[tuple[str, str]] = []
+                try:
+                    from pigeon.tmdb_poster import get_cached_tmdb_cast
+
+                    tk = str(active_tmdb_title_key or "").strip()
+                    if tk:
+                        cast_rows = get_cached_tmdb_cast(tk)
+                except Exception:
+                    cast_rows = []
+                vol_frac = 0.0
+                try:
+                    from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
+
+                    vol_frac = float(volume_fraction_from_display_line(vol))
+                except Exception:
+                    vol_frac = 0.0
+                if view_circles_widget.update_state(
+                    progress=progress,
+                    elapsed_text=played_text,
+                    remaining_text=remaining_text,
+                    volume_text=vol,
+                    volume_fraction=vol_frac,
+                    incoming_audio=inc,
+                    playback_config=cfg,
+                    cast=cast_rows,
+                    poster_bgra=poster_bgra,
+                    has_now_playing=has_np,
+                ):
+                    changed = True
+            if changed:
                 skip_cache = None
 
+        def _clear_now_playing_view_caches() -> None:
+            if now_playing_screen_widget is not None:
+                now_playing_screen_widget.clear_cache()
+            if view_circles_widget is not None:
+                view_circles_widget.clear_cache()
+
         def _enable_now_playing_screen() -> None:
-            """Show the 070326 now-playing screen (chrome on, scene compositing). Idempotent."""
+            """Show View 1 now-playing chrome (circles or classic). Idempotent."""
             nonlocal skip_cache, last_frame, scene_enabled, brightness_current, brightness_from, brightness_target
-            if not _PIGEON_EXT or now_playing_screen_widget is None:
+            if not _PIGEON_EXT or (
+                now_playing_screen_widget is None and view_circles_widget is None
+            ):
                 return
             display_view_holder[0] = DisplayView.ONE
             # View 1 chrome composites without a video ``last_frame``; keep scene off so
@@ -2757,19 +2803,30 @@ def main() -> int:
                 pass
 
         def _warm_view_one_splash_chrome_only(*, phase: str = "chrome-only") -> None:
-            """Rasterize 070326 SVG chrome early (no playback poll helpers required)."""
-            if not _PIGEON_EXT or now_playing_screen_widget is None:
+            """Rasterize View 1 SVG chrome early (no playback poll helpers required)."""
+            if not _PIGEON_EXT or (
+                now_playing_screen_widget is None and view_circles_widget is None
+            ):
                 return
             t0 = time.monotonic()
             display_view_holder[0] = DisplayView.ONE
             if status_bar_widget is not None:
                 status_bar_widget.set_now_playing_chrome_visible(True)
-            if now_playing_screen_widget.set_now_playing_chrome_visible(True):
-                now_playing_screen_widget.clear_cache()
-            try:
-                now_playing_screen_widget.bgra_frame()
-            except Exception:
-                pass
+            skin = _view_one_np_skin()
+            if skin == "circles" and view_circles_widget is not None:
+                if view_circles_widget.set_now_playing_chrome_visible(True):
+                    view_circles_widget.clear_cache()
+                try:
+                    view_circles_widget.bgra_frame()
+                except Exception:
+                    pass
+            elif now_playing_screen_widget is not None:
+                if now_playing_screen_widget.set_now_playing_chrome_visible(True):
+                    now_playing_screen_widget.clear_cache()
+                try:
+                    now_playing_screen_widget.bgra_frame()
+                except Exception:
+                    pass
             try:
                 root.update_idletasks()
             except tk.TclError:
@@ -2783,11 +2840,14 @@ def main() -> int:
             t0 = time.monotonic()
             _enable_now_playing_screen()
             _warm_status_bar_blits()
-            if now_playing_screen_widget is not None:
-                try:
+            skin = _view_one_np_skin()
+            try:
+                if skin == "circles" and view_circles_widget is not None:
+                    view_circles_widget.bgra_frame()
+                elif now_playing_screen_widget is not None:
                     now_playing_screen_widget.bgra_frame()
-                except Exception:
-                    pass
+            except Exception:
+                pass
             try:
                 root.update_idletasks()
             except tk.TclError:
@@ -3713,8 +3773,13 @@ def main() -> int:
                     main_settings_widget.render(canvas_np)
                 else:
                     _sync_now_playing_screen_state()
-                    if now_playing_screen_widget is not None:
+                    skin = _view_one_np_skin()
+                    if skin == "circles" and view_circles_widget is not None:
+                        view_circles_widget.render(canvas_np)
+                    elif now_playing_screen_widget is not None:
                         now_playing_screen_widget.render(canvas_np)
+                    elif view_circles_widget is not None:
+                        view_circles_widget.render(canvas_np)
                 base2 = cv2.resize(
                     canvas_np,
                     (cap_w, cap_h),
@@ -4158,8 +4223,13 @@ def main() -> int:
                     main_settings_widget.render(canvas)
                 else:
                     _sync_now_playing_screen_state()
-                    if now_playing_screen_widget is not None:
+                    skin = _view_one_np_skin()
+                    if skin == "circles" and view_circles_widget is not None:
+                        view_circles_widget.render(canvas)
+                    elif now_playing_screen_widget is not None:
                         now_playing_screen_widget.render(canvas)
+                    elif view_circles_widget is not None:
+                        view_circles_widget.render(canvas)
             elif cs:
                 if intro_op is None:
                     _maybe_blend_mic_visualizer(canvas)
@@ -5476,6 +5546,8 @@ def main() -> int:
                 _warm_tmdb_logo_patch()
                 if now_playing_screen_widget is not None:
                     now_playing_screen_widget.clear_cache()
+                if view_circles_widget is not None:
+                    view_circles_widget.clear_cache()
                 _sync_now_playing_screen_state()
                 skip_cache = None
                 render_once()
@@ -5822,8 +5894,8 @@ def main() -> int:
                         if tmdb_logo_widget_view_six is not None:
                             tmdb_logo_widget_view_six.clear_cache()
                         _warm_tmdb_logo_patch()
-                        if _view_one_uses_now_playing_screen() and now_playing_screen_widget is not None:
-                            now_playing_screen_widget.clear_cache()
+                        if _view_one_uses_now_playing_screen():
+                            _clear_now_playing_view_caches()
                             _sync_now_playing_screen_state()
                         skip_cache = None
                         render_once()
@@ -5838,8 +5910,8 @@ def main() -> int:
                     if tmdb_logo_widget_view_six is not None:
                         tmdb_logo_widget_view_six.clear_cache()
                     _warm_tmdb_logo_patch()
-                    if _view_one_uses_now_playing_screen() and now_playing_screen_widget is not None:
-                        now_playing_screen_widget.clear_cache()
+                    if _view_one_uses_now_playing_screen():
+                        _clear_now_playing_view_caches()
                         _sync_now_playing_screen_state()
                     skip_cache = None
                     render_once()
@@ -5948,8 +6020,8 @@ def main() -> int:
                         pass
                 if dev_phase == DevPhase.SETTINGS:
                     sync_developer_chrome()
-                if _view_one_uses_now_playing_screen() and now_playing_screen_widget is not None:
-                    now_playing_screen_widget.clear_cache()
+                if _view_one_uses_now_playing_screen():
+                    _clear_now_playing_view_caches()
                     _sync_now_playing_screen_state()
                 skip_cache = None
                 render_once()
@@ -7741,6 +7813,21 @@ def main() -> int:
                 skip_cache = None
                 return
 
+            if action == "location_switch":
+                _apply_persisted_location_to_runtime()
+                try:
+                    st.load_saved_box_devices()
+                    st.location_name = read_current_location_name()
+                except Exception:
+                    pass
+                try:
+                    st.refresh_location_slots()
+                except Exception:
+                    pass
+                main_settings_widget.invalidate()
+                skip_cache = None
+                return
+
             if action == "box3_pair_start":
                 sess = st.box_pairing
                 if sess is None or int(sess.box_num) != 3:
@@ -8707,9 +8794,18 @@ def main() -> int:
             return (refined, pref)
 
         def _tmdb_spawn_identity_changed(
-            query: str, prefer: str, metadata: dict[str, object] | None = None
+            query: str,
+            prefer: str,
+            metadata: dict[str, object] | None = None,
+            *,
+            prev_content_key: object | None = None,
         ) -> bool:
-            """True when this poll should start a new TMDb worker (equivalent-aware)."""
+            """True when this poll should start a new TMDb worker (equivalent-aware).
+
+            ``prev_content_key`` must be the content_key from *before* this poll
+            updates ``apple_tv_auto_state["content_key"]``. Reading the live state
+            key here poisons the title-suffix guard (prev and new look identical).
+            """
             new_id = _tmdb_spawn_identity(query, prefer)
             prev = apple_tv_auto_state.get("tmdb_key")
             if prev == new_id:
@@ -8729,8 +8825,16 @@ def main() -> int:
                         for cand in tmdb_query_candidates_from_metadata(metadata):
                             if equivalent_tmdb_search_queries(cand, pq):
                                 return False
-                        prev_ck = str(apple_tv_auto_state.get("content_key") or "")
+                        # Prefer the caller-supplied prior key; fall back only if missing.
+                        prev_ck = str(
+                            prev_content_key
+                            if prev_content_key is not None
+                            else apple_tv_auto_state.get("content_key")
+                            or ""
+                        )
                         new_ck = _content_key_from_metadata(metadata) or ""
+                        if prev_ck and new_ck and prev_ck == new_ck:
+                            return False
                         if prev_ck and new_ck:
                             pt = prev_ck.rsplit("|", 1)[-1]
                             nt = new_ck.rsplit("|", 1)[-1]
@@ -9243,8 +9347,9 @@ def main() -> int:
             if not _atv_metadata_is_content_idle(metadata):
                 return
             if _view_one_uses_now_playing_screen():
-                # Layout falls back to rv_ck/ck when idle; keep cached TMDB so a brief
-                # idle poll does not wipe art and block re-fetch (tmdb_key unchanged).
+                # Keep displayed TMDB art through brief idle polls, but clear the spawn
+                # identity so the next title is not suppressed as "same tmdb_key".
+                apple_tv_auto_state["tmdb_key"] = None
                 clk = apple_tv_playback_clock
                 clk["has_sync"] = False
                 clk["playing"] = False
@@ -9596,14 +9701,30 @@ def main() -> int:
                         ):
                             pyatv_tmdb_eligible = True
                             prev_key = apple_tv_auto_state.get("content_key")
-                            if content_key and content_key != prev_key:
+                            content_changed = bool(content_key and content_key != prev_key)
+                            if content_changed:
                                 apple_tv_auto_state["content_key"] = content_key
-                            if _tmdb_spawn_identity_changed(query, prefer, md_for_spawn):
+                            if _tmdb_spawn_identity_changed(
+                                query,
+                                prefer,
+                                md_for_spawn,
+                                prev_content_key=prev_key,
+                            ):
                                 spawn_id = _tmdb_spawn_identity(query, prefer)
                                 apple_tv_auto_state["tmdb_key"] = spawn_id
                                 apple_tv_auto_state["query"] = query
                                 apple_tv_auto_state["prefer"] = prefer
                                 spawn_tmdb_poster_fetch(query, prefer=prefer)
+                            elif content_changed and not apple_tv_auto_state.get(
+                                "tmdb_fetch_in_flight"
+                            ):
+                                # Distinct content_key but equivalence guards suppressed a
+                                # normal spawn — still pull art for the new title.
+                                spawn_id = _tmdb_spawn_identity(query, prefer)
+                                apple_tv_auto_state["tmdb_key"] = spawn_id
+                                apple_tv_auto_state["query"] = query
+                                apple_tv_auto_state["prefer"] = prefer
+                                spawn_tmdb_poster_fetch(query, prefer=prefer, force=True)
                             elif (
                                 active_tmdb_title_key is None
                                 and backdrop_master_bgr is None
@@ -9649,16 +9770,28 @@ def main() -> int:
                                 md_for_status = r_md
                                 prev_rk = apple_tv_auto_state.get("content_key")
                                 r_ck = r_md.get("content_key")
-                                if r_ck and r_ck != prev_rk:
+                                r_changed = bool(r_ck and r_ck != prev_rk)
+                                if r_changed:
                                     apple_tv_auto_state["content_key"] = r_ck
                                 r_q = str(rtitle).strip()
-                                if _tmdb_spawn_identity_changed(r_q, "auto"):
+                                if _tmdb_spawn_identity_changed(
+                                    r_q, "auto", r_md, prev_content_key=prev_rk
+                                ):
                                     apple_tv_auto_state["tmdb_key"] = _tmdb_spawn_identity(
                                         r_q, "auto"
                                     )
                                     apple_tv_auto_state["query"] = r_q
                                     apple_tv_auto_state["prefer"] = "auto"
                                     spawn_tmdb_poster_fetch(r_q, prefer="auto")
+                                elif r_changed and not apple_tv_auto_state.get(
+                                    "tmdb_fetch_in_flight"
+                                ):
+                                    apple_tv_auto_state["tmdb_key"] = _tmdb_spawn_identity(
+                                        r_q, "auto"
+                                    )
+                                    apple_tv_auto_state["query"] = r_q
+                                    apple_tv_auto_state["prefer"] = "auto"
+                                    spawn_tmdb_poster_fetch(r_q, prefer="auto", force=True)
                                 if not pyatv_ok:
                                     apple_tv_dashboard_track["last_poll_ok"] = True
                                     apple_tv_dashboard_track["consecutive_fail"] = 0
@@ -10268,13 +10401,10 @@ def main() -> int:
                 if opt_key:
                     _bump_pigeon_user_activity(event)
                     return "break"
-                # Plain 1 on View 1: cycle the now-playing layout variations
-                # (auto → full/placeholder anim → np_rv_ck → np_ck → rv_ck → ck).
+                # Plain 1 on View 1: toggle circles ↔ classic now-playing skins.
                 if _view_one_uses_now_playing_screen():
-                    cyc = _VIEW_ONE_NP_LAYOUT_CYCLE
-                    cur = view_one_np_layout_force_holder[0]
-                    idx = cyc.index(cur) if cur in cyc else 0
-                    view_one_np_layout_force_holder[0] = cyc[(idx + 1) % len(cyc)]
+                    cur = _view_one_np_skin()
+                    view_one_np_skin_holder[0] = "classic" if cur == "circles" else "circles"
                     _sync_now_playing_screen_state()
                     skip_cache = None
                     _bump_pigeon_user_activity(event)

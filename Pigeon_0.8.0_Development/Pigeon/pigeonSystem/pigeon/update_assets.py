@@ -25,6 +25,7 @@ REQUIRED_ASSET_PATHS: tuple[str, ...] = (
     "pigeonAssets/now_playing_test_070326.svg",
     "pigeonAssets/now_playing_test_070126.svg",
     "pigeonAssets/now_playing_test_070126.png",
+    "pigeonAssets/view_circles.svg",
     "pigeonAssets/settings_0.8/settings_main.svg",
     "pigeonAssets/settings_0.8/settings_pigeon.svg",
     "pigeonAssets/settings_0.8/keyboard_bottom_row.svg",

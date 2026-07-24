@@ -1590,6 +1590,105 @@ def fetch_media_images(kind: MediaKind, media_id: int) -> dict:
     return _request_json(url)
 
 
+# title_key → [(actor, character), ...] for view_circles cast row.
+_CAST_CACHE: dict[str, list[tuple[str, str]]] = {}
+
+
+def get_cached_tmdb_cast(title_key_s: str) -> list[tuple[str, str]]:
+    """Return top cast cached for a reformatted-media title key (may be empty)."""
+    tk = str(title_key_s or "").strip()
+    if not tk:
+        return []
+    return list(_CAST_CACHE.get(tk) or [])
+
+
+def clear_cached_tmdb_cast(title_key_s: str | None = None) -> None:
+    if title_key_s is None:
+        _CAST_CACHE.clear()
+        return
+    _CAST_CACHE.pop(str(title_key_s).strip(), None)
+
+
+def _character_from_cast_entry(entry: dict) -> str:
+    roles = entry.get("roles")
+    if isinstance(roles, list) and roles:
+        chars: list[str] = []
+        for role in roles:
+            if not isinstance(role, dict):
+                continue
+            ch = str(role.get("character") or "").strip()
+            if ch:
+                chars.append(ch)
+        if chars:
+            return chars[0]
+    return str(entry.get("character") or "").strip()
+
+
+def fetch_top_cast(kind: MediaKind, media_id: int, *, limit: int = 3) -> list[tuple[str, str]]:
+    """
+    Top billed cast as ``(actor_name, character_name)``.
+
+    Movies use ``/credits``. TV prefers ``/aggregate_credits``, then ``/credits``.
+    """
+    lim = max(0, int(limit))
+    if lim <= 0:
+        return []
+    mid = int(media_id)
+    cast_rows: list[dict] = []
+    if kind == "tv":
+        try:
+            data = _request_json(f"{TMDB_API_BASE}/tv/{mid}/aggregate_credits")
+            rows = data.get("cast") or []
+            if isinstance(rows, list):
+                cast_rows = [r for r in rows if isinstance(r, dict)]
+        except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
+            cast_rows = []
+        if not cast_rows:
+            try:
+                data = _request_json(f"{TMDB_API_BASE}/tv/{mid}/credits")
+                rows = data.get("cast") or []
+                if isinstance(rows, list):
+                    cast_rows = [r for r in rows if isinstance(r, dict)]
+            except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
+                cast_rows = []
+    else:
+        try:
+            data = _request_json(f"{TMDB_API_BASE}/movie/{mid}/credits")
+            rows = data.get("cast") or []
+            if isinstance(rows, list):
+                cast_rows = [r for r in rows if isinstance(r, dict)]
+        except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
+            cast_rows = []
+
+    def _order_key(row: dict) -> tuple[int, int]:
+        try:
+            order = int(row.get("order") if row.get("order") is not None else 10_000)
+        except (TypeError, ValueError):
+            order = 10_000
+        roles = row.get("roles")
+        role_n = len(roles) if isinstance(roles, list) else 0
+        return (order, -role_n)
+
+    cast_rows.sort(key=_order_key)
+    out: list[tuple[str, str]] = []
+    for row in cast_rows:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        character = _character_from_cast_entry(row)
+        out.append((name, character))
+        if len(out) >= lim:
+            break
+    return out
+
+
+def cache_tmdb_cast_for_title(title_key_s: str, cast: list[tuple[str, str]]) -> None:
+    tk = str(title_key_s or "").strip()
+    if not tk:
+        return
+    _CAST_CACHE[tk] = [(str(a or ""), str(c or "")) for a, c in cast[:3]]
+
+
 def _logo_path_from_images(images: dict) -> str | None:
     logos = images.get("logos") or []
     if not logos:
@@ -1845,6 +1944,18 @@ def apply_tmdb_movie_query(
             display_title = canon
     tk = title_key(display_title)
     parts: list[str] = [display_title]
+
+    # --- Cast (top 3) for view_circles ---
+    try:
+        cast = fetch_top_cast(kind, int(item["id"]), limit=3)
+        cache_tmdb_cast_for_title(tk, cast)
+        if cast:
+            parts.append(f"cast: {len(cast)}")
+        else:
+            parts.append("cast: none")
+    except Exception:
+        clear_cached_tmdb_cast(tk)
+        parts.append("cast: fail")
 
     # --- Images bundle (logo + random backdrop) ---
     backdrop_master: np.ndarray | None = None

@@ -123,12 +123,19 @@ def receiver_audio_config_display_line(incoming: str, config: str) -> str:
         inc = inc.upper()
     if cfg:
         cfg = cfg.upper()
+
+    def _key(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", s.lower())
+
     if inc and cfg:
-        inc_key = re.sub(r"[^a-z0-9]+", "", inc.lower())
-        cfg_key = re.sub(r"[^a-z0-9]+", "", cfg.lower())
-        if inc_key and inc_key == cfg_key:
+        if _key(inc) and _key(inc) == _key(cfg):
             return inc
-        return f"{inc} > {cfg}"
+        # Also collapse when a composed line somehow still has identical sides.
+        line = f"{inc} > {cfg}"
+        left, _, right = line.partition(" > ")
+        if right and _key(left) == _key(right):
+            return left.strip()
+        return line
     return inc or cfg
 
 
@@ -180,6 +187,53 @@ def _denon_volume_as_widget_line(effective: str) -> str:
         if 0 <= n <= 100:
             return str(n)
     return s
+
+
+def volume_fraction_from_display_line(
+    raw: object,
+    *,
+    mvmax_step: float | None = None,
+) -> float:
+    """
+    Map a volume display string to 0..1 for pie-ring crops.
+
+    - ``mute`` / empty / unknown → ``0.0`` (caller should hide the accent)
+    - ``NN%`` or bare ``0–100`` → ``n/100``
+    - Denon-style dB (``-22.5``, ``-22.5dB``) → relative to ``-80 dB`` floor and
+      ``0 dB`` (or ``MVMAX``-derived ceiling when provided)
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return 0.0
+    low = s.lower().replace(" ", "")
+    if low in ("mute", "muted", "off", "0"):
+        return 0.0
+    m_pct = re.search(r"(\d{1,3})\s*%", s)
+    if m_pct:
+        n = int(m_pct.group(1))
+        return max(0.0, min(1.0, n / 100.0))
+    if re.fullmatch(r"\d{1,3}", s):
+        n = int(s)
+        if 0 <= n <= 100:
+            return n / 100.0
+    m_db = re.search(r"([+-]?\d+(?:\.\d+)?)\s*dB", s, flags=re.I)
+    if not m_db:
+        m_db = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)", s)
+    if m_db:
+        try:
+            db = float(m_db.group(1))
+        except ValueError:
+            return 0.0
+        db_min = -80.0
+        if mvmax_step is not None and float(mvmax_step) > 0:
+            db_max = float(mvmax_step) - 80.0
+        else:
+            db_max = 0.0
+        span = db_max - db_min
+        if span <= 1e-6:
+            return 0.0
+        return max(0.0, min(1.0, (db - db_min) / span))
+    return 0.0
 
 
 def compose_playback_volume_widget_line(
