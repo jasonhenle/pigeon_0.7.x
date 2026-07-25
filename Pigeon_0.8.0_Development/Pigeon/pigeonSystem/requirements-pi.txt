@@ -3,5 +3,6 @@ pillow
 numpy
 pyatv>=0.14.5
 pymupdf>=1.24.0
+pyserial>=3.5
 
 # numbers-parser is optional (Numbers.app reports only). Omitted on Pi — large / slow to build.

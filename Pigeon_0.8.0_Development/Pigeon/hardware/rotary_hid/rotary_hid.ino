@@ -1,46 +1,66 @@
 /*
-  Pigeon rotary → USB HID keyboard
+  Pigeon rotary encoder → host navigation
 
-  Plug this board into the Raspberry Pi USB port. Pigeon already binds:
-    Left / Right  → settings navigate (on_arrow_remote in pigeon_0_8.py)
-    Space         → settings activate  (on_space_play)
+  Intended map (matches pigeon_0_8.py hotkeys):
+    CW   → forward  (Right / serial RIGHT)
+    CCW  → backward (Left  / serial LEFT)   — not a "password" action
+    click → activate (Space / serial PRESS)
 
-  Map:
-    CW  → Right
-    CCW → Left
-    click → Space
+  Two transport modes (picked at compile time):
 
-  Tools → Board MUST be a native-USB HID board, for example:
-    - Arduino Leonardo / Micro
-    - SparkFun Pro Micro (or Leonardo if using a clone)
-    - Arduino Nano ESP32 / ESP32-S2 / ESP32-S3 (USB OTG)
-    - Raspberry Pi Pico (Arduino-Pico core with Keyboard)
+  1) USB HID Keyboard — Leonardo, Pro Micro, Pico, ESP32-S2/S3, …
+     Emits real Left / Right / Space. No host serial code needed.
 
-  Classic Uno / Nano / Mega (UART USB chip only) cannot compile Keyboard —
-  that is why you see "'Keyboard' was not declared".
+  2) USB Serial line protocol — Arduino UNO Q (STM32 MCU / Zephyr) and
+     other boards without Keyboard HID.
+     Emits lines: RIGHT / LEFT / PRESS (+ PIGEON_CONTROLLER_READY).
+     Host: pigeon.rotary_serial in pigeon_0_8.py synthesizes the same keys.
 
-  Default wiring (KY-040-style module, shared GND/+5V or 3V3):
+  Arduino UNO Q ("Arduino Q"):
+    Tools → Board → Arduino UNO Q (Arduino UNO Q Zephyr Core / Zephyr Boards).
+    Boards Manager URL if missing:
+      https://downloads.arduino.cc/packages/package_zephyr_index.json
+    Install Library Manager: Arduino_RouterBridge (+ deps) for Serial over USB-C.
+    On Zephyr core ≥ 0.55, Serial is the USB/bridge monitor (not D0/D1 UART).
+    Pins below are UNO-header D2/D3/D4 (STM32 GPIOs on UNO Q).
+
+  Default wiring (KY-040-style module, shared GND / 5V or 3V3):
     CLK / A  → pin 2
     DT  / B  → pin 3
     SW       → pin 4  (INPUT_PULLUP)
+
+  Force serial mode on an HID-capable board:  -DPIGEON_FORCE_SERIAL
+  Force HID when detection is wrong:          -DPIGEON_FORCE_HID
 */
 
-// --- Keyboard API by core -------------------------------------------------
-#if defined(ARDUINO_ARCH_ESP32)
-  // ESP32-S2 / S3 / Nano ESP32: USB device HID
-  #include "USB.h"
-  #include "USBHIDKeyboard.h"
-  static USBHIDKeyboard Keyboard;
-  #ifndef KEY_LEFT_ARROW
-    #define KEY_LEFT_ARROW 0xD8
-  #endif
-  #ifndef KEY_RIGHT_ARROW
-    #define KEY_RIGHT_ARROW 0xD7
-  #endif
+// --- Transport selection ----------------------------------------------------
+#if defined(PIGEON_FORCE_SERIAL)
+  #define PIGEON_USE_SERIAL 1
+#elif defined(PIGEON_FORCE_HID)
+  #define PIGEON_USE_SERIAL 0
+#elif defined(ARDUINO_ARCH_ESP32)
+  #define PIGEON_USE_SERIAL 0
 #elif defined(USBCON) || defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_MBED)
-  #include <Keyboard.h>
+  #define PIGEON_USE_SERIAL 0
 #else
-  #error "Pigeon rotary_hid needs a native-USB board (Leonardo, Pro Micro, Pico, ESP32-S2/S3). Tools → Board: do not select classic Uno/Nano/Mega."
+  // UNO Q (Zephyr), classic Uno/Nano/Mega UART USB, etc.
+  #define PIGEON_USE_SERIAL 1
+#endif
+
+#if !PIGEON_USE_SERIAL
+  #if defined(ARDUINO_ARCH_ESP32)
+    #include "USB.h"
+    #include "USBHIDKeyboard.h"
+    static USBHIDKeyboard Keyboard;
+    #ifndef KEY_LEFT_ARROW
+      #define KEY_LEFT_ARROW 0xD8
+    #endif
+    #ifndef KEY_RIGHT_ARROW
+      #define KEY_RIGHT_ARROW 0xD7
+    #endif
+  #else
+    #include <Keyboard.h>
+  #endif
 #endif
 
 // --- Pins (change to match your wiring) ---
@@ -50,25 +70,51 @@ static const uint8_t PIN_SW = 4;
 
 // Ignore encoder edges closer than this (ms) to cut bounce / half-step chatter.
 static const unsigned long ENCODER_MIN_MS = 8;
-// Coalesce rapid turns: at most one key every this many ms while spinning.
+// Coalesce rapid turns: at most one step every this many ms while spinning.
 static const unsigned long TURN_COOLDOWN_MS = 40;
-// Button debounce and minimum Space gap (Pigeon also debounces Space ~120ms).
+// Button debounce and minimum activate gap (Pigeon also debounces Space ~120ms).
 static const unsigned long BUTTON_DEBOUNCE_MS = 30;
-static const unsigned long SPACE_MIN_MS = 150;
+static const unsigned long ACTIVATE_MIN_MS = 150;
 
 static uint8_t lastClk = HIGH;
 static unsigned long lastEdgeMs = 0;
 static unsigned long lastTurnMs = 0;
-static unsigned long lastSpaceMs = 0;
+static unsigned long lastActivateMs = 0;
 
 static uint8_t lastSwRaw = HIGH;
 static uint8_t swStable = HIGH;
 static unsigned long swChangeMs = 0;
 
+#if !PIGEON_USE_SERIAL
 static void tapKey(uint8_t key) {
   Keyboard.press(key);
   delay(8);
   Keyboard.release(key);
+}
+#endif
+
+static void emitForward() {
+#if PIGEON_USE_SERIAL
+  Serial.println(F("RIGHT"));
+#else
+  tapKey(KEY_RIGHT_ARROW);
+#endif
+}
+
+static void emitBackward() {
+#if PIGEON_USE_SERIAL
+  Serial.println(F("LEFT"));
+#else
+  tapKey(KEY_LEFT_ARROW);
+#endif
+}
+
+static void emitActivate() {
+#if PIGEON_USE_SERIAL
+  Serial.println(F("PRESS"));
+#else
+  tapKey(' ');
+#endif
 }
 
 void setup() {
@@ -79,11 +125,20 @@ void setup() {
   lastSwRaw = digitalRead(PIN_SW);
   swStable = lastSwRaw;
 
-#if defined(ARDUINO_ARCH_ESP32)
-  USB.begin();
-#endif
+#if PIGEON_USE_SERIAL
+  Serial.begin(115200);
+  // UNO Q bridge Serial may not block; repeat READY so host autodetect can catch it.
+  delay(100);
+  Serial.println(F("PIGEON_CONTROLLER_READY"));
+  delay(100);
+  Serial.println(F("PIGEON_CONTROLLER_READY"));
+#else
+  #if defined(ARDUINO_ARCH_ESP32)
+    USB.begin();
+  #endif
   Keyboard.begin();
   // Optional later: Serial.begin(115200) for audio / telemetry on the same USB device.
+#endif
 }
 
 void loop() {
@@ -97,16 +152,16 @@ void loop() {
       if ((now - lastTurnMs) >= TURN_COOLDOWN_MS) {
         lastTurnMs = now;
         if (digitalRead(PIN_DT) == HIGH) {
-          tapKey(KEY_RIGHT_ARROW);  // CW
+          emitForward();   // CW
         } else {
-          tapKey(KEY_LEFT_ARROW);   // CCW
+          emitBackward();  // CCW → Left / backward (not password)
         }
       }
     }
     lastClk = clk;
   }
 
-  // --- Push button → Space ---
+  // --- Push button → activate (Space) ---
   const uint8_t sw = digitalRead(PIN_SW);
   if (sw != lastSwRaw) {
     lastSwRaw = sw;
@@ -115,9 +170,9 @@ void loop() {
   if ((now - swChangeMs) >= BUTTON_DEBOUNCE_MS && sw != swStable) {
     swStable = sw;
     // Active-low switch (common on KY-040): press when going LOW.
-    if (swStable == LOW && (now - lastSpaceMs) >= SPACE_MIN_MS) {
-      lastSpaceMs = now;
-      tapKey(' ');
+    if (swStable == LOW && (now - lastActivateMs) >= ACTIVATE_MIN_MS) {
+      lastActivateMs = now;
+      emitActivate();
     }
   }
 }

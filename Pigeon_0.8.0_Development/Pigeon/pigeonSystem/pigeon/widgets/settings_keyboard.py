@@ -193,7 +193,12 @@ class KeyboardState:
             self.include_bottom_row = False
         else:
             char_keys = discover_char_keys(self.mode, assets_dir=assets_dir)
-            if self.mode == KeyboardMode.QWERTY_UPPER and not self.supports_lowercase:
+            # Digital-7 uppercase-only fields drop Shift; Wi‑Fi password keeps it.
+            if (
+                self.mode == KeyboardMode.QWERTY_UPPER
+                and not self.supports_lowercase
+                and not self.password_mask
+            ):
                 char_keys = tuple(k for k in char_keys if k.action != KeyAction.SHIFT)
             bottom = _BOTTOM_ROW_NETWORK if self.supports_lowercase else _BOTTOM_ROW_UPPERCASE
             if self.include_bottom_row:
@@ -971,7 +976,11 @@ def _rasterize_keyboard_chars(
         return np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
 
     root = ET.parse(path).getroot()
-    if state.mode == KeyboardMode.QWERTY_UPPER and not state.supports_lowercase:
+    if (
+        state.mode == KeyboardMode.QWERTY_UPPER
+        and not state.supports_lowercase
+        and not state.password_mask
+    ):
         _remove_qwerty_shift_key(root)
     pad_mode = state.mode in (KeyboardMode.NUMERIC_PIN, KeyboardMode.YES_NO)
     full_ip = state.mode == KeyboardMode.NUMERIC_IP
