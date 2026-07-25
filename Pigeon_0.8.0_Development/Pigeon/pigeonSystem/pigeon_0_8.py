@@ -11066,6 +11066,15 @@ def main() -> int:
         for _pigeon_act in ("<Button-1>", "<B1-Motion>", "<KeyPress>"):
             root.bind_all(_pigeon_act, _bump_pigeon_user_activity, add="+")
 
+        # Serial rotary (Arduino UNO Q / non-HID): LEFT/RIGHT/PRESS → same Tk keys as HID.
+        try:
+            from pigeon.rotary_serial import start_rotary_serial_listener
+
+            start_rotary_serial_listener(root)
+        except Exception as _rotary_exc:
+            sys.stderr.write(f"pigeon: rotary_serial: not started: {_rotary_exc}\n")
+            sys.stderr.flush()
+
         def _apply_shell_size(w: int, h: int) -> None:
             nonlocal skip_cache, black_photo, scaled_display, scaled_version
             if w < 32 or h < 32:

@@ -37,6 +37,11 @@ PIGEON_HOTKEY_ROWS: list[tuple[str, str]] = [
         "Arrow keys (Pigeon_ext)",
         "Plain arrows: TV navigation. Shift+arrows: volume / skip. Cmd+arrows: TV back, home, power (device-dependent).",
     ),
+    (
+        "Rotary encoder (USB)",
+        "CW=Right (forward), CCW=Left (backward), click=Space (activate). "
+        "HID boards emit keys directly; Arduino UNO Q uses serial LEFT/RIGHT/PRESS via pigeon.rotary_serial.",
+    ),
     ("S", "Toggle scene on/off (only while grid overlay is visible: key 5 or developer grid)"),
     (
         "F10",

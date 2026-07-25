@@ -5361,9 +5361,22 @@ class MainSettingsWidget:
         return np.dstack([blended, out_a[:, :, 0]])
 
     def _keyboard_overlay_sig_for(
-        self, mode: object, focus_index: int
+        self,
+        mode: object,
+        focus_index: int,
+        *,
+        supports_lowercase: bool = True,
+        target: str = "",
     ) -> tuple[object, ...]:
-        return (mode, int(focus_index), str(self._assets_dir or ""))
+        # Include supports_lowercase/target so location (uppercase-only, no Shift)
+        # frames are never reused for network password (mixed case + Shift).
+        return (
+            mode,
+            int(focus_index),
+            bool(supports_lowercase),
+            str(target or ""),
+            str(self._assets_dir or ""),
+        )
 
     def _store_kb_frame(self, kb_sig: tuple[object, ...], frame: np.ndarray) -> None:
         if kb_sig not in self._kb_focus_frame_cache:
@@ -5459,10 +5472,11 @@ class MainSettingsWidget:
         kb = self._state.keyboard
         if kb is None:
             return None
-        return (
+        return self._keyboard_overlay_sig_for(
             getattr(kb, "mode", None),
             int(getattr(kb, "focus_index", 0)),
-            str(self._assets_dir or ""),
+            supports_lowercase=bool(getattr(kb, "supports_lowercase", True)),
+            target=str(getattr(kb, "target", "") or ""),
         )
 
     def _structure_sig(self) -> tuple[object, ...]:
@@ -5927,6 +5941,8 @@ class MainSettingsWidget:
         if kb is None or not kb.focus_ring:
             return
         mode = getattr(kb, "mode", None)
+        supports_lower = bool(getattr(kb, "supports_lowercase", True))
+        kb_target = str(getattr(kb, "target", "") or "")
         if self._kb_cache_mode not in (None, mode):
             self._clear_keyboard_focus_caches()
         self._kb_cache_mode = mode
@@ -5938,7 +5954,13 @@ class MainSettingsWidget:
         missing = [
             idx
             for idx in order
-            if self._keyboard_overlay_sig_for(mode, idx) not in self._kb_focus_frame_cache
+            if self._keyboard_overlay_sig_for(
+                mode,
+                idx,
+                supports_lowercase=supports_lower,
+                target=kb_target,
+            )
+            not in self._kb_focus_frame_cache
         ]
         if not missing:
             return
@@ -5946,6 +5968,8 @@ class MainSettingsWidget:
         assets = self._assets_dir
         cache = self._kb_focus_frame_cache
         mode_ref = mode
+        lower_ref = supports_lower
+        target_ref = kb_target
 
         def _work() -> None:
             try:
@@ -5953,6 +5977,10 @@ class MainSettingsWidget:
                     return
                 live = self._state.keyboard
                 if getattr(live, "mode", None) != mode_ref:
+                    return
+                if bool(getattr(live, "supports_lowercase", True)) != lower_ref:
+                    return
+                if str(getattr(live, "target", "") or "") != target_ref:
                     return
                 snap = copy.deepcopy(live)
                 from pigeon.widgets.settings_keyboard import render_keyboard_bgra
@@ -5963,7 +5991,12 @@ class MainSettingsWidget:
                     if getattr(self._state.keyboard, "mode", None) != mode_ref:
                         return
                     snap.focus_index = idx
-                    key = self._keyboard_overlay_sig_for(mode_ref, idx)
+                    key = self._keyboard_overlay_sig_for(
+                        mode_ref,
+                        idx,
+                        supports_lowercase=lower_ref,
+                        target=target_ref,
+                    )
                     if key in cache:
                         continue
                     try:
@@ -5987,15 +6020,27 @@ class MainSettingsWidget:
         if kb is None or not kb.focus_ring:
             return
         mode = getattr(kb, "mode", None)
+        supports_lower = bool(getattr(kb, "supports_lowercase", True))
+        kb_target = str(getattr(kb, "target", "") or "")
         if self._kb_cache_mode not in (None, mode):
             return
         n = len(kb.focus_ring)
         nxt = (int(kb.focus_index) + (1 if forward else -1)) % n
-        key = self._keyboard_overlay_sig_for(mode, nxt)
+        key = self._keyboard_overlay_sig_for(
+            mode,
+            nxt,
+            supports_lowercase=supports_lower,
+            target=kb_target,
+        )
         if key in self._kb_focus_frame_cache:
             # Also warm one more step ahead when possible.
             nxt2 = (nxt + (1 if forward else -1)) % n
-            key2 = self._keyboard_overlay_sig_for(mode, nxt2)
+            key2 = self._keyboard_overlay_sig_for(
+                mode,
+                nxt2,
+                supports_lowercase=supports_lower,
+                target=kb_target,
+            )
             if key2 in self._kb_focus_frame_cache:
                 return
             nxt = nxt2
@@ -6005,6 +6050,8 @@ class MainSettingsWidget:
         assets = self._assets_dir
         cache = self._kb_focus_frame_cache
         mode_ref = mode
+        lower_ref = supports_lower
+        target_ref = kb_target
 
         def _work() -> None:
             try:
@@ -6015,7 +6062,12 @@ class MainSettingsWidget:
                 return
             if self._state.keyboard is None:
                 return
-            if getattr(self._state.keyboard, "mode", None) != mode_ref:
+            live = self._state.keyboard
+            if getattr(live, "mode", None) != mode_ref:
+                return
+            if bool(getattr(live, "supports_lowercase", True)) != lower_ref:
+                return
+            if str(getattr(live, "target", "") or "") != target_ref:
                 return
             cache.setdefault(key, frame)
 
