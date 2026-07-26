@@ -25,6 +25,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.font_paths import (
     resolve_digital7_font,
+    resolve_ui_font_extrabold,
+    resolve_ui_font_extrabold_italic,
     resolve_ui_font_semibold,
 )
 
@@ -41,13 +43,15 @@ _MATRIX_RE = re.compile(
 class SettingsFontRole(str, Enum):
     DIGITAL7 = "digital7"
     SHARP_SEMIBOLD = "semibold"
+    SHARP_EXTRABOLD = "extrabold"
+    SHARP_EXTRABOLD_ITALIC = "extrabold_italic"
 
 
 _INSTRUCTION_GROUP_IDS = frozenset({"main_instructions"})
 _KEYBOARD_GROUP_IDS = frozenset({"keyboardtemp"})
 _AI_SUFFIX_RE = re.compile(r"_\d{20,}_?$")
 
-SettingsTextFontMode = Literal["auto", "keyboard"]
+SettingsTextFontMode = Literal["auto", "keyboard", "update_popup"]
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,8 @@ class SettingsTextDrawOp:
     fill_rgba: tuple[int, int, int, int]
     role: SettingsFontRole
     anchor: str = "ls"
+    stroke_rgba: tuple[int, int, int, int] | None = None
+    stroke_width: float = 0.0
 
 
 def viewbox_from_root(root: ET.Element) -> tuple[float, float, float, float]:
@@ -104,6 +110,32 @@ def _parse_fill(el: ET.Element) -> str:
     if named == "black":
         return "#000000"
     return fill
+
+
+def _parse_stroke(el: ET.Element) -> tuple[str | None, float]:
+    stroke = (el.get("stroke") or "").strip()
+    if not stroke:
+        stroke = _style_prop(el.get("style"), "stroke") or ""
+    if not stroke or stroke.lower() in ("none", "transparent"):
+        return None, 0.0
+    width_raw = el.get("stroke-width") or _style_prop(el.get("style"), "stroke-width") or "0"
+    try:
+        width = float(str(width_raw).replace("px", "").strip())
+    except ValueError:
+        width = 0.0
+    if stroke.startswith("#"):
+        return stroke.lower(), width
+    named = stroke.lower()
+    if named == "white":
+        return "#ffffff", width
+    if named == "black":
+        return "#000000", width
+    return stroke, width
+
+
+def _parse_font_family(el: ET.Element) -> str:
+    raw = el.get("font-family") or _style_prop(el.get("style"), "font-family") or ""
+    return raw.lower()
 
 
 def _parse_font_size(el: ET.Element, *, vb_h: float, out_h: int) -> int:
@@ -191,6 +223,18 @@ def _font_role_for_text(
     *,
     font_mode: SettingsTextFontMode = "auto",
 ) -> SettingsFontRole:
+    if font_mode == "update_popup":
+        family = _parse_font_family(text_el)
+        logical = _normalize_logical(text_el.get("id") or "")
+        if "extrabolditali" in family or "extrabold italic" in family or "italic" in family:
+            return SettingsFontRole.SHARP_EXTRABOLD_ITALIC
+        if "extrabold" in family or logical.endswith("_update_text") or "pigeonos" in logical:
+            if "pigeonos" in logical or "italic" in family:
+                return SettingsFontRole.SHARP_EXTRABOLD_ITALIC
+            return SettingsFontRole.SHARP_EXTRABOLD
+        if "digital" in family or logical.endswith("_now_text") or logical.endswith("_later_text"):
+            return SettingsFontRole.DIGITAL7
+        return SettingsFontRole.SHARP_SEMIBOLD
     if font_mode == "keyboard" or _is_instruction_text(text_el, parents) or _is_keyboard_text(
         text_el, parents
     ):
@@ -260,17 +304,31 @@ def collect_settings_text_ops(
         x_svg, y_svg = pos
         x_px = int(round((x_svg - vb_x) * out_w / max(vb_w, 1.0)))
         y_px = int(round((y_svg - vb_y) * out_h / max(vb_h, 1.0)))
+        fill_raw = (text_el.get("fill") or "").strip() or (
+            _style_prop(text_el.get("style"), "fill") or ""
+        )
+        fill_none = fill_raw.lower() in ("none", "transparent")
         fill = _parse_fill(text_el)
+        stroke_hex, stroke_w = _parse_stroke(text_el)
         role = _font_role_for_text(text_el, parents, font_mode=font_mode)
+        # Stroke-only layers (PigeonOS outline): draw stroke, skip fill.
+        fill_rgba = (
+            (0, 0, 0, 0)
+            if fill_none and stroke_hex
+            else _hex_to_rgba(fill if fill.startswith("#") else "#ffffff")
+        )
+        stroke_rgba = _hex_to_rgba(stroke_hex) if stroke_hex else None
         ops.append(
             SettingsTextDrawOp(
                 x_px=x_px,
                 y_px=y_px,
                 text=content,
                 size_px=_parse_font_size(text_el, vb_h=vb_h, out_h=out_h),
-                fill_rgba=_hex_to_rgba(fill if fill.startswith("#") else "#ffffff"),
+                fill_rgba=fill_rgba,
                 role=role,
                 anchor=_parse_text_anchor(text_el),
+                stroke_rgba=stroke_rgba,
+                stroke_width=float(stroke_w),
             )
         )
     return ops
@@ -296,6 +354,10 @@ def _load_font(path: str, size_px: int) -> ImageFont.FreeTypeFont | ImageFont.Im
 def _font_path_for_role(role: SettingsFontRole) -> str | None:
     if role == SettingsFontRole.DIGITAL7:
         return resolve_digital7_font()
+    if role == SettingsFontRole.SHARP_EXTRABOLD_ITALIC:
+        return resolve_ui_font_extrabold_italic() or resolve_ui_font_extrabold()
+    if role == SettingsFontRole.SHARP_EXTRABOLD:
+        return resolve_ui_font_extrabold() or resolve_ui_font_semibold()
     return resolve_ui_font_semibold()
 
 
@@ -318,7 +380,21 @@ def draw_settings_text_ops_bgra(bgra: np.ndarray, ops: list[SettingsTextDrawOp])
         if not path:
             continue
         font = _load_font(path, op.size_px)
-        draw.text((op.x_px, op.y_px), op.text, font=font, fill=op.fill_rgba, anchor=op.anchor)
+        kwargs: dict[str, object] = {
+            "font": font,
+            "anchor": op.anchor,
+        }
+        if op.stroke_rgba is not None and op.stroke_width > 0:
+            kwargs["stroke_fill"] = op.stroke_rgba
+            kwargs["stroke_width"] = max(1, int(round(op.stroke_width)))
+        if op.fill_rgba[3] > 0:
+            kwargs["fill"] = op.fill_rgba
+        elif op.stroke_rgba is not None:
+            # Pillow still needs a fill for stroke-only; use transparent fill.
+            kwargs["fill"] = (0, 0, 0, 0)
+        else:
+            continue
+        draw.text((op.x_px, op.y_px), op.text, **kwargs)
 
     bgra[:] = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
 

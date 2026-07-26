@@ -179,9 +179,45 @@ def resolve_ui_font_extrabold() -> str | None:
     for root in roots:
         for pattern in globs:
             for p in sorted(root.glob(pattern)):
-                if p.is_file():
+                if p.is_file() and "italic" not in p.name.lower():
                     return str(p)
     return None
+
+
+def resolve_ui_font_extrabold_italic() -> str | None:
+    """
+    Sharp Sans ExtraBold Italic for update-popup ``PigeonOS`` wordmark.
+
+    Set ``PIGEON_FONT_EXTRABOLD_ITALIC`` to override. Falls back to ExtraBold
+    (roman) when the italic cut is not installed on the device.
+    """
+    env = os.environ.get("PIGEON_FONT_EXTRABOLD_ITALIC")
+    if env and Path(env).is_file():
+        return env
+
+    bundled_names = (
+        "Sharp Sans ExtraBold Italic.otf",
+        "SharpSansExtraBoldItalic.otf",
+        "SharpSans-ExtraboldItalic.otf",
+        "Sharp Sans Extrabold Italic.otf",
+    )
+    bundled = _first_bundled_font(bundled_names)
+    if bundled:
+        return bundled
+
+    roots = _font_search_roots()
+    globs = (
+        "*Sharp*Sans*Extra*Bold*Italic*.otf",
+        "*Sharp*Sans*Extra*Bold*Italic*.ttf",
+        "*SharpSans*Extra*Bold*Italic*.otf",
+        "*SharpSans*ExtraBold*Italic*.otf",
+    )
+    for root in roots:
+        for pattern in globs:
+            for p in sorted(root.glob(pattern)):
+                if p.is_file():
+                    return str(p)
+    return resolve_ui_font_extrabold()
 
 
 def resolve_ui_font_semibold() -> str | None:

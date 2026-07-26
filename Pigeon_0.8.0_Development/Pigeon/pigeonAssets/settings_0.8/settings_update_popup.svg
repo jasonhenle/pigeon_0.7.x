@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
+  <!-- Exported structure from Pigeon0.8_GFX/update.ai + Illustrator layer names (incl. typos). -->
+  <g id="pop_up_update_button_group">
+    <rect id="pop_up_update_button" x="297.246" y="167.367" width="223.262" height="222.051" rx="15.0" ry="15.0" fill="#ff0013" stroke="#000000" stroke-width="7" stroke-miterlimit="10"/>
+    <rect id="pop_up_update_accent" x="296.659" y="166.495" width="223.262" height="222.923" rx="15.0" ry="15.0" fill="none" stroke="#ffffff" stroke-width="2" stroke-miterlimit="10"/>
+  </g>
+
+  <g id="pop_up_update_later_and_now_group">
+    <g id="pop_uo_update__later_group" data-name="pop_uo_update__later_group">
+      <rect id="pop_uo_update_later_button" x="323.104" y="335.039" width="78.556" height="37.929" rx="9.56" ry="9.56" fill="#202020" stroke="#000000" stroke-width="7" stroke-miterlimit="10"/>
+      <rect id="pop_uo_update_later_accent" x="323.105" y="334.508" width="78.556" height="37.929" rx="9.56" ry="9.56" fill="none" stroke="#ffffff" stroke-width="2" stroke-miterlimit="10"/>
+      <text id="pop_uo_update_later_text" transform="translate(362.382 363.223)" text-anchor="middle" fill="#ffffff" font-family="Digital-7, Digital-7" font-size="26"><tspan x="0" y="0">LATER</tspan></text>
+    </g>
+    <g id="pop_uo_update_now_group" data-name="pop_uo_update_now_group">
+      <rect id="pop_uo_update_now_button" x="415.506" y="335.039" width="78.556" height="37.929" rx="9.56" ry="9.56" fill="#202020" stroke="#000000" stroke-width="7" stroke-miterlimit="10"/>
+      <rect id="pop_uo_update_now_accent" x="415.506" y="334.508" width="78.556" height="37.929" rx="9.56" ry="9.56" fill="none" stroke="#ffffff" stroke-width="2" stroke-miterlimit="10"/>
+      <text id="pop_uo_update_now_text" transform="translate(454.784 363.223)" text-anchor="middle" fill="#ffffff" font-family="Digital-7, Digital-7" font-size="26"><tspan x="0" y="0">NOW</tspan></text>
+    </g>
+  </g>
+
+  <g id="pop_up_update_changes_text">
+    <text id="pop_up_update_changes_label" transform="translate(410.48 282.136)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-Semibold, 'Sharp Sans Semibold'" font-size="10"><tspan x="0" y="0">bug fixes and optimizations.</tspan></text>
+  </g>
+
+  <g id="pop_up_update_current_to_new_group">
+    <text id="pop_up_update_current_text" transform="translate(360.565 260.066)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-Semibold, 'Sharp Sans Semibold'" font-size="14"><tspan x="0" y="0">0.8.54</tspan></text>
+    <path id="pop_up_update_arrow_icon" d="M411.387,251.793 L404.033,247.524 L404.041,251.024 L400.404,251.024 L400.404,261.031 L404.041,261.031 L404.033,264.531 L411.387,260.262 L418.761,256.027 Z" fill="#ffffff" stroke="#000000" stroke-width="2" stroke-linejoin="round" stroke-miterlimit="10"/>
+    <text id="pop_up_update_new_text" transform="translate(449.931 261.031)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-Semibold, 'Sharp Sans Semibold'" font-size="14"><tspan x="0" y="0">0.8.55</tspan></text>
+  </g>
+
+  <g id="pop_up_update_pigeonos_stroke_text_group">
+    <text id="pop_up_update_pigeonos_stroke_text" transform="translate(408.097 231.256)" text-anchor="middle" fill="none" stroke="#000000" stroke-width="8" stroke-linejoin="round" font-family="SharpSans-ExtraboldItali, 'Sharp Sans ExtraBold Italic'" font-size="36" font-style="italic" font-weight="800"><tspan x="0" y="0">PigeonOS</tspan></text>
+    <text id="pop_up_update_pigeonos_fill_text" transform="translate(408.097 231.256)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-ExtraboldItali, 'Sharp Sans ExtraBold Italic'" font-size="36" font-style="italic" font-weight="800"><tspan x="0" y="0">PigeonOS</tspan></text>
+  </g>
+
+  <g id="pop__x29_up_update_update_text" data-name="pop_)up_update_update_text">
+    <text id="pop_up_update_update_text" transform="translate(407.877 190.007)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-Extrabold, 'Sharp Sans Extrabold'" font-size="14" font-weight="800"><tspan x="0" y="0">Update</tspan></text>
+  </g>
+</svg>

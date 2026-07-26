@@ -2653,6 +2653,11 @@ def main() -> int:
             main_settings_widget = MainSettingsWidget(
                 assets_dir=Path(_PROJECT_DIR) / "pigeonAssets",
             )
+            try:
+                main_settings_widget.state.version_string = version_string()
+                main_settings_widget.state.update_local_version = version_string()
+            except Exception:
+                pass
 
         def _view_one_np_skin() -> str:
             s = str(view_one_np_skin_holder[0] or "").strip().lower()
@@ -7987,6 +7992,161 @@ def main() -> int:
             if main_settings_widget is None:
                 return
             st = main_settings_widget.state
+
+            if action == "update_popup:open":
+                st.update_local_version = version_string()
+                st.update_checking = True
+                st.update_error = None
+                main_settings_widget.invalidate()
+                skip_cache = None
+
+                def worker_ms_update_check() -> None:
+                    try:
+                        from pigeon.update_check import check_for_update
+
+                        result = check_for_update()
+                    except Exception as e:
+                        from pigeon.update_check import UpdateCheckResult
+
+                        result = UpdateCheckResult(
+                            local_version=version_string(),
+                            remote_version=None,
+                            update_available=False,
+                            error=str(e),
+                        )
+
+                    def finish_ms_check() -> None:
+                        nonlocal skip_cache
+                        from pigeon.widgets.update_popup import (
+                            DEFAULT_CHANGELOG,
+                            UP_TO_DATE_CHANGELOG,
+                        )
+
+                        st.update_checking = False
+                        st.update_local_version = str(
+                            getattr(result, "local_version", None) or version_string()
+                        )
+                        st.update_remote_version = getattr(result, "remote_version", None)
+                        st.update_github_branch = getattr(result, "github_branch", None)
+                        st.update_error = getattr(result, "error", None)
+                        available = bool(getattr(result, "update_available", False))
+                        st.update_available = available and not st.update_error
+                        if st.update_available:
+                            st.update_changelog = DEFAULT_CHANGELOG
+                            try:
+                                from pigeon.widgets.update_popup import update_popup_focus_ring
+
+                                ring = update_popup_focus_ring(update_available=True)
+                                st.update_popup_focus_index = (
+                                    ring.index("now") if "now" in ring else 0
+                                )
+                            except Exception:
+                                st.update_popup_focus_index = 1
+                        else:
+                            st.update_changelog = UP_TO_DATE_CHANGELOG
+                            st.update_popup_focus_index = 0
+                        # Keep legacy Tk Updates button in sync when present.
+                        try:
+                            update_check_state["update_available"] = bool(st.update_available)
+                            update_check_state["remote_version"] = st.update_remote_version
+                            update_check_state["github_branch"] = st.update_github_branch
+                            update_check_state["error"] = st.update_error
+                            update_check_state["last_check_mono"] = time.monotonic()
+                            _sync_update_button_style()
+                        except Exception:
+                            pass
+                        main_settings_widget.invalidate()
+                        skip_cache = None
+
+                    root.after(0, finish_ms_check)
+
+                threading.Thread(target=worker_ms_update_check, daemon=True).start()
+                return
+
+            if action in ("update_popup:later", "update_popup:dismiss", "update_popup:busy"):
+                main_settings_widget.invalidate()
+                skip_cache = None
+                return
+
+            if action == "update_popup:now":
+                if st.update_applying or st.update_checking:
+                    return
+                if not st.update_available:
+                    st.close_update_popup()
+                    main_settings_widget.invalidate()
+                    skip_cache = None
+                    return
+                remote = str(st.update_remote_version or "?")
+                branch = st.update_github_branch
+                st.update_applying = True
+                st.update_changelog = "Downloading from GitHub…"
+                main_settings_widget.invalidate()
+                skip_cache = None
+
+                def worker_ms_apply() -> None:
+                    install_root = _resolve_install_root_for_update()
+                    try:
+                        from pigeon.github_update import apply_github_update
+
+                        apply_branch = branch
+                        if apply_branch is None:
+                            cached = update_check_state.get("github_branch")
+                            if isinstance(cached, str) and cached.strip():
+                                apply_branch = cached.strip()
+                        result = apply_github_update(install_root, branch=apply_branch)
+                    except Exception as e:
+                        from pigeon.github_update import ApplyUpdateResult
+
+                        result = ApplyUpdateResult(False, str(e))
+
+                    def finish_ms_apply() -> None:
+                        nonlocal skip_cache
+                        st.update_applying = False
+                        if result.ok:
+                            st.update_changelog = "Update complete — restarting…"
+                            st.update_available = False
+                            try:
+                                update_check_state["update_available"] = False
+                                if result.remote_version:
+                                    update_check_state["remote_version"] = result.remote_version
+                                _sync_update_button_style()
+                            except Exception:
+                                pass
+                            main_settings_widget.invalidate()
+                            skip_cache = None
+
+                            def _restart_ms() -> None:
+                                try:
+                                    from pigeon.github_update import restart_pigeon_after_update
+
+                                    restart_pigeon_after_update(
+                                        install_root, parent_pid=os.getpid()
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    root.destroy()
+                                except tk.TclError:
+                                    pass
+                                os._exit(0)
+
+                            root.after(400, _restart_ms)
+                            return
+
+                        st.update_error = result.message
+                        st.update_changelog = (result.message or "Update failed.")[:96]
+                        main_settings_widget.invalidate()
+                        skip_cache = None
+                        messagebox.showerror(
+                            "Update failed",
+                            result.message,
+                            parent=root,
+                        )
+
+                    root.after(0, finish_ms_apply)
+
+                threading.Thread(target=worker_ms_apply, daemon=True).start()
+                return
 
             if action == "keyboard_pin_incomplete":
                 messagebox.showwarning("Pairing", "Enter the 4-digit code from the TV.", parent=root)
