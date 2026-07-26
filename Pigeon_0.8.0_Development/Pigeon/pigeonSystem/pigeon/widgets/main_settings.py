@@ -452,6 +452,16 @@ class MainSettingsState:
     box3_ip_invalid: bool = False
     show_pigeon_settings: bool = False
     pigeon_focus_index: int = 0
+    show_update_popup: bool = False
+    update_popup_focus_index: int = 0
+    update_available: bool = False
+    update_checking: bool = False
+    update_applying: bool = False
+    update_local_version: str = ""
+    update_remote_version: str | None = None
+    update_changelog: str = ""
+    update_error: str | None = None
+    update_github_branch: str | None = None
     spinner_glyph_capture: bool = False
     # Focus ring rebuilt when panel visibility changes.
     focus_ring: tuple[str, ...] = field(default_factory=tuple)
@@ -643,6 +653,7 @@ class MainSettingsState:
 
     def enter_location_picker(self) -> None:
         self.show_network_picker = False
+        self.close_update_popup()
         self.show_pigeon_settings = False
         self.show_location_picker = True
         self.renaming_location_id = ""
@@ -781,18 +792,73 @@ class MainSettingsState:
 
         self.show_pigeon_settings = True
         self.show_box1_panel = False
+        self.close_update_popup()
         ring = pigeon_focus_ring()
         self.pigeon_focus_index = ring.index("prefs_button")
 
     def exit_pigeon_settings(self) -> None:
+        self.close_update_popup()
         self.show_pigeon_settings = False
         self.ensure_focus_ring()
         if "main_box1_button" in self.focus_ring:
             self.focus_index = self.focus_ring.index("main_box1_button")
 
+    def open_update_popup(self) -> None:
+        """Show the GitHub update popup over pigeon device settings."""
+        from pigeon.widgets.update_popup import (
+            DEFAULT_CHANGELOG,
+            UP_TO_DATE_CHANGELOG,
+            update_popup_focus_ring,
+        )
+
+        self.show_update_popup = True
+        self.update_applying = False
+        self.update_error = None
+        if not self.update_local_version:
+            self.update_local_version = self.version_string
+        # Keep last poll visible while a fresh check runs (when we have one).
+        had_cache = bool(self.update_remote_version) or bool(self.update_available)
+        self.update_checking = True
+        if not self.update_changelog:
+            self.update_changelog = (
+                DEFAULT_CHANGELOG if self.update_available else UP_TO_DATE_CHANGELOG
+            )
+        if not had_cache:
+            self.update_available = False
+        ring = update_popup_focus_ring(update_available=bool(self.update_available))
+        # Prefer NOW when opening.
+        self.update_popup_focus_index = ring.index("now") if "now" in ring else 0
+
+    def close_update_popup(self) -> None:
+        self.show_update_popup = False
+        self.update_checking = False
+        self.update_applying = False
+        self.update_popup_focus_index = 0
+
+    def navigate_update_popup(self, *, forward: bool = True) -> None:
+        from pigeon.widgets.update_popup import update_popup_focus_ring
+
+        ring = update_popup_focus_ring(update_available=bool(self.update_available))
+        if not ring:
+            return
+        step = 1 if forward else -1
+        self.update_popup_focus_index = (int(self.update_popup_focus_index) + step) % len(ring)
+
+    @property
+    def update_popup_focused_choice(self) -> str:
+        from pigeon.widgets.update_popup import update_popup_focus_ring
+
+        ring = update_popup_focus_ring(update_available=bool(self.update_available))
+        if not ring:
+            return "now"
+        return ring[int(self.update_popup_focus_index) % len(ring)]
+
     def navigate_pigeon(self, *, forward: bool = True) -> None:
         from pigeon.widgets.pigeon_settings import pigeon_focus_ring
 
+        if self.show_update_popup:
+            self.navigate_update_popup(forward=forward)
+            return
         ring = pigeon_focus_ring()
         step = 1 if forward else -1
         self.pigeon_focus_index = (int(self.pigeon_focus_index) + step) % len(ring)
@@ -3318,11 +3384,14 @@ def _draw_wifi_overlays(
         if layout.focus_logical == "main_dual_network_button":
             dual_layout = layout
             break
+    # Dual-network CTA shows "RENAME" while picking nests — hide the Wi‑Fi logo
+    # (SVG group is already display:none; overlays must skip too).
+    rename_mode = bool(state.show_location_picker) and not _needs_wifi_setup(state)
     for layout in layouts:
         if layout.picker_row and not state.show_network_picker:
             continue
         if layout.focus_logical == "main_dual_network_button":
-            if kb_logout:
+            if kb_logout or rename_mode:
                 continue
             if not state.wifi_configured and not state.wifi_connecting:
                 continue
@@ -5314,6 +5383,15 @@ class MainSettingsWidget:
             bool(st.show_box3_panel),
             bool(st.show_location_picker),
             bool(st.show_pigeon_settings),
+            bool(st.show_update_popup),
+            bool(st.update_available),
+            bool(st.update_checking),
+            bool(st.update_applying),
+            str(st.update_local_version or ""),
+            str(st.update_remote_version or ""),
+            str(st.update_changelog or ""),
+            str(st.update_error or ""),
+            int(st.update_popup_focus_index),
             bool(st.keyboard_open),
             str(self._svg_path or ""),
             str(self._assets_dir or ""),
@@ -5456,6 +5534,15 @@ class MainSettingsWidget:
             st.box3_devices.picked,
             bool(st.show_pigeon_settings),
             int(st.pigeon_focus_index),
+            bool(st.show_update_popup),
+            bool(st.update_available),
+            bool(st.update_checking),
+            bool(st.update_applying),
+            str(st.update_local_version or ""),
+            str(st.update_remote_version or ""),
+            str(st.update_changelog or ""),
+            str(st.update_error or ""),
+            int(st.update_popup_focus_index),
             bool(st.keyboard_open),
             str(self._svg_path or ""),
             str(self._assets_dir or ""),
@@ -5533,6 +5620,12 @@ class MainSettingsWidget:
             int(st.box3_devices.scroll),
             st.box3_devices.picked,
             bool(st.show_pigeon_settings),
+            bool(st.show_update_popup),
+            bool(st.update_available),
+            bool(st.update_checking),
+            str(st.update_remote_version or ""),
+            str(st.update_changelog or ""),
+            str(st.update_error or ""),
             bool(st.keyboard_open),
             str(self._svg_path or ""),
             str(self._assets_dir or ""),
@@ -5557,6 +5650,8 @@ class MainSettingsWidget:
             int(st.box3_devices.row),
             str(st.box3_devices.arrow),
             int(st.pigeon_focus_index),
+            int(st.update_popup_focus_index) if st.show_update_popup else -1,
+            bool(st.show_update_popup),
         )
 
     def _store_focus_frame(self, frame: np.ndarray) -> None:
@@ -5614,6 +5709,8 @@ class MainSettingsWidget:
             int(st.box3_devices.row),
             str(st.box3_devices.arrow),
             int(st.pigeon_focus_index),
+            int(st.update_popup_focus_index) if st.show_update_popup else -1,
+            bool(st.show_update_popup),
         )
 
     def navigate(self, forward: bool = True) -> None:
@@ -6601,11 +6698,29 @@ class MainSettingsWidget:
             return f"keyboard:{result}"
 
         if st.show_pigeon_settings:
+            if st.show_update_popup:
+                if st.update_applying or st.update_checking:
+                    return "update_popup:busy"
+                choice = st.update_popup_focused_choice
+                if choice == "later":
+                    st.close_update_popup()
+                    self.invalidate()
+                    return "update_popup:later"
+                if st.update_available and not st.update_error:
+                    return "update_popup:now"
+                # Up-to-date (or check error): NOW acknowledges and closes.
+                st.close_update_popup()
+                self.invalidate()
+                return "update_popup:dismiss"
             focused = st.pigeon_focused_id
             if focused == "pigeon_back":
                 st.exit_pigeon_settings()
                 self.invalidate()
                 return "pigeon_settings_back"
+            if focused == "update_button":
+                st.open_update_popup()
+                self.invalidate()
+                return "update_popup:open"
             return f"pigeon_activate:{focused}"
 
         focused = st.focused_id
@@ -6765,6 +6880,14 @@ class MainSettingsWidget:
                         st,
                         assets_dir=self._assets_dir,
                     )
+                    if st.show_update_popup:
+                        from pigeon.widgets.update_popup import composite_update_popup_over_bgra
+
+                        frame = composite_update_popup_over_bgra(
+                            frame,
+                            st,
+                            assets_dir=self._assets_dir,
+                        )
                     self._cached_main_bgra = frame
                     self._cached_main_sig = main_sig
                     self._store_focus_frame(frame)

@@ -75,9 +75,12 @@ _POSTER_MUSIC_H = 200
 _POSTER_MUSIC_RX = 10
 
 # Full-frame artwork backdrop under SVG chrome (music album art / video poster).
-_ARTWORK_BG_OPACITY = 0.20
+_ARTWORK_BG_OPACITY = 0.24  # 20% brighter than the original 0.20
 _ARTWORK_BG_BLUR_DOWNSCALE = 4
 _ARTWORK_BG_BLUR_SIGMA = 6.0
+
+# Red accent fills (volume pie + progress pie + elapsed bar): additive, semi-transparent.
+_ACCENT_ADD_OPACITY = 0.55
 
 # Back-compat aliases (video geometry).
 _POSTER_X = _POSTER_VIDEO_X
@@ -267,7 +270,7 @@ def _cover_fit_bgra(src: np.ndarray, tw: int, th: int) -> np.ndarray:
 
 
 def _build_artwork_blur_bgra(src: np.ndarray) -> np.ndarray:
-    """Full-frame cover-fit artwork, Gaussian-blurred, ~20% opacity (BGRA)."""
+    """Full-frame cover-fit artwork, Gaussian-blurred, ~24% opacity (BGRA)."""
     tw, th = int(DESIGN_W), int(DESIGN_H)
     cover = _cover_fit_bgra(src, tw, th)
     dw = max(1, tw // _ARTWORK_BG_BLUR_DOWNSCALE)
@@ -524,6 +527,38 @@ def _paste_patch_bgra(canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> 
         roi[:, :, 3] = np.maximum(roi[:, :, 3], src[:, :, 3])
 
 
+def _paste_patch_bgra_add(canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
+    """Additive blend: ``dst_rgb = clip(dst_rgb + src_rgb * alpha)``."""
+    if patch is None or patch.size == 0 or canvas is None or canvas.size == 0:
+        return
+    ph, pw = patch.shape[:2]
+    if pw < 1 or ph < 1:
+        return
+    x0 = int(x)
+    y0 = int(y)
+    x1 = x0 + pw
+    y1 = y0 + ph
+    cx0, cy0 = max(0, x0), max(0, y0)
+    cx1 = min(int(canvas.shape[1]), x1)
+    cy1 = min(int(canvas.shape[0]), y1)
+    if cx0 >= cx1 or cy0 >= cy1:
+        return
+    sx0 = cx0 - x0
+    sy0 = cy0 - y0
+    src = patch[sy0 : sy0 + (cy1 - cy0), sx0 : sx0 + (cx1 - cx0)]
+    roi = canvas[cy0:cy1, cx0:cx1]
+    alpha = src[:, :, 3:4].astype(np.float32) * (1.0 / 255.0)
+    if not np.any(alpha):
+        return
+    add = src[:, :, :3].astype(np.float32) * alpha
+    if roi.ndim == 3 and roi.shape[2] == 3:
+        roi[:] = np.clip(roi.astype(np.float32) + add, 0, 255).astype(np.uint8)
+    elif roi.ndim == 3 and roi.shape[2] >= 4:
+        roi[:, :, :3] = np.clip(
+            roi[:, :, :3].astype(np.float32) + add, 0, 255
+        ).astype(np.uint8)
+
+
 def _paste_centered(canvas: np.ndarray, patch: np.ndarray, cx: float, cy: float) -> None:
     if patch is None or patch.size == 0:
         return
@@ -559,6 +594,8 @@ def _draw_rounded_bar_bgra(
     radius: int,
     stroke_bgr: tuple[int, int, int] | None = None,
     stroke: int = 2,
+    add_blend: bool = False,
+    fill_opacity: float = 1.0,
 ) -> None:
     if w < 1 or h < 1:
         return
@@ -573,22 +610,28 @@ def _draw_rounded_bar_bgra(
     mask = np.zeros((mh, mw), dtype=np.uint8)
     inner = _rounded_rect_mask(lw, lh, min(radius, lw // 2, lh // 2))
     mask[pad : pad + lh, pad : pad + lw] = inner
-    patch = np.zeros((mh, mw, 4), dtype=np.uint8)
-    patch[mask > 0, :3] = fill_bgr
-    patch[mask > 0, 3] = 255
+    fill_a = int(round(255.0 * max(0.0, min(1.0, float(fill_opacity)))))
+    fill = np.zeros((mh, mw, 4), dtype=np.uint8)
+    fill[mask > 0, :3] = fill_bgr
+    fill[mask > 0, 3] = fill_a
+    if add_blend:
+        _paste_patch_bgra_add(bgra, fill, x0 - pad, y0 - pad)
+    else:
+        _paste_patch_bgra(bgra, fill, x0 - pad, y0 - pad)
     if stroke_bgr is not None and stroke > 0:
         # Full perimeter stroke (not just the mask edge after erode — that missed ends).
+        stroke_patch = np.zeros((mh, mw, 4), dtype=np.uint8)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:
             cv2.drawContours(
-                patch,
+                stroke_patch,
                 contours,
                 -1,
                 (*stroke_bgr, 255),
                 thickness=max(1, int(stroke)),
                 lineType=cv2.LINE_AA,
             )
-    _paste_patch_bgra(bgra, patch, x0 - pad, y0 - pad)
+            _paste_patch_bgra(bgra, stroke_patch, x0 - pad, y0 - pad)
 
 
 def annular_sector_mask(
@@ -670,6 +713,8 @@ def _draw_progress_ring(
     fill_bgr: tuple[int, int, int] = _COLOR_ACCENT_BGR,
     stroke_bgr: tuple[int, int, int] = _COLOR_CHROME_BGR,
     stroke: int = 2,
+    add_blend: bool = True,
+    fill_opacity: float = _ACCENT_ADD_OPACITY,
 ) -> None:
     """Annular pie from 12-o'clock, clockwise — shared by circle1 (progress) and circle2 (volume)."""
     frac = max(0.0, min(1.0, float(fraction)))
@@ -683,11 +728,19 @@ def _draw_progress_ring(
         inner_r=inner_r,
         fraction=frac,
     )
-    patch = np.zeros((size, size, 4), dtype=np.uint8)
-    patch[mask > 0, :3] = fill_bgr
-    patch[mask > 0, 3] = 255
+    fill_a = int(round(255.0 * max(0.0, min(1.0, float(fill_opacity)))))
+    fill = np.zeros((size, size, 4), dtype=np.uint8)
+    fill[mask > 0, :3] = fill_bgr
+    fill[mask > 0, 3] = fill_a
+    x = int(round(cx - size / 2.0))
+    y = int(round(cy - size / 2.0))
+    if add_blend:
+        _paste_patch_bgra_add(bgra, fill, x, y)
+    else:
+        _paste_patch_bgra(bgra, fill, x, y)
     if stroke > 0:
         # Arc strokes (not full contour) — contour stroke left a gap at 12-o'clock on small pies.
+        stroke_patch = np.zeros((size, size, 4), dtype=np.uint8)
         cx_i = cy_i = size // 2
         outer = max(1, int(round(outer_r)))
         inner = max(0, min(int(round(inner_r)), outer - 1))
@@ -696,12 +749,12 @@ def _draw_progress_ring(
         thick = max(1, int(stroke))
         color = (*stroke_bgr, 255)
         if frac >= 0.999:
-            cv2.circle(patch, (cx_i, cy_i), outer, color, thick, lineType=cv2.LINE_AA)
+            cv2.circle(stroke_patch, (cx_i, cy_i), outer, color, thick, lineType=cv2.LINE_AA)
             if inner > 0:
-                cv2.circle(patch, (cx_i, cy_i), inner, color, thick, lineType=cv2.LINE_AA)
+                cv2.circle(stroke_patch, (cx_i, cy_i), inner, color, thick, lineType=cv2.LINE_AA)
         else:
             cv2.ellipse(
-                patch,
+                stroke_patch,
                 (cx_i, cy_i),
                 (outer, outer),
                 0,
@@ -713,7 +766,7 @@ def _draw_progress_ring(
             )
             if inner > 0:
                 cv2.ellipse(
-                    patch,
+                    stroke_patch,
                     (cx_i, cy_i),
                     (inner, inner),
                     0,
@@ -732,10 +785,10 @@ def _draw_progress_ring(
                 y_o = int(round(cy_i + outer * math.sin(rad)))
                 x_i = int(round(cx_i + inner * math.cos(rad)))
                 y_i = int(round(cy_i + inner * math.sin(rad)))
-                cv2.line(patch, (x_i, y_i), (x_o, y_o), color, thick, lineType=cv2.LINE_AA)
-    x = int(round(cx - size / 2.0))
-    y = int(round(cy - size / 2.0))
-    _paste_patch_bgra(bgra, patch, x, y)
+                cv2.line(
+                    stroke_patch, (x_i, y_i), (x_o, y_o), color, thick, lineType=cv2.LINE_AA
+                )
+        _paste_patch_bgra(bgra, stroke_patch, x, y)
 
 
 def _draw_circle_pair(
@@ -1018,7 +1071,7 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
-            6,  # cache schema version (artwork blur backdrop for video + music)
+            8,  # cache schema version (additive red accents)
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -1134,6 +1187,8 @@ class ViewCirclesWidget:
                 radius=_BAR_RX,
                 stroke_bgr=_COLOR_CHROME_BGR,
                 stroke=2,
+                add_blend=True,
+                fill_opacity=_ACCENT_ADD_OPACITY,
             )
         # CTI: short vertical tick centered on the bar (does not reach elapsed text).
         cti_x = _BAR_L + min(elapsed_w, _BAR_W) - _CTI_W // 2
