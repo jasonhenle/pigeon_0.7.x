@@ -730,7 +730,7 @@ def _draw_progress_ring(
     fraction: float,
     fill_bgr: tuple[int, int, int] = _COLOR_ACCENT_BGR,
     stroke_bgr: tuple[int, int, int] = _COLOR_CHROME_BGR,
-    stroke: int = 2,
+    stroke: int = 1,
     fill_opacity: float = _ACCENT_OPACITY,
 ) -> None:
     """Annular pie from 12-o'clock, clockwise — shared by circle1 (progress) and circle2 (volume)."""
@@ -1116,7 +1116,7 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
-            11,  # cache schema version (stronger translucent grey/button fills)
+            12,  # cache schema version (accent stroke 1px)
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -1254,7 +1254,7 @@ class ViewCirclesWidget:
                 fill_bgr=_COLOR_ACCENT_BGR,
                 radius=_BAR_RX,
                 stroke_bgr=_COLOR_CHROME_BGR,
-                stroke=2,
+                stroke=1,
                 fill_opacity=_ACCENT_OPACITY,
             )
         # CTI: short vertical tick centered on the bar (does not reach elapsed text).
