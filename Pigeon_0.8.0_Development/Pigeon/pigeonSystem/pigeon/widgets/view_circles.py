@@ -81,6 +81,8 @@ _ARTWORK_BG_BLUR_SIGMA = 6.0
 
 # Red accent fills (volume pie + progress pie + elapsed bar): normal alpha so blur shows through.
 _ACCENT_OPACITY = 0.70
+# Grey unplayed track / volume headroom: semi-transparent over artwork.
+_CHROME_FILL_OPACITY = 0.45
 
 # Back-compat aliases (video geometry).
 _POSTER_X = _POSTER_VIDEO_X
@@ -689,15 +691,26 @@ def _draw_filled_circle_bgra(
     fill_bgr: tuple[int, int, int],
     stroke_bgr: tuple[int, int, int] = _COLOR_CHROME_BGR,
     stroke: int = 2,
+    fill_opacity: float = 1.0,
 ) -> None:
     radius = max(1, int(round(r)))
     pad = stroke + 2
     size = radius * 2 + pad * 2
     patch = np.zeros((size, size, 4), dtype=np.uint8)
     center = (size // 2, size // 2)
-    cv2.circle(patch, center, radius, (*fill_bgr, 255), -1, lineType=cv2.LINE_AA)
+    fill_a = int(round(255.0 * max(0.0, min(1.0, float(fill_opacity)))))
+    cv2.circle(patch, center, radius, (*fill_bgr, fill_a), -1, lineType=cv2.LINE_AA)
     if stroke > 0:
-        cv2.circle(patch, center, radius, (*stroke_bgr, 255), stroke, lineType=cv2.LINE_AA)
+        # Stroke stays fully opaque so the ring edge stays crisp over translucent fill.
+        stroke_patch = np.zeros((size, size, 4), dtype=np.uint8)
+        cv2.circle(
+            stroke_patch, center, radius, (*stroke_bgr, 255), stroke, lineType=cv2.LINE_AA
+        )
+        _paste_patch_bgra(bgra, patch, int(round(cx - size / 2.0)), int(round(cy - size / 2.0)))
+        _paste_patch_bgra(
+            bgra, stroke_patch, int(round(cx - size / 2.0)), int(round(cy - size / 2.0))
+        )
+        return
     x = int(round(cx - size / 2.0))
     y = int(round(cy - size / 2.0))
     _paste_patch_bgra(bgra, patch, x, y)
@@ -823,6 +836,7 @@ def _draw_circle_pair(
         cy=cy,
         r=_RING_OUTER_R,
         fill_bgr=_COLOR_UNPLAYED_BGR,
+        fill_opacity=_CHROME_FILL_OPACITY,
     )
     if show_accent and frac > 1e-6:
         if under is not None:
@@ -1097,7 +1111,7 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
-            9,  # cache schema version (translucent red accents over artwork)
+            10,  # cache schema version (translucent grey chrome + red accents)
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -1216,6 +1230,7 @@ class ViewCirclesWidget:
             radius=_BAR_RX,
             stroke_bgr=_COLOR_CHROME_BGR,
             stroke=2,
+            fill_opacity=_CHROME_FILL_OPACITY,
         )
         if elapsed_w > 0:
             if under is not None:
