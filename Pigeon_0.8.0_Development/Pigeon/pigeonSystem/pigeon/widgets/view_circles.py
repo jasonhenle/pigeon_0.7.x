@@ -81,6 +81,9 @@ _ARTWORK_BG_BLUR_SIGMA = 6.0
 
 # Red accent fills (volume pie + progress pie + elapsed bar): normal alpha so blur shows through.
 _ACCENT_OPACITY = 0.70
+# Chrome outline on accent pies / elapsed bar (2px, half-transparent).
+_ACCENT_STROKE_PX = 2
+_ACCENT_STROKE_OPACITY = 0.50
 # Grey unplayed track / volume headroom: mostly see-through over artwork.
 _CHROME_FILL_OPACITY = 0.12
 # Dark inner discs (clock / volume centers): translucent so blur reads through.
@@ -568,6 +571,87 @@ def _restore_masked_region(
     roi[m] = src[m]
 
 
+def _restore_from_backdrop_abs(
+    canvas: np.ndarray,
+    mask: np.ndarray,
+    *,
+    x: int,
+    y: int,
+    backdrop: np.ndarray,
+    backdrop_x: int,
+    backdrop_y: int,
+) -> None:
+    """Where ``mask`` > 0 at canvas ``(x,y)``, copy from ``backdrop`` using absolute coords."""
+    if (
+        canvas is None
+        or canvas.size == 0
+        or backdrop is None
+        or backdrop.size == 0
+        or mask is None
+        or mask.size == 0
+    ):
+        return
+    mh, mw = mask.shape[:2]
+    bh, bw = int(backdrop.shape[0]), int(backdrop.shape[1])
+    x0, y0 = int(x), int(y)
+    cx0, cy0 = max(0, x0), max(0, y0)
+    cx1 = min(int(canvas.shape[1]), x0 + mw)
+    cy1 = min(int(canvas.shape[0]), y0 + mh)
+    if cx0 >= cx1 or cy0 >= cy1:
+        return
+    sx0, sy0 = cx0 - x0, cy0 - y0
+    roi_h, roi_w = cy1 - cy0, cx1 - cx0
+    m = mask[sy0 : sy0 + roi_h, sx0 : sx0 + roi_w] > 0
+    if not np.any(m):
+        return
+    yy, xx = np.nonzero(m)
+    by = (cy0 - int(backdrop_y)) + yy
+    bx = (cx0 - int(backdrop_x)) + xx
+    valid = (by >= 0) & (by < bh) & (bx >= 0) & (bx < bw)
+    if not np.any(valid):
+        return
+    yy, xx, by, bx = yy[valid], xx[valid], by[valid], bx[valid]
+    canvas[cy0 + yy, cx0 + xx] = backdrop[by, bx]
+
+
+def _paste_stroke_over_blur(
+    canvas: np.ndarray,
+    stroke_patch: np.ndarray,
+    x: int,
+    y: int,
+    *,
+    backdrop: np.ndarray | None,
+    backdrop_x: int,
+    backdrop_y: int,
+    opacity: float,
+) -> None:
+    """Restore blurred backdrop under stroke coverage, then blend stroke at ``opacity``."""
+    if stroke_patch is None or stroke_patch.size == 0:
+        return
+    coverage = stroke_patch[:, :, 3]
+    if not np.any(coverage):
+        return
+    if backdrop is not None:
+        _restore_from_backdrop_abs(
+            canvas,
+            coverage,
+            x=x,
+            y=y,
+            backdrop=backdrop,
+            backdrop_x=backdrop_x,
+            backdrop_y=backdrop_y,
+        )
+    sop = max(0.0, min(1.0, float(opacity)))
+    if sop >= 1.0 - 1e-6:
+        _paste_patch_bgra(canvas, stroke_patch, x, y)
+        return
+    patch = stroke_patch.copy()
+    patch[:, :, 3] = np.clip(patch[:, :, 3].astype(np.float32) * sop, 0, 255).astype(
+        np.uint8
+    )
+    _paste_patch_bgra(canvas, patch, x, y)
+
+
 def _paste_centered(canvas: np.ndarray, patch: np.ndarray, cx: float, cy: float) -> None:
     if patch is None or patch.size == 0:
         return
@@ -604,6 +688,10 @@ def _draw_rounded_bar_bgra(
     stroke_bgr: tuple[int, int, int] | None = None,
     stroke: int = 2,
     fill_opacity: float = 1.0,
+    stroke_opacity: float = 1.0,
+    stroke_backdrop: np.ndarray | None = None,
+    stroke_backdrop_x: int = 0,
+    stroke_backdrop_y: int = 0,
 ) -> None:
     if w < 1 or h < 1:
         return
@@ -636,7 +724,16 @@ def _draw_rounded_bar_bgra(
                 thickness=max(1, int(stroke)),
                 lineType=cv2.LINE_AA,
             )
-            _paste_patch_bgra(bgra, stroke_patch, x0 - pad, y0 - pad)
+            _paste_stroke_over_blur(
+                bgra,
+                stroke_patch,
+                x0 - pad,
+                y0 - pad,
+                backdrop=stroke_backdrop,
+                backdrop_x=stroke_backdrop_x,
+                backdrop_y=stroke_backdrop_y,
+                opacity=stroke_opacity,
+            )
 
 
 def annular_sector_mask(
@@ -730,8 +827,12 @@ def _draw_progress_ring(
     fraction: float,
     fill_bgr: tuple[int, int, int] = _COLOR_ACCENT_BGR,
     stroke_bgr: tuple[int, int, int] = _COLOR_CHROME_BGR,
-    stroke: int = 1,
+    stroke: int = _ACCENT_STROKE_PX,
     fill_opacity: float = _ACCENT_OPACITY,
+    stroke_opacity: float = _ACCENT_STROKE_OPACITY,
+    stroke_backdrop: np.ndarray | None = None,
+    stroke_backdrop_x: int = 0,
+    stroke_backdrop_y: int = 0,
 ) -> None:
     """Annular pie from 12-o'clock, clockwise — shared by circle1 (progress) and circle2 (volume)."""
     frac = max(0.0, min(1.0, float(fraction)))
@@ -802,7 +903,16 @@ def _draw_progress_ring(
                 cv2.line(
                     stroke_patch, (x_i, y_i), (x_o, y_o), color, thick, lineType=cv2.LINE_AA
                 )
-        _paste_patch_bgra(bgra, stroke_patch, x, y)
+        _paste_stroke_over_blur(
+            bgra,
+            stroke_patch,
+            x,
+            y,
+            backdrop=stroke_backdrop,
+            backdrop_x=stroke_backdrop_x,
+            backdrop_y=stroke_backdrop_y,
+            opacity=stroke_opacity,
+        )
 
 
 def _draw_circle_pair(
@@ -859,6 +969,10 @@ def _draw_circle_pair(
             inner_r=_RING_INNER_R,
             fraction=frac,
             fill_opacity=_ACCENT_OPACITY,
+            stroke_opacity=_ACCENT_STROKE_OPACITY,
+            stroke_backdrop=under,
+            stroke_backdrop_x=ring_x,
+            stroke_backdrop_y=ring_y,
         )
     _draw_filled_circle_bgra(
         bgra,
@@ -1116,7 +1230,7 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
-            12,  # cache schema version (accent stroke 1px)
+            14,  # cache schema version (accent stroke over blur only)
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -1254,8 +1368,12 @@ class ViewCirclesWidget:
                 fill_bgr=_COLOR_ACCENT_BGR,
                 radius=_BAR_RX,
                 stroke_bgr=_COLOR_CHROME_BGR,
-                stroke=1,
+                stroke=_ACCENT_STROKE_PX,
                 fill_opacity=_ACCENT_OPACITY,
+                stroke_opacity=_ACCENT_STROKE_OPACITY,
+                stroke_backdrop=under,
+                stroke_backdrop_x=bar_x,
+                stroke_backdrop_y=bar_y,
             )
         # CTI: short vertical tick centered on the bar (does not reach elapsed text).
         cti_x = _BAR_L + min(elapsed_w, _BAR_W) - _CTI_W // 2
