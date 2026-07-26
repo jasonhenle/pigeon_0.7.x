@@ -79,8 +79,8 @@ _ARTWORK_BG_OPACITY = 0.24  # 20% brighter than the original 0.20
 _ARTWORK_BG_BLUR_DOWNSCALE = 4
 _ARTWORK_BG_BLUR_SIGMA = 6.0
 
-# Red accent fills (volume pie + progress pie + elapsed bar): additive, semi-transparent.
-_ACCENT_ADD_OPACITY = 0.55
+# Red accent fills (volume pie + progress pie + elapsed bar): normal alpha so blur shows through.
+_ACCENT_OPACITY = 0.70
 
 # Back-compat aliases (video geometry).
 _POSTER_X = _POSTER_VIDEO_X
@@ -527,36 +527,41 @@ def _paste_patch_bgra(canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> 
         roi[:, :, 3] = np.maximum(roi[:, :, 3], src[:, :, 3])
 
 
-def _paste_patch_bgra_add(canvas: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
-    """Additive blend: ``dst_rgb = clip(dst_rgb + src_rgb * alpha)``."""
-    if patch is None or patch.size == 0 or canvas is None or canvas.size == 0:
+def _restore_masked_region(
+    canvas: np.ndarray,
+    under: np.ndarray,
+    mask: np.ndarray,
+    *,
+    x: int,
+    y: int,
+) -> None:
+    """Copy ``under`` into ``canvas`` where ``mask`` > 0 (same H×W as ``under``/``mask``)."""
+    if (
+        canvas is None
+        or canvas.size == 0
+        or under is None
+        or under.size == 0
+        or mask is None
+        or mask.size == 0
+    ):
         return
-    ph, pw = patch.shape[:2]
-    if pw < 1 or ph < 1:
+    mh, mw = mask.shape[:2]
+    if under.shape[0] != mh or under.shape[1] != mw:
         return
     x0 = int(x)
     y0 = int(y)
-    x1 = x0 + pw
-    y1 = y0 + ph
     cx0, cy0 = max(0, x0), max(0, y0)
-    cx1 = min(int(canvas.shape[1]), x1)
-    cy1 = min(int(canvas.shape[0]), y1)
+    cx1 = min(int(canvas.shape[1]), x0 + mw)
+    cy1 = min(int(canvas.shape[0]), y0 + mh)
     if cx0 >= cx1 or cy0 >= cy1:
         return
-    sx0 = cx0 - x0
-    sy0 = cy0 - y0
-    src = patch[sy0 : sy0 + (cy1 - cy0), sx0 : sx0 + (cx1 - cx0)]
-    roi = canvas[cy0:cy1, cx0:cx1]
-    alpha = src[:, :, 3:4].astype(np.float32) * (1.0 / 255.0)
-    if not np.any(alpha):
+    sx0, sy0 = cx0 - x0, cy0 - y0
+    m = mask[sy0 : sy0 + (cy1 - cy0), sx0 : sx0 + (cx1 - cx0)] > 0
+    if not np.any(m):
         return
-    add = src[:, :, :3].astype(np.float32) * alpha
-    if roi.ndim == 3 and roi.shape[2] == 3:
-        roi[:] = np.clip(roi.astype(np.float32) + add, 0, 255).astype(np.uint8)
-    elif roi.ndim == 3 and roi.shape[2] >= 4:
-        roi[:, :, :3] = np.clip(
-            roi[:, :, :3].astype(np.float32) + add, 0, 255
-        ).astype(np.uint8)
+    src = under[sy0 : sy0 + (cy1 - cy0), sx0 : sx0 + (cx1 - cx0)]
+    roi = canvas[cy0:cy1, cx0:cx1]
+    roi[m] = src[m]
 
 
 def _paste_centered(canvas: np.ndarray, patch: np.ndarray, cx: float, cy: float) -> None:
@@ -594,7 +599,6 @@ def _draw_rounded_bar_bgra(
     radius: int,
     stroke_bgr: tuple[int, int, int] | None = None,
     stroke: int = 2,
-    add_blend: bool = False,
     fill_opacity: float = 1.0,
 ) -> None:
     if w < 1 or h < 1:
@@ -614,10 +618,7 @@ def _draw_rounded_bar_bgra(
     fill = np.zeros((mh, mw, 4), dtype=np.uint8)
     fill[mask > 0, :3] = fill_bgr
     fill[mask > 0, 3] = fill_a
-    if add_blend:
-        _paste_patch_bgra_add(bgra, fill, x0 - pad, y0 - pad)
-    else:
-        _paste_patch_bgra(bgra, fill, x0 - pad, y0 - pad)
+    _paste_patch_bgra(bgra, fill, x0 - pad, y0 - pad)
     if stroke_bgr is not None and stroke > 0:
         # Full perimeter stroke (not just the mask edge after erode — that missed ends).
         stroke_patch = np.zeros((mh, mw, 4), dtype=np.uint8)
@@ -713,8 +714,7 @@ def _draw_progress_ring(
     fill_bgr: tuple[int, int, int] = _COLOR_ACCENT_BGR,
     stroke_bgr: tuple[int, int, int] = _COLOR_CHROME_BGR,
     stroke: int = 2,
-    add_blend: bool = True,
-    fill_opacity: float = _ACCENT_ADD_OPACITY,
+    fill_opacity: float = _ACCENT_OPACITY,
 ) -> None:
     """Annular pie from 12-o'clock, clockwise — shared by circle1 (progress) and circle2 (volume)."""
     frac = max(0.0, min(1.0, float(fraction)))
@@ -734,10 +734,7 @@ def _draw_progress_ring(
     fill[mask > 0, 3] = fill_a
     x = int(round(cx - size / 2.0))
     y = int(round(cy - size / 2.0))
-    if add_blend:
-        _paste_patch_bgra_add(bgra, fill, x, y)
-    else:
-        _paste_patch_bgra(bgra, fill, x, y)
+    _paste_patch_bgra(bgra, fill, x, y)
     if stroke > 0:
         # Arc strokes (not full contour) — contour stroke left a gap at 12-o'clock on small pies.
         stroke_patch = np.zeros((size, size, 4), dtype=np.uint8)
@@ -800,6 +797,26 @@ def _draw_circle_pair(
     show_accent: bool,
 ) -> None:
     """Headroom disc + optional pie accent + inner button (identical for circle1 / circle2)."""
+    frac = max(0.0, min(1.0, float(fraction)))
+    # Snapshot underlayer so the red pie can sit over artwork, not solid grey.
+    under = None
+    ring_x = ring_y = ring_size = 0
+    if show_accent and frac > 1e-6:
+        pad = 6
+        ring_size = int(math.ceil(_RING_OUTER_R * 2)) + pad * 2
+        ring_x = int(round(cx - ring_size / 2.0))
+        ring_y = int(round(cy - ring_size / 2.0))
+        x0, y0 = max(0, ring_x), max(0, ring_y)
+        x1 = min(int(DESIGN_W), ring_x + ring_size)
+        y1 = min(int(DESIGN_H), ring_y + ring_size)
+        if x0 < x1 and y0 < y1:
+            under = bgra[y0:y1, x0:x1].copy()
+            # Pad under to full ring_size so mask coords match.
+            if under.shape[0] != ring_size or under.shape[1] != ring_size:
+                full = np.zeros((ring_size, ring_size, bgra.shape[2]), dtype=bgra.dtype)
+                full[y0 - ring_y : y1 - ring_y, x0 - ring_x : x1 - ring_x] = under
+                under = full
+
     _draw_filled_circle_bgra(
         bgra,
         cx=cx,
@@ -807,14 +824,23 @@ def _draw_circle_pair(
         r=_RING_OUTER_R,
         fill_bgr=_COLOR_UNPLAYED_BGR,
     )
-    if show_accent and fraction > 1e-6:
+    if show_accent and frac > 1e-6:
+        if under is not None:
+            mask = annular_sector_mask(
+                ring_size,
+                outer_r=_RING_OUTER_R,
+                inner_r=_RING_INNER_R,
+                fraction=frac,
+            )
+            _restore_masked_region(bgra, under, mask, x=ring_x, y=ring_y)
         _draw_progress_ring(
             bgra,
             cx=cx,
             cy=cy,
             outer_r=_RING_OUTER_R,
             inner_r=_RING_INNER_R,
-            fraction=fraction,
+            fraction=frac,
+            fill_opacity=_ACCENT_OPACITY,
         )
     _draw_filled_circle_bgra(
         bgra,
@@ -1071,7 +1097,7 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
-            8,  # cache schema version (additive red accents)
+            9,  # cache schema version (translucent red accents over artwork)
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -1160,6 +1186,25 @@ class ViewCirclesWidget:
     def _draw_status_bar(self, out: np.ndarray) -> None:
         st = self._state
         pf = max(0.0, min(1.0, float(st.progress)))
+        # Elapsed grows from left; own full perimeter stroke (including leading edge).
+        elapsed_w = max(_MIN_ELAPSED_W, int(round(pf * float(_BAR_W))))
+        if pf <= 0.0:
+            elapsed_w = _MIN_ELAPSED_W if st.elapsed_text else 0
+        elapsed_w = min(elapsed_w, _BAR_W) if elapsed_w > 0 else 0
+        # Snapshot underlayer so translucent red sits over artwork, not solid grey.
+        under = None
+        bar_pad = 3  # matches stroke pad in _draw_rounded_bar_bgra (stroke=2)
+        bar_x = _BAR_L - bar_pad
+        bar_y = _BAR_T - bar_pad
+        if elapsed_w > 0:
+            ew = elapsed_w + bar_pad * 2
+            eh = _BAR_H + bar_pad * 2
+            x0, y0 = max(0, bar_x), max(0, bar_y)
+            x1 = min(int(DESIGN_W), bar_x + ew)
+            y1 = min(int(DESIGN_H), bar_y + eh)
+            if x0 < x1 and y0 < y1:
+                under = np.zeros((eh, ew, out.shape[2]), dtype=out.dtype)
+                under[y0 - bar_y : y1 - bar_y, x0 - bar_x : x1 - bar_x] = out[y0:y1, x0:x1]
         # Fixed remaining (full bar, grey) with full perimeter stroke.
         _draw_rounded_bar_bgra(
             out,
@@ -1172,23 +1217,25 @@ class ViewCirclesWidget:
             stroke_bgr=_COLOR_CHROME_BGR,
             stroke=2,
         )
-        # Elapsed grows from left; own full perimeter stroke (including leading edge).
-        elapsed_w = max(_MIN_ELAPSED_W, int(round(pf * float(_BAR_W))))
-        if pf <= 0.0:
-            elapsed_w = _MIN_ELAPSED_W if st.elapsed_text else 0
         if elapsed_w > 0:
+            if under is not None:
+                lw, lh = elapsed_w, _BAR_H
+                mw, mh = lw + bar_pad * 2, lh + bar_pad * 2
+                mask = np.zeros((mh, mw), dtype=np.uint8)
+                inner = _rounded_rect_mask(lw, lh, min(_BAR_RX, lw // 2, lh // 2))
+                mask[bar_pad : bar_pad + lh, bar_pad : bar_pad + lw] = inner
+                _restore_masked_region(out, under, mask, x=bar_x, y=bar_y)
             _draw_rounded_bar_bgra(
                 out,
                 x=_BAR_L,
                 y=_BAR_T,
-                w=min(elapsed_w, _BAR_W),
+                w=elapsed_w,
                 h=_BAR_H,
                 fill_bgr=_COLOR_ACCENT_BGR,
                 radius=_BAR_RX,
                 stroke_bgr=_COLOR_CHROME_BGR,
                 stroke=2,
-                add_blend=True,
-                fill_opacity=_ACCENT_ADD_OPACITY,
+                fill_opacity=_ACCENT_OPACITY,
             )
         # CTI: short vertical tick centered on the bar (does not reach elapsed text).
         cti_x = _BAR_L + min(elapsed_w, _BAR_W) - _CTI_W // 2
