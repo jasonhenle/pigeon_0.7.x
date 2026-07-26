@@ -80,8 +80,10 @@ done
 WORKDIR="$(mktemp -d /tmp/pigeon-github-update.XXXXXX)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
+log "downloading zip"
 curl -fsSL -o "${WORKDIR}/pigeon.zip" "${ZIP_URL}" || die "curl download failed (network or GitHub blocked)"
 
+log "extracting archive"
 python3 - <<'PY' "${WORKDIR}/pigeon.zip" "${WORKDIR}/extract" "${APP_REL}"
 import sys
 import zipfile

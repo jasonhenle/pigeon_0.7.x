@@ -457,6 +457,7 @@ class MainSettingsState:
     update_available: bool = False
     update_checking: bool = False
     update_applying: bool = False
+    update_progress: float = 0.0  # 0..1 while applying
     update_local_version: str = ""
     update_remote_version: str | None = None
     update_changelog: str = ""
@@ -813,6 +814,7 @@ class MainSettingsState:
 
         self.show_update_popup = True
         self.update_applying = False
+        self.update_progress = 0.0
         self.update_error = None
         if not self.update_local_version:
             self.update_local_version = self.version_string
@@ -833,6 +835,7 @@ class MainSettingsState:
         self.show_update_popup = False
         self.update_checking = False
         self.update_applying = False
+        self.update_progress = 0.0
         self.update_popup_focus_index = 0
 
     def navigate_update_popup(self, *, forward: bool = True) -> None:
@@ -5387,6 +5390,7 @@ class MainSettingsWidget:
             bool(st.update_available),
             bool(st.update_checking),
             bool(st.update_applying),
+            round(float(st.update_progress), 3),
             str(st.update_local_version or ""),
             str(st.update_remote_version or ""),
             str(st.update_changelog or ""),
@@ -5538,6 +5542,7 @@ class MainSettingsWidget:
             bool(st.update_available),
             bool(st.update_checking),
             bool(st.update_applying),
+            round(float(st.update_progress), 3),
             str(st.update_local_version or ""),
             str(st.update_remote_version or ""),
             str(st.update_changelog or ""),
@@ -5623,6 +5628,8 @@ class MainSettingsWidget:
             bool(st.show_update_popup),
             bool(st.update_available),
             bool(st.update_checking),
+            bool(st.update_applying),
+            round(float(st.update_progress), 3),
             str(st.update_remote_version or ""),
             str(st.update_changelog or ""),
             str(st.update_error or ""),

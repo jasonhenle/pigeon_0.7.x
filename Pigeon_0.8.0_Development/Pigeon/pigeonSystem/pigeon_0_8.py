@@ -8079,9 +8079,42 @@ def main() -> int:
                 remote = str(st.update_remote_version or "?")
                 branch = st.update_github_branch
                 st.update_applying = True
-                st.update_changelog = "Downloading from GitHub…"
+                st.update_progress = 0.0
+                st.update_changelog = f"Downloading {remote}…"
                 main_settings_widget.invalidate()
                 skip_cache = None
+                _ms_progress_lock = threading.Lock()
+                _ms_progress_last = [0.0]
+                _ms_progress_label = [""]
+
+                def _ms_on_progress(fraction: float, label: str) -> None:
+                    """Marshal progress onto the Tk thread (throttled)."""
+                    frac = max(0.0, min(1.0, float(fraction)))
+                    lab = str(label or "Updating…")[:96]
+                    with _ms_progress_lock:
+                        # Refresh at least every 2% or when the stage label changes.
+                        if (
+                            frac < 0.999
+                            and frac - _ms_progress_last[0] < 0.02
+                            and lab == _ms_progress_label[0]
+                        ):
+                            return
+                        _ms_progress_last[0] = frac
+                        _ms_progress_label[0] = lab
+
+                    def _apply_progress() -> None:
+                        nonlocal skip_cache
+                        if main_settings_widget is None or not st.update_applying:
+                            return
+                        st.update_progress = frac
+                        st.update_changelog = lab
+                        main_settings_widget.invalidate()
+                        skip_cache = None
+
+                    try:
+                        root.after(0, _apply_progress)
+                    except Exception:
+                        pass
 
                 def worker_ms_apply() -> None:
                     install_root = _resolve_install_root_for_update()
@@ -8093,7 +8126,11 @@ def main() -> int:
                             cached = update_check_state.get("github_branch")
                             if isinstance(cached, str) and cached.strip():
                                 apply_branch = cached.strip()
-                        result = apply_github_update(install_root, branch=apply_branch)
+                        result = apply_github_update(
+                            install_root,
+                            branch=apply_branch,
+                            progress=_ms_on_progress,
+                        )
                     except Exception as e:
                         from pigeon.github_update import ApplyUpdateResult
 
@@ -8101,8 +8138,8 @@ def main() -> int:
 
                     def finish_ms_apply() -> None:
                         nonlocal skip_cache
-                        st.update_applying = False
                         if result.ok:
+                            st.update_progress = 1.0
                             st.update_changelog = "Update complete — restarting…"
                             st.update_available = False
                             try:
@@ -8133,6 +8170,8 @@ def main() -> int:
                             root.after(400, _restart_ms)
                             return
 
+                        st.update_applying = False
+                        st.update_progress = 0.0
                         st.update_error = result.message
                         st.update_changelog = (result.message or "Update failed.")[:96]
                         main_settings_widget.invalidate()

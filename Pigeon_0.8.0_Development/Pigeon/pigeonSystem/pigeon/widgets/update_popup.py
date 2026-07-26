@@ -12,6 +12,7 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from pigeon.design import DESIGN_H, DESIGN_W
@@ -78,6 +79,15 @@ _NEW_ORIGIN_Y = 261.031
 _NOW_TEXT_Y = 363.223
 _LATER_TEXT_Y = 363.223
 _LATER_DEFAULT_X = 362.382
+
+# Progress bar (above LATER/NOW row, same horizontal span as the button group).
+_PROGRESS_X = 323.104
+_PROGRESS_Y = 318.0
+_PROGRESS_W = 494.062 - 323.104
+_PROGRESS_H = 12.0
+_PROGRESS_RX = 6
+_PROGRESS_TRACK_BGR = (32, 32, 32)
+_PROGRESS_FILL_BGR = (255, 255, 255)
 
 
 def default_update_popup_svg_path(assets_dir: Path | str | None = None) -> Path:
@@ -280,6 +290,89 @@ def _layout_up_to_date(root: ET.Element, state: MainSettingsState) -> None:
     _set_text_content(_find_by_logical_id(root, ID_CHANGES_GROUP), notes)
 
 
+def _layout_applying(root: ET.Element, state: MainSettingsState) -> None:
+    """Version band + status copy; hide LATER/NOW while the progress bar draws."""
+    current = _format_version(state.update_local_version or state.version_string)
+    remote = _format_version(state.update_remote_version or "")
+    _set_visible(_find_by_logical_id(root, ID_UPDATE_LABEL_GROUP), True)
+    _set_visible(_find_by_logical_id(root, ID_UPDATE_LABEL), True)
+    _set_visible(_find_by_logical_id(root, ID_ARROW), bool(remote))
+    _set_visible(_find_by_logical_id(root, ID_NEW_TEXT), bool(remote))
+    _set_visible(_find_by_logical_id(root, ID_LATER_GROUP), False)
+    _set_visible(_find_by_logical_id(root, ID_NOW_GROUP), False)
+    _set_text_content(_find_by_logical_id(root, ID_CURRENT_TEXT), current)
+    if remote:
+        _set_text_content(_find_by_logical_id(root, ID_NEW_TEXT), remote)
+        _set_text_translate(
+            _find_by_logical_id(root, ID_CURRENT_TEXT),
+            x=_CURRENT_DEFAULT_X,
+            y=_CURRENT_ORIGIN_Y,
+        )
+        _set_text_translate(
+            _find_by_logical_id(root, ID_NEW_TEXT),
+            x=_NEW_DEFAULT_X,
+            y=_NEW_ORIGIN_Y,
+        )
+    else:
+        vx, _vy, vw, _vh = _VERSION_BAND
+        _set_text_translate(
+            _find_by_logical_id(root, ID_CURRENT_TEXT),
+            x=vx + vw / 2.0,
+            y=_CURRENT_ORIGIN_Y,
+        )
+    status = (state.update_changelog or "").strip() or "Downloading…"
+    pct = int(round(max(0.0, min(1.0, float(state.update_progress))) * 100.0))
+    if pct > 0 and "%" not in status:
+        status = f"{status}  {pct}%"
+    _set_text_content(_find_by_logical_id(root, ID_CHANGES_GROUP), status[:96])
+
+
+def _draw_progress_bar_bgra(bgra: np.ndarray, *, fraction: float) -> None:
+    """Opaque track + white fill inside the popup card (above the button row)."""
+    if bgra is None or bgra.size == 0:
+        return
+    x = int(round(_PROGRESS_X))
+    y = int(round(_PROGRESS_Y))
+    w = max(1, int(round(_PROGRESS_W)))
+    h = max(1, int(round(_PROGRESS_H)))
+    frac = max(0.0, min(1.0, float(fraction)))
+    track = np.zeros((h, w, 4), dtype=np.uint8)
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.rectangle(mask, (0, 0), (w - 1, h - 1), 255, -1)
+    if _PROGRESS_RX > 0:
+        # Soften corners via elliptical covers (simple rounded look).
+        r = min(_PROGRESS_RX, h // 2, w // 2)
+        mask[:] = 0
+        cv2.rectangle(mask, (r, 0), (w - r - 1, h - 1), 255, -1)
+        cv2.rectangle(mask, (0, r), (w - 1, h - r - 1), 255, -1)
+        cv2.circle(mask, (r, r), r, 255, -1, lineType=cv2.LINE_AA)
+        cv2.circle(mask, (w - r - 1, r), r, 255, -1, lineType=cv2.LINE_AA)
+        cv2.circle(mask, (r, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
+        cv2.circle(mask, (w - r - 1, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
+    track[mask > 0, :3] = _PROGRESS_TRACK_BGR
+    track[mask > 0, 3] = 255
+    fill_w = max(0, int(round(w * frac)))
+    if fill_w > 0:
+        fill_mask = mask[:, :fill_w]
+        track[:, :fill_w][fill_mask > 0, :3] = _PROGRESS_FILL_BGR
+        track[:, :fill_w][fill_mask > 0, 3] = 255
+    x0, y0 = max(0, x), max(0, y)
+    x1 = min(int(bgra.shape[1]), x + w)
+    y1 = min(int(bgra.shape[0]), y + h)
+    if x0 >= x1 or y0 >= y1:
+        return
+    sx0, sy0 = x0 - x, y0 - y
+    roi = bgra[y0:y1, x0:x1]
+    src = track[sy0 : sy0 + (y1 - y0), sx0 : sx0 + (x1 - x0)]
+    alpha = src[:, :, 3:4].astype(np.float32) / 255.0
+    roi[:, :, :3] = (
+        src[:, :, :3].astype(np.float32) * alpha
+        + roi[:, :, :3].astype(np.float32) * (1.0 - alpha)
+    ).astype(np.uint8)
+    if roi.shape[2] >= 4:
+        roi[:, :, 3] = np.maximum(roi[:, :, 3], src[:, :, 3])
+
+
 def apply_update_popup_svg_state(root: ET.Element, state: MainSettingsState) -> None:
     theme = state.theme
     ui = theme.ui or COLOR_UI_DEFAULT
@@ -294,6 +387,9 @@ def apply_update_popup_svg_state(root: ET.Element, state: MainSettingsState) -> 
     _sync_pigeonos_text(root, PIGEONOS_LABEL)
 
     available = bool(state.update_available)
+    if state.update_applying:
+        _layout_applying(root, state)
+        return
     if (
         state.update_checking
         and state.update_remote_version is None
@@ -354,13 +450,16 @@ def render_update_popup_bgra(
     apply_update_popup_svg_state(root, st)
     _prune_display_none(root)
     vb = viewbox_from_root(root)
-    return rasterize_settings_svg_bgra(
+    frame = rasterize_settings_svg_bgra(
         root,
         width=DESIGN_W,
         height=DESIGN_H,
         view_box=vb,
         font_mode="update_popup",
     )
+    if st.update_applying:
+        _draw_progress_bar_bgra(frame, fraction=float(st.update_progress))
+    return frame
 
 
 def composite_update_popup_over_bgra(
