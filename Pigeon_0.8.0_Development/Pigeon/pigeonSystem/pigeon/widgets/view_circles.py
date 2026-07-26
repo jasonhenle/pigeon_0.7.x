@@ -81,8 +81,10 @@ _ARTWORK_BG_BLUR_SIGMA = 6.0
 
 # Red accent fills (volume pie + progress pie + elapsed bar): normal alpha so blur shows through.
 _ACCENT_OPACITY = 0.70
-# Grey unplayed track / volume headroom: semi-transparent over artwork.
-_CHROME_FILL_OPACITY = 0.45
+# Grey unplayed track / volume headroom: mostly see-through over artwork.
+_CHROME_FILL_OPACITY = 0.12
+# Dark inner discs (clock / volume centers): translucent so blur reads through.
+_BUTTON_FILL_OPACITY = 0.35
 
 # Back-compat aliases (video geometry).
 _POSTER_X = _POSTER_VIDEO_X
@@ -696,24 +698,26 @@ def _draw_filled_circle_bgra(
     radius = max(1, int(round(r)))
     pad = stroke + 2
     size = radius * 2 + pad * 2
-    patch = np.zeros((size, size, 4), dtype=np.uint8)
     center = (size // 2, size // 2)
-    fill_a = int(round(255.0 * max(0.0, min(1.0, float(fill_opacity)))))
-    cv2.circle(patch, center, radius, (*fill_bgr, fill_a), -1, lineType=cv2.LINE_AA)
+    # Mask-driven alpha (more reliable than cv2 BGRA Scalar alpha + LINE_AA).
+    mask = np.zeros((size, size), dtype=np.uint8)
+    cv2.circle(mask, center, radius, 255, -1, lineType=cv2.LINE_AA)
+    op = max(0.0, min(1.0, float(fill_opacity)))
+    patch = np.zeros((size, size, 4), dtype=np.uint8)
+    patch[:, :, 0] = fill_bgr[0]
+    patch[:, :, 1] = fill_bgr[1]
+    patch[:, :, 2] = fill_bgr[2]
+    patch[:, :, 3] = np.clip(mask.astype(np.float32) * op, 0, 255).astype(np.uint8)
+    x = int(round(cx - size / 2.0))
+    y = int(round(cy - size / 2.0))
+    _paste_patch_bgra(bgra, patch, x, y)
     if stroke > 0:
         # Stroke stays fully opaque so the ring edge stays crisp over translucent fill.
         stroke_patch = np.zeros((size, size, 4), dtype=np.uint8)
         cv2.circle(
             stroke_patch, center, radius, (*stroke_bgr, 255), stroke, lineType=cv2.LINE_AA
         )
-        _paste_patch_bgra(bgra, patch, int(round(cx - size / 2.0)), int(round(cy - size / 2.0)))
-        _paste_patch_bgra(
-            bgra, stroke_patch, int(round(cx - size / 2.0)), int(round(cy - size / 2.0))
-        )
-        return
-    x = int(round(cx - size / 2.0))
-    y = int(round(cy - size / 2.0))
-    _paste_patch_bgra(bgra, patch, x, y)
+        _paste_patch_bgra(bgra, stroke_patch, x, y)
 
 
 def _draw_progress_ring(
@@ -862,6 +866,7 @@ def _draw_circle_pair(
         cy=cy,
         r=_RING_INNER_R,
         fill_bgr=_COLOR_BUTTON_BGR,
+        fill_opacity=_BUTTON_FILL_OPACITY,
     )
 
 
@@ -1111,7 +1116,7 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
-            10,  # cache schema version (translucent grey chrome + red accents)
+            11,  # cache schema version (stronger translucent grey/button fills)
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
