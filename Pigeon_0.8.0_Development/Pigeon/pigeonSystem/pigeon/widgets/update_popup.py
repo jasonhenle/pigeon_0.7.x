@@ -21,7 +21,6 @@ from pigeon.widgets.main_settings import (
     MainSettingsState,
     SettingsTheme,
     _apply_accent_paint,
-    _apply_contrast_paint,
     _composite_bgra_over_bgra,
     _find_by_logical_id,
     _prune_display_none,
@@ -67,23 +66,27 @@ _UPDATE_FOCUS_CURRENT: tuple[str, ...] = ("now",)
 _SVG_TREE_TEMPLATES: dict[tuple[str, int, int], ET.Element] = {}
 _SVG_TREE_TEMPLATE_MAX = 4
 
-# Geometry from update.ai — used to center controls when LATER / new version hide.
-_LATER_NOW_ROW = (323.104, 335.039, 494.062 - 323.104, 372.968 - 335.039)
-_NOW_BTN = (415.506, 335.039, 494.062 - 415.506, 372.968 - 335.039)
-_LATER_BTN = (323.104, 335.039, 401.660 - 323.104, 372.968 - 335.039)
-_VERSION_BAND = (323.104, 244.722, 494.062 - 323.104, 265.063 - 244.722)
-_CURRENT_DEFAULT_X = 360.565
-_CURRENT_ORIGIN_Y = 260.066
-_NEW_DEFAULT_X = 449.931
-_NEW_ORIGIN_Y = 261.031
+# Geometry from 2026-07-27 Illustrator export — center controls when LATER hides.
+_LATER_NOW_ROW = (313.104, 335.039, 494.502 - 313.104, 372.968 - 335.039)
+_NOW_BTN = (435.066, 335.039, 59.436, 37.929)
+_LATER_BTN = (322.664, 335.039, 59.436, 37.929)
+_VERSION_BAND = (263.793, 180.0, 290.424, 40.0)
+_CURRENT_DEFAULT_X = 340.0
+_CURRENT_ORIGIN_Y = 201.255
+_NEW_DEFAULT_X = 470.0
+_NEW_ORIGIN_Y = 201.255
 _NOW_TEXT_Y = 363.223
 _LATER_TEXT_Y = 363.223
-_LATER_DEFAULT_X = 362.382
+_LATER_DEFAULT_X = 352.382
+_NOW_DEFAULT_X = 464.784
+# Deselected LATER/NOW label (matches export fill #6E6E6E).
+_CHOICE_TEXT_MUTED = "#6E6E6E"
+_CHOICE_BUTTON_FILL = "#202020"
 
 # Progress bar (above LATER/NOW row, same horizontal span as the button group).
-_PROGRESS_X = 323.104
+_PROGRESS_X = 322.664
 _PROGRESS_Y = 318.0
-_PROGRESS_W = 494.062 - 323.104
+_PROGRESS_W = 494.502 - 322.664
 _PROGRESS_H = 12.0
 _PROGRESS_RX = 6
 _PROGRESS_TRACK_BGR = (32, 32, 32)
@@ -133,14 +136,6 @@ def _sync_rect_geometry(dst: ET.Element | None, src: ET.Element | None) -> None:
             dst.set(attr, val)
 
 
-def _set_rect_xy(el: ET.Element | None, *, x: float, y: float | None = None) -> None:
-    if el is None:
-        return
-    el.set("x", f"{x:.3f}")
-    if y is not None:
-        el.set("y", f"{y:.3f}")
-
-
 def _set_text_translate(
     el: ET.Element | None,
     *,
@@ -172,6 +167,25 @@ def _sync_pigeonos_text(root: ET.Element, label: str) -> None:
     _set_text_content(fill, label)
 
 
+def _paint_choice_label(
+    text: ET.Element | None,
+    *,
+    selected: bool,
+    theme: SettingsTheme,
+) -> None:
+    """Black buttons: white label when focused, grey when not."""
+    if text is None:
+        return
+    color = theme.selected if selected else _CHOICE_TEXT_MUTED
+    nodes = [text] if text.tag.endswith("text") else [
+        n for n in text.iter() if n.tag.endswith("text")
+    ]
+    if not nodes:
+        nodes = [text]
+    for node in nodes:
+        _set_paint(node, fill=color)
+
+
 def _apply_choice_chrome(
     root: ET.Element,
     *,
@@ -193,22 +207,26 @@ def _apply_choice_chrome(
             _set_visible(group, False)
             continue
         _set_visible(group, True)
-        # Paint button fill directly — do not run group-wide contrast (it would
-        # invert the button rect after fill).
-        fill = theme.selected if selected else theme.deselected
+        # Both choices stay dark; focus is label color (not white fill).
         if btn is not None:
-            for node in btn.iter():
-                if node.tag.endswith("rect") or node is btn:
+            targets = [btn]
+            targets.extend(
+                n
+                for n in btn.iter()
+                if n is not btn and (n.tag.endswith("rect") or n.tag.endswith("path"))
+            )
+            for node in targets:
+                if node.tag.endswith("rect") or node.tag.endswith("path") or node is btn:
                     if node.tag.endswith("rect") or node.tag.endswith("path"):
-                        _set_paint(node, fill=fill, stroke=fill)
-        # Text: grey on black (deselected), black on white (selected).
-        _apply_contrast_paint(
-            text, selected=selected, theme=theme, muted_deselected=True
-        )
+                        _set_paint(
+                            node,
+                            fill=_CHOICE_BUTTON_FILL,
+                            stroke="#000000",
+                        )
+        _paint_choice_label(text, selected=selected, theme=theme)
         if accent is not None:
-            # Focus ring: black when selected, white when deselected (matches dual-buttons).
-            stroke = theme.deselected if selected else theme.selected
-            _set_paint(accent, fill="none", stroke=stroke)
+            # Thin white outline on both (matches export).
+            _set_paint(accent, fill="none", stroke=theme.selected)
             _sync_rect_geometry(accent, btn)
 
 
@@ -220,6 +238,11 @@ def _layout_available(root: ET.Element, state: MainSettingsState) -> None:
     _set_visible(_find_by_logical_id(root, ID_ARROW), True)
     _set_visible(_find_by_logical_id(root, ID_NEW_TEXT), True)
     _set_visible(_find_by_logical_id(root, ID_LATER_GROUP), True)
+    now_group = _find_by_logical_id(root, ID_NOW_GROUP)
+    if now_group is not None:
+        # Clear any up-to-date centering transform (buttons are paths).
+        if "transform" in now_group.attrib:
+            del now_group.attrib["transform"]
     _set_text_content(_find_by_logical_id(root, ID_CURRENT_TEXT), current)
     _set_text_content(_find_by_logical_id(root, ID_NEW_TEXT), remote or "—")
     _set_text_translate(
@@ -232,23 +255,16 @@ def _layout_available(root: ET.Element, state: MainSettingsState) -> None:
         x=_NEW_DEFAULT_X,
         y=_NEW_ORIGIN_Y,
     )
-    # Restore default LATER / NOW placement.
-    lx, ly, lw, _lh = _LATER_BTN
-    _set_rect_xy(_find_by_logical_id(root, ID_LATER_BUTTON), x=lx, y=ly)
-    _set_rect_xy(_find_by_logical_id(root, ID_LATER_ACCENT), x=lx, y=ly)
     _set_text_translate(
         _find_by_logical_id(root, ID_LATER_TEXT),
         x=_LATER_DEFAULT_X,
         y=_LATER_TEXT_Y,
     )
-    nx, ny, nw, _nh = _NOW_BTN
-    _set_rect_xy(_find_by_logical_id(root, ID_NOW_BUTTON), x=nx, y=ny)
-    _set_rect_xy(_find_by_logical_id(root, ID_NOW_ACCENT), x=nx, y=ny)
     now_text = _find_by_logical_id(root, ID_NOW_TEXT)
     _set_text_content(now_text, "NOW")
     _set_text_translate(
         now_text,
-        x=nx + nw / 2.0,
+        x=_NOW_DEFAULT_X,
         y=_NOW_TEXT_Y,
     )
     notes = (state.update_changelog or "").strip() or DEFAULT_CHANGELOG
@@ -273,18 +289,19 @@ def _layout_up_to_date(root: ET.Element, state: MainSettingsState) -> None:
     _set_text_content(_find_by_logical_id(root, ID_CURRENT_TEXT), current)
 
     # Center OK (shared now-button layer) within the later+now row bounds.
-    rx, ry, rw, rh = _LATER_NOW_ROW
+    # Buttons are paths — nudge the whole NOW group rather than rewriting x/y.
+    rx, _ry, rw, _rh = _LATER_NOW_ROW
     _nw = _NOW_BTN[2]
-    _nh = _NOW_BTN[3]
     cx = rx + (rw - _nw) / 2.0
-    cy = ry + (rh - _nh) / 2.0
-    _set_rect_xy(_find_by_logical_id(root, ID_NOW_BUTTON), x=cx, y=cy)
-    _set_rect_xy(_find_by_logical_id(root, ID_NOW_ACCENT), x=cx, y=cy)
+    dx = cx - _NOW_BTN[0]
+    now_group = _find_by_logical_id(root, ID_NOW_GROUP)
+    if now_group is not None:
+        now_group.set("transform", f"translate({dx:.3f} 0)")
     now_text = _find_by_logical_id(root, ID_NOW_TEXT)
     _set_text_content(now_text, "OK")
     _set_text_translate(
         now_text,
-        x=cx + _nw / 2.0,
+        x=_NOW_DEFAULT_X,
         y=_NOW_TEXT_Y,
     )
 
