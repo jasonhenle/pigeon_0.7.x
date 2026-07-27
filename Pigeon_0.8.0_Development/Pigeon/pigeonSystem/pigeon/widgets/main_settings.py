@@ -833,30 +833,25 @@ class MainSettingsState:
             self.focus_index = self.focus_ring.index("main_box1_button")
 
     def open_update_popup(self) -> None:
-        """Show the GitHub update popup over pigeon device settings."""
-        from pigeon.widgets.update_popup import (
-            DEFAULT_CHANGELOG,
-            UP_TO_DATE_CHANGELOG,
-            update_popup_focus_ring,
-        )
+        """Show the GitHub update popup and always start a fresh check.
+
+        Prior poll results are cleared so the Update button never reuses a
+        cached available / up-to-date decision.
+        """
+        from pigeon.widgets.update_popup import update_popup_focus_ring
 
         self.show_update_popup = True
         self.update_applying = False
         self.update_progress = 0.0
         self.update_error = None
-        if not self.update_local_version:
-            self.update_local_version = self.version_string
-        # Keep last poll visible while a fresh check runs (when we have one).
-        had_cache = bool(self.update_remote_version) or bool(self.update_available)
+        self.update_local_version = self.version_string
+        # Drop cache — settings_pigeon Update always re-queries GitHub.
+        self.update_available = False
+        self.update_remote_version = None
+        self.update_github_branch = None
         self.update_checking = True
-        if not self.update_changelog:
-            self.update_changelog = (
-                DEFAULT_CHANGELOG if self.update_available else UP_TO_DATE_CHANGELOG
-            )
-        if not had_cache:
-            self.update_available = False
-        ring = update_popup_focus_ring(update_available=bool(self.update_available))
-        # Prefer NOW when opening.
+        self.update_changelog = "Checking GitHub for updates…"
+        ring = update_popup_focus_ring(update_available=False)
         self.update_popup_focus_index = ring.index("now") if "now" in ring else 0
 
     def close_update_popup(self) -> None:

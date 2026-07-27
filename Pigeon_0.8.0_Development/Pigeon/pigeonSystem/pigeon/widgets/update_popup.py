@@ -409,17 +409,12 @@ def apply_update_popup_svg_state(root: ET.Element, state: MainSettingsState) -> 
     if state.update_applying:
         _layout_applying(root, state)
         return
-    if (
-        state.update_checking
-        and state.update_remote_version is None
-        and not state.update_error
-        and not available
-    ):
-        # First check (no cache yet): show local version + waiting copy.
+    if state.update_checking:
+        # Always show the in-progress check UI (never stale LATER/NOW from cache).
         _layout_up_to_date(root, state)
         _set_text_content(
             _find_by_logical_id(root, ID_CHANGES_GROUP),
-            "Checking GitHub for updates…",
+            (state.update_changelog or "").strip() or "Checking GitHub for updates…",
         )
         later_enabled = False
         focused = "now"

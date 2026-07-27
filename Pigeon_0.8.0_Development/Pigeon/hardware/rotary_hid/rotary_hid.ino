@@ -13,20 +13,20 @@
 
   2) USB Serial line protocol — Arduino UNO Q and other non-HID boards.
      Emits lines: RIGHT / LEFT / PUSH (+ PIGEON_CONTROLLER_READY).
-     Host: pigeon.rotary_serial maps those to navigate / activate.
+     Host: pigeon.rotary_serial (USB CDC and/or UNO Q Monitor TCP :7500).
 
-  *** Arduino UNO Q critical note ***
-  On UNO Q, ``Serial`` is the UART on pins D0/D1 — NOT the USB-C port the
-  Raspberry Pi opens. USB / Serial Monitor traffic must use ``Monitor`` from
-  Arduino_RouterBridge. This sketch does that automatically when the library
-  is present.
+  *** Arduino UNO Q ***
+  On UNO Q, ``Serial`` is UART D0/D1 (not USB-C).
+  USB / App Lab / IDE Serial Monitor use ``Monitor`` via Arduino_RouterBridge.
+  You MUST call Bridge.begin() before Monitor.begin() — otherwise lines never
+  leave the MCU. The host (Pi) may read them via:
+    - USB CDC virtual COM (when the board enumerates one), or
+    - ADB forward of the Monitor TCP port (localhost:7500) — preferred.
 
   Arduino UNO Q ("Arduino Q"):
-    Tools → Board → Arduino UNO Q (Arduino UNO Q Zephyr Core / Zephyr Boards).
-    Boards Manager URL if missing:
-      https://downloads.arduino.cc/packages/package_zephyr_index.json
-    Library Manager: install **Arduino_RouterBridge** (+ deps).
-    Pins below are UNO-header D2/D3/D4 (STM32 GPIOs on UNO Q).
+    Tools → Board → Arduino UNO Q
+    Library Manager: **Arduino_RouterBridge** (+ deps)
+    Pins: UNO-header D2/D3/D4
 
   Default wiring (KY-040-style module, shared GND / 5V or 3V3):
     CLK / A  → pin 2
@@ -68,14 +68,11 @@ static USBHIDKeyboard Keyboard;
 #endif
 
 #if PIGEON_USE_SERIAL
-// UNO Q: Monitor → USB CDC to the host. Classic AVR: Serial → USB CDC.
 #if __has_include(<Arduino_RouterBridge.h>)
 #include <Arduino_RouterBridge.h>
-#define PIGEON_HOST_IO Monitor
-#define PIGEON_HOST_BEGIN() do { Monitor.begin(); } while (0)
+#define PIGEON_USE_MONITOR 1
 #else
-#define PIGEON_HOST_IO Serial
-#define PIGEON_HOST_BEGIN() do { Serial.begin(115200); } while (0)
+#define PIGEON_USE_MONITOR 0
 #endif
 #endif
 
@@ -84,11 +81,8 @@ static const uint8_t PIN_CLK = 2;
 static const uint8_t PIN_DT = 3;
 static const uint8_t PIN_SW = 4;
 
-// Ignore encoder edges closer than this (ms) to cut bounce / half-step chatter.
 static const unsigned long ENCODER_MIN_MS = 8;
-// Coalesce rapid turns: at most one step every this many ms while spinning.
 static const unsigned long TURN_COOLDOWN_MS = 40;
-// Button debounce and minimum activate gap (Pigeon also debounces Space ~120ms).
 static const unsigned long BUTTON_DEBOUNCE_MS = 30;
 static const unsigned long ACTIVATE_MIN_MS = 150;
 
@@ -109,9 +103,19 @@ static void tapKey(uint8_t key) {
 }
 #endif
 
+#if PIGEON_USE_SERIAL
+static void hostPrintln(const __FlashStringHelper *line) {
+#if PIGEON_USE_MONITOR
+  Monitor.println(line);
+#endif
+  // Also print on UART Serial (D0/D1) for USB-TTL adapters / debugging.
+  Serial.println(line);
+}
+#endif
+
 static void emitForward() {
 #if PIGEON_USE_SERIAL
-  PIGEON_HOST_IO.println(F("RIGHT"));
+  hostPrintln(F("RIGHT"));
 #else
   tapKey(KEY_RIGHT_ARROW);
 #endif
@@ -119,7 +123,7 @@ static void emitForward() {
 
 static void emitBackward() {
 #if PIGEON_USE_SERIAL
-  PIGEON_HOST_IO.println(F("LEFT"));
+  hostPrintln(F("LEFT"));
 #else
   tapKey(KEY_LEFT_ARROW);
 #endif
@@ -127,8 +131,7 @@ static void emitBackward() {
 
 static void emitActivate() {
 #if PIGEON_USE_SERIAL
-  // Host accepts PRESS and PUSH (and SELECT / CLICK / SPACE).
-  PIGEON_HOST_IO.println(F("PUSH"));
+  hostPrintln(F("PUSH"));
 #else
   tapKey(' ');
 #endif
@@ -143,12 +146,16 @@ void setup() {
   swStable = lastSwRaw;
 
 #if PIGEON_USE_SERIAL
-  PIGEON_HOST_BEGIN();
-  // Repeat READY so host autodetect can catch it after USB open/reset.
+#if PIGEON_USE_MONITOR
+  // Required on UNO Q — without Bridge, Monitor.println never leaves the MCU.
+  Bridge.begin();
+  Monitor.begin();
+#endif
+  Serial.begin(115200);
+  delay(200);
+  hostPrintln(F("PIGEON_CONTROLLER_READY"));
   delay(100);
-  PIGEON_HOST_IO.println(F("PIGEON_CONTROLLER_READY"));
-  delay(100);
-  PIGEON_HOST_IO.println(F("PIGEON_CONTROLLER_READY"));
+  hostPrintln(F("PIGEON_CONTROLLER_READY"));
 #else
 #if defined(ARDUINO_ARCH_ESP32)
   USB.begin();
@@ -160,7 +167,6 @@ void setup() {
 void loop() {
   const unsigned long now = millis();
 
-  // --- Rotary (count on CLK falling edge; DT selects direction) ---
   const uint8_t clk = digitalRead(PIN_CLK);
   if (clk != lastClk) {
     if (clk == LOW && (now - lastEdgeMs) >= ENCODER_MIN_MS) {
@@ -168,16 +174,15 @@ void loop() {
       if ((now - lastTurnMs) >= TURN_COOLDOWN_MS) {
         lastTurnMs = now;
         if (digitalRead(PIN_DT) == HIGH) {
-          emitForward();  // CW
+          emitForward();
         } else {
-          emitBackward();  // CCW
+          emitBackward();
         }
       }
     }
     lastClk = clk;
   }
 
-  // --- Push button → activate (Space) ---
   const uint8_t sw = digitalRead(PIN_SW);
   if (sw != lastSwRaw) {
     lastSwRaw = sw;
@@ -185,7 +190,6 @@ void loop() {
   }
   if ((now - swChangeMs) >= BUTTON_DEBOUNCE_MS && sw != swStable) {
     swStable = sw;
-    // Active-low switch (common on KY-040): press when going LOW.
     if (swStable == LOW && (now - lastActivateMs) >= ACTIVATE_MIN_MS) {
       lastActivateMs = now;
       emitActivate();

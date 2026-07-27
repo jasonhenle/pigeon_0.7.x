@@ -1,31 +1,38 @@
-"""USB-serial bridge for Pigeon rotary controllers (Arduino UNO Q, etc.).
+"""USB-serial / UNO Q Monitor bridge for Pigeon rotary controllers.
 
 HID-capable boards (Leonardo / Pro Micro / …) already emit Left / Right / Space
-and need nothing here. Serial-mode firmware (`hardware/rotary_hid/rotary_hid.ino`
-with ``PIGEON_USE_SERIAL``) prints one line per action.
+and need nothing here. Serial-mode firmware (`hardware/rotary_hid/rotary_hid.ino`)
+prints one line per action:
 
-Canonical lines (and common aliases):
+  RIGHT / CW / FORWARD     → forward
+  LEFT  / CCW / BACKWARD   → backward
+  PRESS / PUSH / SELECT    → activate
 
-  RIGHT / CW / FORWARD     → forward  (Tk Right / navigate forward)
-  LEFT  / CCW / BACKWARD   → backward (Tk Left  / navigate backward)
-  PRESS / PUSH / SELECT    → activate (Tk space / activate)
+Transports (both tried):
+  1) USB CDC serial (``/dev/ttyACM*``, ``PIGEON_ROTARY_PORT=…``)
+  2) Arduino UNO Q Monitor TCP — MCU ``Monitor.println`` is forwarded by the
+     board's Linux router to ``localhost:7500``. The Pi opens that via
+     ``adb forward tcp:7500 tcp:7500`` (or ``PIGEON_ROTARY_TCP=host:port``).
 
-Optional: ``PIGEON_ROTARY_PORT`` = explicit device path (e.g. ``/dev/ttyACM0``).
 Optional: ``PIGEON_ROTARY_INVERT=1`` swaps forward/backward.
-Optional dependency: ``pyserial`` (recommended on Pi). Without it, only an
-explicit ``PIGEON_ROTARY_PORT`` is opened via POSIX termios.
+Optional: ``PIGEON_ROTARY_SERIAL=0`` disables the whole bridge.
+Optional: ``PIGEON_ROTARY_TCP=0`` disables the UNO Q TCP path only.
 """
 
 from __future__ import annotations
 
 import glob
 import os
+import shutil
+import socket
+import subprocess
 import sys
 import threading
 import time
 from typing import Callable
 
 _READY = "PIGEON_CONTROLLER_READY"
+_UNO_Q_MONITOR_PORT = 7500
 # Map every reasonable token the board (or a hand-rolled sketch) might send.
 _LINE_TO_ACTION: dict[str, str] = {
     "RIGHT": "forward",
@@ -273,11 +280,32 @@ def inject_keysym(root, keysym: str) -> None:
         _stderr(f"pigeon: rotary_serial: event_generate({keysym}) failed: {exc}")
 
 
+class _ActionGate:
+    """Deduplicate identical actions from serial + TCP within a short window."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last: tuple[str, float] | None = None
+
+    def accept(self, action: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            if self._last is not None:
+                prev, t0 = self._last
+                if prev == action and (now - t0) < 0.08:
+                    return False
+            self._last = (action, now)
+            return True
+
+
 def _dispatch_action(
     root,
     action: str,
     on_action: Callable[[str], None] | None,
+    gate: _ActionGate | None = None,
 ) -> None:
+    if gate is not None and not gate.accept(action):
+        return
     if on_action is not None:
         try:
             on_action(action)
@@ -289,6 +317,39 @@ def _dispatch_action(
         inject_keysym(root, keysym)
 
 
+def _handle_line(
+    root,
+    line: str,
+    *,
+    on_action: Callable[[str], None] | None,
+    invert: bool,
+    gate: _ActionGate,
+    logged_ok: list[int],
+    ignored: list[int],
+    source: str,
+) -> None:
+    if not line or line == _READY:
+        return
+    action = _action_for_line(line)
+    if action is None:
+        if ignored[0] < 12:
+            _stderr(f"pigeon: rotary_serial: ignore unknown line {line!r} ({source})")
+            ignored[0] += 1
+        return
+    if invert and action in ("forward", "backward"):
+        action = "backward" if action == "forward" else "forward"
+    if logged_ok[0] < 8:
+        _stderr(f"pigeon: rotary_serial: {line!r} → {action} ({source})")
+        logged_ok[0] += 1
+    try:
+        root.after(
+            0,
+            lambda act=action: _dispatch_action(root, act, on_action, gate),
+        )
+    except Exception:
+        pass
+
+
 def _read_loop(
     root,
     ser,
@@ -296,9 +357,10 @@ def _read_loop(
     *,
     on_action: Callable[[str], None] | None,
     invert: bool,
+    gate: _ActionGate,
 ) -> None:
-    ignored = 0
-    logged_ok = 0
+    ignored = [0]
+    logged_ok = [0]
     while not stop.is_set():
         try:
             raw = ser.readline()
@@ -308,26 +370,152 @@ def _read_loop(
         if not raw:
             continue
         line = raw.decode("utf-8", errors="ignore").strip()
-        if not line or line == _READY:
-            continue
-        action = _action_for_line(line)
-        if action is None:
-            if ignored < 12:
-                _stderr(f"pigeon: rotary_serial: ignore unknown line {line!r}")
-                ignored += 1
-            continue
-        if invert and action in ("forward", "backward"):
-            action = "backward" if action == "forward" else "forward"
-        if logged_ok < 8:
-            _stderr(f"pigeon: rotary_serial: {line!r} → {action}")
-            logged_ok += 1
+        _handle_line(
+            root,
+            line,
+            on_action=on_action,
+            invert=invert,
+            gate=gate,
+            logged_ok=logged_ok,
+            ignored=ignored,
+            source="usb",
+        )
+
+
+def _env_tcp_endpoint() -> tuple[str, int] | None:
+    """Return (host, port) for UNO Q Monitor TCP, or None if disabled."""
+    raw = (os.environ.get("PIGEON_ROTARY_TCP") or "").strip()
+    if raw.lower() in ("0", "false", "off", "no"):
+        return None
+    if raw and ":" in raw:
+        host, _, port_s = raw.rpartition(":")
         try:
-            root.after(
-                0,
-                lambda act=action: _dispatch_action(root, act, on_action),
-            )
-        except Exception:
-            break
+            return host.strip() or "127.0.0.1", int(port_s)
+        except ValueError:
+            pass
+    # Default: try local ADB-forwarded Monitor port (UNO Q).
+    return ("127.0.0.1", _UNO_Q_MONITOR_PORT)
+
+
+def _adb_bin() -> str | None:
+    bundled = os.environ.get("PIGEON_ADB", "").strip()
+    if bundled and os.path.isfile(bundled):
+        return bundled
+    return shutil.which("adb")
+
+
+def _ensure_adb_forward(port: int) -> bool:
+    """Forward host TCP ``port`` to the UNO Q Monitor socket when possible."""
+    adb = _adb_bin()
+    if not adb:
+        return False
+    try:
+        proc = subprocess.run(
+            [adb, "devices"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _stderr(f"pigeon: rotary_serial: adb devices failed: {exc}")
+        return False
+    lines = [
+        ln.strip()
+        for ln in (proc.stdout or "").splitlines()
+        if ln.strip() and not ln.startswith("List")
+    ]
+    devices = [ln.split()[0] for ln in lines if "\tdevice" in ln or ln.endswith(" device")]
+    if not devices:
+        # Also accept "serial device" formatting
+        devices = []
+        for ln in lines:
+            parts = ln.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                devices.append(parts[0])
+    if not devices:
+        _stderr("pigeon: rotary_serial: adb: no device (plug UNO Q USB-C data cable)")
+        return False
+    try:
+        subprocess.run(
+            [adb, "forward", f"tcp:{port}", f"tcp:{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        _stderr(f"pigeon: rotary_serial: adb forward tcp:{port} → device {devices[0]}")
+        return True
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _stderr(f"pigeon: rotary_serial: adb forward failed: {exc}")
+        return False
+
+
+def _tcp_worker(
+    root,
+    stop: threading.Event,
+    *,
+    on_action: Callable[[str], None] | None,
+    invert: bool,
+    gate: _ActionGate,
+) -> None:
+    endpoint = _env_tcp_endpoint()
+    if endpoint is None:
+        return
+    host, port = endpoint
+    logged = False
+    ignored = [0]
+    logged_ok = [0]
+    while not stop.is_set():
+        if host in ("127.0.0.1", "localhost") and port == _UNO_Q_MONITOR_PORT:
+            _ensure_adb_forward(port)
+        sock: socket.socket | None = None
+        try:
+            sock = socket.create_connection((host, port), timeout=2.0)
+            sock.settimeout(0.5)
+            if not logged:
+                _stderr(f"pigeon: rotary_serial: connected tcp {host}:{port} (UNO Q Monitor)")
+                logged = True
+            buf = b""
+            while not stop.is_set():
+                try:
+                    chunk = sock.recv(256)
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    _stderr(f"pigeon: rotary_serial: tcp read error: {exc}")
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    line = raw.decode("utf-8", errors="ignore").strip()
+                    _handle_line(
+                        root,
+                        line,
+                        on_action=on_action,
+                        invert=invert,
+                        gate=gate,
+                        logged_ok=logged_ok,
+                        ignored=ignored,
+                        source="tcp",
+                    )
+        except OSError:
+            if not logged:
+                _stderr(
+                    f"pigeon: rotary_serial: waiting for UNO Q Monitor at {host}:{port} "
+                    "(adb + Bridge.begin/Monitor.begin)"
+                )
+                logged = True
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        if not stop.is_set():
+            time.sleep(_RECONNECT_S)
 
 
 def start_rotary_serial_listener(
@@ -336,11 +524,10 @@ def start_rotary_serial_listener(
     enabled: bool | None = None,
     on_action: Callable[[str], None] | None = None,
 ) -> Callable[[], None] | None:
-    """Start a daemon that maps serial CW/CCW/PUSH (and synonyms) → app actions.
+    """Start daemons that map CW/CCW/PUSH → app actions (USB serial + UNO Q TCP).
 
     ``on_action`` receives ``\"forward\"``, ``\"backward\"``, or ``\"activate\"`` on
-    the Tk thread. When omitted (or if it raises), Tk key events are synthesized.
-    Returns a stop callable, or None if disabled / unavailable.
+    the Tk thread. Returns a stop callable, or None if disabled.
     """
     if enabled is None:
         flag = (os.environ.get("PIGEON_ROTARY_SERIAL") or "1").strip().lower()
@@ -350,23 +537,24 @@ def start_rotary_serial_listener(
 
     stop = threading.Event()
     invert = _env_invert()
+    gate = _ActionGate()
     logged_ports = [False]
 
-    def worker() -> None:
+    def usb_worker() -> None:
         while not stop.is_set():
             ports, strong = _candidate_ports()
             if not ports:
                 if not logged_ports[0]:
                     _stderr(
-                        "pigeon: rotary_serial: no serial ports yet "
-                        "(set PIGEON_ROTARY_PORT=/dev/ttyACM0 if needed)"
+                        "pigeon: rotary_serial: no USB serial ports yet "
+                        "(UNO Q Monitor TCP path may still work via adb)"
                     )
                     logged_ports[0] = True
                 time.sleep(_RECONNECT_S)
                 continue
             if not logged_ports[0]:
                 _stderr(
-                    "pigeon: rotary_serial: candidates "
+                    "pigeon: rotary_serial: USB candidates "
                     + ", ".join(ports[:8])
                     + (" …" if len(ports) > 8 else "")
                 )
@@ -381,8 +569,6 @@ def start_rotary_serial_listener(
                 except Exception as exc:
                     _stderr(f"pigeon: rotary_serial: open {port} failed: {exc}")
                     continue
-                # Env / strong Arduino USB match: accept without waiting for banner
-                # (READY may have been printed before we opened the port).
                 trust = port in strong or _env_port() is not None
                 try:
                     ok = True if trust else _looks_like_controller(ser)
@@ -406,6 +592,7 @@ def start_rotary_serial_listener(
                         stop,
                         on_action=on_action,
                         invert=invert,
+                        gate=gate,
                     )
                 finally:
                     try:
@@ -419,6 +606,12 @@ def start_rotary_serial_listener(
             elif not stop.is_set():
                 time.sleep(_RECONNECT_S)
 
-    t = threading.Thread(target=worker, name="pigeon-rotary-serial", daemon=True)
-    t.start()
+    threading.Thread(target=usb_worker, name="pigeon-rotary-usb", daemon=True).start()
+    threading.Thread(
+        target=_tcp_worker,
+        name="pigeon-rotary-tcp",
+        args=(root, stop),
+        kwargs={"on_action": on_action, "invert": invert, "gate": gate},
+        daemon=True,
+    ).start()
     return stop.set
