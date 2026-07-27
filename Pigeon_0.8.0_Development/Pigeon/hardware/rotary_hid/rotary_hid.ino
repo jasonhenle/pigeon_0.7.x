@@ -4,24 +4,28 @@
   Intended map (matches pigeon_0_8.py hotkeys):
     CW   → forward  (Right / serial RIGHT)
     CCW  → backward (Left  / serial LEFT)
-    PUSH → activate (Space / serial PRESS; host also accepts PUSH)
+    PUSH → activate (Space / serial PUSH)
 
   Two transport modes (picked at compile time):
 
   1) USB HID Keyboard — Leonardo, Pro Micro, Pico, ESP32-S2/S3, …
      Emits real Left / Right / Space. No host serial code needed.
 
-  2) USB Serial line protocol — Arduino UNO Q (STM32 MCU / Zephyr) and
-     other boards without Keyboard HID.
+  2) USB Serial line protocol — Arduino UNO Q and other non-HID boards.
      Emits lines: RIGHT / LEFT / PUSH (+ PIGEON_CONTROLLER_READY).
      Host: pigeon.rotary_serial maps those to navigate / activate.
+
+  *** Arduino UNO Q critical note ***
+  On UNO Q, ``Serial`` is the UART on pins D0/D1 — NOT the USB-C port the
+  Raspberry Pi opens. USB / Serial Monitor traffic must use ``Monitor`` from
+  Arduino_RouterBridge. This sketch does that automatically when the library
+  is present.
 
   Arduino UNO Q ("Arduino Q"):
     Tools → Board → Arduino UNO Q (Arduino UNO Q Zephyr Core / Zephyr Boards).
     Boards Manager URL if missing:
       https://downloads.arduino.cc/packages/package_zephyr_index.json
-    Install Library Manager: Arduino_RouterBridge (+ deps) for Serial over USB-C.
-    On Zephyr core ≥ 0.55, Serial is the USB/bridge monitor (not D0/D1 UART).
+    Library Manager: install **Arduino_RouterBridge** (+ deps).
     Pins below are UNO-header D2/D3/D4 (STM32 GPIOs on UNO Q).
 
   Default wiring (KY-040-style module, shared GND / 5V or 3V3):
@@ -63,6 +67,18 @@ static USBHIDKeyboard Keyboard;
 #endif
 #endif
 
+#if PIGEON_USE_SERIAL
+// UNO Q: Monitor → USB CDC to the host. Classic AVR: Serial → USB CDC.
+#if __has_include(<Arduino_RouterBridge.h>)
+#include <Arduino_RouterBridge.h>
+#define PIGEON_HOST_IO Monitor
+#define PIGEON_HOST_BEGIN() do { Monitor.begin(); } while (0)
+#else
+#define PIGEON_HOST_IO Serial
+#define PIGEON_HOST_BEGIN() do { Serial.begin(115200); } while (0)
+#endif
+#endif
+
 // --- Pins (change to match your wiring) ---
 static const uint8_t PIN_CLK = 2;
 static const uint8_t PIN_DT = 3;
@@ -95,7 +111,7 @@ static void tapKey(uint8_t key) {
 
 static void emitForward() {
 #if PIGEON_USE_SERIAL
-  Serial.println(F("RIGHT"));
+  PIGEON_HOST_IO.println(F("RIGHT"));
 #else
   tapKey(KEY_RIGHT_ARROW);
 #endif
@@ -103,7 +119,7 @@ static void emitForward() {
 
 static void emitBackward() {
 #if PIGEON_USE_SERIAL
-  Serial.println(F("LEFT"));
+  PIGEON_HOST_IO.println(F("LEFT"));
 #else
   tapKey(KEY_LEFT_ARROW);
 #endif
@@ -112,7 +128,7 @@ static void emitBackward() {
 static void emitActivate() {
 #if PIGEON_USE_SERIAL
   // Host accepts PRESS and PUSH (and SELECT / CLICK / SPACE).
-  Serial.println(F("PUSH"));
+  PIGEON_HOST_IO.println(F("PUSH"));
 #else
   tapKey(' ');
 #endif
@@ -127,18 +143,17 @@ void setup() {
   swStable = lastSwRaw;
 
 #if PIGEON_USE_SERIAL
-  Serial.begin(115200);
-  // UNO Q bridge Serial may not block; repeat READY so host autodetect can catch it.
+  PIGEON_HOST_BEGIN();
+  // Repeat READY so host autodetect can catch it after USB open/reset.
   delay(100);
-  Serial.println(F("PIGEON_CONTROLLER_READY"));
+  PIGEON_HOST_IO.println(F("PIGEON_CONTROLLER_READY"));
   delay(100);
-  Serial.println(F("PIGEON_CONTROLLER_READY"));
+  PIGEON_HOST_IO.println(F("PIGEON_CONTROLLER_READY"));
 #else
 #if defined(ARDUINO_ARCH_ESP32)
   USB.begin();
 #endif
   Keyboard.begin();
-  // Optional later: Serial.begin(115200) for audio / telemetry on the same USB device.
 #endif
 }
 
@@ -155,7 +170,7 @@ void loop() {
         if (digitalRead(PIN_DT) == HIGH) {
           emitForward();  // CW
         } else {
-          emitBackward();  // CCW → Left / backward (not password)
+          emitBackward();  // CCW
         }
       }
     }

@@ -6,18 +6,18 @@ Pigeon (Tk) already listens in `pigeonSystem/pigeon_0_8.py`:
 
 | Key | Handler | Effect in main settings |
 |-----|---------|-------------------------|
-| Left / Right | `on_arrow_remote` | `main_settings_widget.navigate(...)` |
-| Space | `on_space_play` | `main_settings_widget.activate()` |
+| Left / Right | `on_arrow_remote` / rotary callback | `main_settings_widget.navigate(...)` |
+| Space | `on_space_play` / rotary callback | `main_settings_widget.activate()` |
 
 There is **no** `keyPressEvent` — that is a Qt API; this project does not use it.
 
 ## Map
 
 - Clockwise → **Right** (forward)
-- Counter-clockwise → **Left** (backward / previous — not Wi‑Fi “password”)
+- Counter-clockwise → **Left** (backward / previous)
 - Click → **Space** (activate)
 
-If direction feels reversed, swap CLK/DT wires or invert the DT check in the sketch.
+If direction feels reversed, swap CLK/DT wires or set `PIGEON_ROTARY_INVERT=1` on the host.
 
 ## Transport modes
 
@@ -26,7 +26,13 @@ If direction feels reversed, swap CLK/DT wires or invert the DT check in the ske
 | Board class | Transport | Host |
 |-------------|-----------|------|
 | Leonardo, Pro Micro, Pico, ESP32-S2/S3, … | USB **HID Keyboard** | Built-in key binds only |
-| **Arduino UNO Q** (“Arduino Q”), classic Uno UART USB, … | USB **Serial** lines `RIGHT` / `LEFT` / `PUSH` (aliases: `CW`/`CCW`/`PRESS`) | `pigeon.rotary_serial` drives navigate/activate (or synthesizes keys) |
+| **Arduino UNO Q** (“Arduino Q”), classic Uno UART USB, … | USB **Serial** lines `RIGHT` / `LEFT` / `PUSH` | `pigeon.rotary_serial` drives navigate/activate |
+
+### Arduino UNO Q — use `Monitor`, not `Serial`
+
+On UNO Q, `Serial` is the **UART on pins D0/D1**. It does **not** reach the Raspberry Pi over USB-C.
+
+USB-C / Serial Monitor traffic must use `Monitor` from **Arduino_RouterBridge**. The sketch selects `Monitor` automatically when that library is installed. If you flash without the library, the Pi will never see encoder lines.
 
 ### Fix for `'Keyboard' was not declared`
 
@@ -40,12 +46,13 @@ That error means **Tools → Board** is a non-HID board. Either:
 1. Boards Manager: install **Arduino UNO Q Zephyr Core** / Zephyr Boards.  
    If missing, add Additional Boards Manager URL:  
    `https://downloads.arduino.cc/packages/package_zephyr_index.json`
-2. Library Manager: install **Arduino_RouterBridge** (and prompted deps). On Zephyr core ≥ 0.55, `Serial` is the USB-C bridge monitor.
+2. Library Manager: install **Arduino_RouterBridge** (and prompted deps).
 3. **Tools → Board → Arduino UNO Q**, select the USB-C port, upload `rotary_hid.ino`.
 4. Plug the board into the **Raspberry Pi** (or host running Pigeon).
 5. Optional: `export PIGEON_ROTARY_PORT=/dev/ttyACM0` if autodetect misses the port.  
    Disable bridge: `PIGEON_ROTARY_SERIAL=0`.  
-   On Pi, `pip install pyserial` is recommended (`requirements-pi.txt`).
+   On Pi, `pip install pyserial` is recommended (`requirements-pi.txt`).  
+   User must be in the `dialout` group: `sudo usermod -aG dialout $USER` (then re-login).
 
 ## Wiring (defaults in `rotary_hid.ino`)
 
@@ -68,14 +75,13 @@ Change `PIN_CLK` / `PIN_DT` / `PIN_SW` in the sketch if your wiring differs. On 
 
 ## Verify
 
-1. Start Pigeon on the host.
-2. Open main settings (Tab).
-3. Twist the encoder — focus should move Left/Right.
-4. Click — activate the focused control.
-
-For serial mode, stderr / `~/.pigeon_0_6/pigeon.log` should show  
-`pigeon: rotary_serial: connected …` when the port is claimed.
+1. In Arduino Serial Monitor (USB-C to a laptop), twisting should print `RIGHT` / `LEFT` / `PUSH`.  
+   If you see nothing, the sketch is still using UART `Serial` — install RouterBridge and reflash.
+2. Start Pigeon on the Pi (update to a build that includes this sketch’s host side).
+3. Twist or click — Pigeon opens main settings if needed and navigates.
+4. Log line in stderr / `~/.pigeon_0_6/pigeon.log`:  
+   `pigeon: rotary_serial: connected …`
 
 ## Later: audio on the same Arduino
 
-Keep HID keys (or serial LEFT/RIGHT/PUSH) for the encoder. When you add audio / meters, prefer a second Serial channel or tagged telemetry lines so navigation stays on the existing key path.
+Keep HID keys (or serial LEFT/RIGHT/PUSH) for the encoder. When you add audio / meters, prefer a second channel or tagged telemetry lines so navigation stays on the existing key path.
