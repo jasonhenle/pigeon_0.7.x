@@ -1,5 +1,6 @@
 import argparse
 import os
+import queue
 import re
 import sys
 import threading
@@ -8083,38 +8084,99 @@ def main() -> int:
                 st.update_changelog = f"Downloading {remote}…"
                 main_settings_widget.invalidate()
                 skip_cache = None
-                _ms_progress_lock = threading.Lock()
+                # Worker never calls root.after — Tk is not thread-safe and flooding
+                # after() from download progress can drop the final restart callback.
+                _ms_events: queue.Queue = queue.Queue()
                 _ms_progress_last = [0.0]
                 _ms_progress_label = [""]
+                _ms_poll_active = [True]
 
                 def _ms_on_progress(fraction: float, label: str) -> None:
-                    """Marshal progress onto the Tk thread (throttled)."""
                     frac = max(0.0, min(1.0, float(fraction)))
                     lab = str(label or "Updating…")[:96]
-                    with _ms_progress_lock:
-                        # Refresh at least every 2% or when the stage label changes.
-                        if (
-                            frac < 0.999
-                            and frac - _ms_progress_last[0] < 0.02
-                            and lab == _ms_progress_label[0]
-                        ):
-                            return
-                        _ms_progress_last[0] = frac
-                        _ms_progress_label[0] = lab
+                    if (
+                        frac < 0.999
+                        and frac - _ms_progress_last[0] < 0.02
+                        and lab == _ms_progress_label[0]
+                    ):
+                        return
+                    _ms_progress_last[0] = frac
+                    _ms_progress_label[0] = lab
+                    _ms_events.put(("progress", frac, lab))
 
-                    def _apply_progress() -> None:
-                        nonlocal skip_cache
-                        if main_settings_widget is None or not st.update_applying:
+                def _ms_poll_events() -> None:
+                    nonlocal skip_cache
+                    if main_settings_widget is None:
+                        return
+                    done_payload = None
+                    try:
+                        while True:
+                            kind, *payload = _ms_events.get_nowait()
+                            if kind == "progress":
+                                frac, lab = payload
+                                if st.update_applying:
+                                    st.update_progress = float(frac)
+                                    st.update_changelog = str(lab)
+                                    main_settings_widget.invalidate()
+                                    skip_cache = None
+                            elif kind == "done":
+                                done_payload = payload[0]
+                    except queue.Empty:
+                        pass
+                    if done_payload is not None:
+                        _ms_poll_active[0] = False
+                        result, install_root = done_payload
+                        if result.ok:
+                            st.update_progress = 1.0
+                            st.update_changelog = "Update complete — restarting…"
+                            st.update_available = False
+                            try:
+                                update_check_state["update_available"] = False
+                                if result.remote_version:
+                                    update_check_state["remote_version"] = (
+                                        result.remote_version
+                                    )
+                                _sync_update_button_style()
+                            except Exception:
+                                pass
+                            main_settings_widget.invalidate()
+                            skip_cache = None
+
+                            def _restart_ms() -> None:
+                                try:
+                                    # Linux curl|bash updater already schedules
+                                    # in-app relaunch (PIGEON_UPDATE_IN_APP=1). On
+                                    # macOS/desktop we must schedule it here.
+                                    if not sys.platform.startswith("linux"):
+                                        from pigeon.github_update import (
+                                            restart_pigeon_after_update,
+                                        )
+
+                                        restart_pigeon_after_update(
+                                            install_root, parent_pid=os.getpid()
+                                        )
+                                except Exception:
+                                    pass
+                                # Exit unconditionally — do not wait on root.destroy().
+                                os._exit(0)
+
+                            root.after(400, _restart_ms)
                             return
-                        st.update_progress = frac
-                        st.update_changelog = lab
+
+                        st.update_applying = False
+                        st.update_progress = 0.0
+                        st.update_error = result.message
+                        st.update_changelog = (result.message or "Update failed.")[:96]
                         main_settings_widget.invalidate()
                         skip_cache = None
-
-                    try:
-                        root.after(0, _apply_progress)
-                    except Exception:
-                        pass
+                        messagebox.showerror(
+                            "Update failed",
+                            result.message,
+                            parent=root,
+                        )
+                        return
+                    if _ms_poll_active[0]:
+                        root.after(50, _ms_poll_events)
 
                 def worker_ms_apply() -> None:
                     install_root = _resolve_install_root_for_update()
@@ -8135,55 +8197,9 @@ def main() -> int:
                         from pigeon.github_update import ApplyUpdateResult
 
                         result = ApplyUpdateResult(False, str(e))
+                    _ms_events.put(("done", (result, install_root)))
 
-                    def finish_ms_apply() -> None:
-                        nonlocal skip_cache
-                        if result.ok:
-                            st.update_progress = 1.0
-                            st.update_changelog = "Update complete — restarting…"
-                            st.update_available = False
-                            try:
-                                update_check_state["update_available"] = False
-                                if result.remote_version:
-                                    update_check_state["remote_version"] = result.remote_version
-                                _sync_update_button_style()
-                            except Exception:
-                                pass
-                            main_settings_widget.invalidate()
-                            skip_cache = None
-
-                            def _restart_ms() -> None:
-                                try:
-                                    from pigeon.github_update import restart_pigeon_after_update
-
-                                    restart_pigeon_after_update(
-                                        install_root, parent_pid=os.getpid()
-                                    )
-                                except Exception:
-                                    pass
-                                try:
-                                    root.destroy()
-                                except tk.TclError:
-                                    pass
-                                os._exit(0)
-
-                            root.after(400, _restart_ms)
-                            return
-
-                        st.update_applying = False
-                        st.update_progress = 0.0
-                        st.update_error = result.message
-                        st.update_changelog = (result.message or "Update failed.")[:96]
-                        main_settings_widget.invalidate()
-                        skip_cache = None
-                        messagebox.showerror(
-                            "Update failed",
-                            result.message,
-                            parent=root,
-                        )
-
-                    root.after(0, finish_ms_apply)
-
+                root.after(50, _ms_poll_events)
                 threading.Thread(target=worker_ms_apply, daemon=True).start()
                 return
 
@@ -8295,19 +8311,53 @@ def main() -> int:
                 skip_cache = None
                 return
 
+            if action == "location_switch:busy":
+                return
+
             if action == "location_switch":
-                _apply_persisted_location_to_runtime()
+                if st.location_switching:
+                    return
+                st.begin_location_switching()
                 try:
-                    st.load_saved_box_devices()
-                    st.location_name = read_current_location_name()
-                except Exception:
-                    pass
-                try:
-                    st.refresh_location_slots()
+                    main_settings_widget._ensure_location_switch_spinner_frames()
                 except Exception:
                     pass
                 main_settings_widget.invalidate()
                 skip_cache = None
+
+                def _finish_location_switch() -> None:
+                    nonlocal skip_cache
+                    if main_settings_widget is None:
+                        return
+                    st_fin = main_settings_widget.state
+                    # Keep spinner up until pairing LED credential check settles.
+                    if pair_led_busy.get("active"):
+                        root.after(100, _finish_location_switch)
+                        return
+                    st_fin.finish_location_switching()
+                    main_settings_widget.invalidate()
+                    skip_cache = None
+
+                def _run_location_switch() -> None:
+                    nonlocal skip_cache
+                    try:
+                        _apply_persisted_location_to_runtime()
+                        try:
+                            st.load_saved_box_devices()
+                            st.location_name = read_current_location_name()
+                        except Exception:
+                            pass
+                        try:
+                            st.refresh_location_slots()
+                        except Exception:
+                            pass
+                    finally:
+                        main_settings_widget.invalidate()
+                        skip_cache = None
+                        root.after(0, _finish_location_switch)
+
+                # Yield so the UI can paint; spinner appears if reload exceeds ~2s.
+                root.after(0, _run_location_switch)
                 return
 
             if action == "box3_pair_start":
@@ -11265,11 +11315,54 @@ def main() -> int:
         for _pigeon_act in ("<Button-1>", "<B1-Motion>", "<KeyPress>"):
             root.bind_all(_pigeon_act, _bump_pigeon_user_activity, add="+")
 
-        # Serial rotary (Arduino UNO Q / non-HID): LEFT/RIGHT/PRESS → same Tk keys as HID.
+        # Serial rotary (Arduino UNO Q / non-HID): CW/CCW/PUSH → navigate / activate.
+        # Prefer a direct callback so settings work even when Tk focus is elsewhere.
+        def _on_rotary_action(action: str) -> None:
+            nonlocal skip_cache, dev_phase
+            if (
+                dev_phase == DevPhase.MAIN_SETTINGS
+                and main_settings_widget is not None
+            ):
+                if action == "forward":
+                    main_settings_widget.navigate(forward=True)
+                    skip_cache = None
+                    render_once()
+                    return
+                if action == "backward":
+                    main_settings_widget.navigate(forward=False)
+                    skip_cache = None
+                    render_once()
+                    return
+                if action == "activate":
+                    ms_action = main_settings_widget.activate()
+                    if ms_action == "exit":
+                        dev_phase = DevPhase.OFF
+                        skip_cache = None
+                        sync_developer_chrome()
+                        render_once()
+                    else:
+                        _handle_main_settings_action(ms_action)
+                        skip_cache = None
+                        render_once()
+                    return
+            # Outside main settings: synthesize the same keys HID boards emit.
+            try:
+                from pigeon.rotary_serial import inject_keysym
+
+                keysym = {
+                    "forward": "Right",
+                    "backward": "Left",
+                    "activate": "space",
+                }.get(action)
+                if keysym:
+                    inject_keysym(root, keysym)
+            except Exception:
+                pass
+
         try:
             from pigeon.rotary_serial import start_rotary_serial_listener
 
-            start_rotary_serial_listener(root)
+            start_rotary_serial_listener(root, on_action=_on_rotary_action)
         except Exception as _rotary_exc:
             sys.stderr.write(f"pigeon: rotary_serial: not started: {_rotary_exc}\n")
             sys.stderr.flush()
@@ -11351,6 +11444,7 @@ def main() -> int:
                         or main_settings_widget.state.wifi_connecting
                         or main_settings_widget.state.box2_devices.scanning
                         or main_settings_widget.state.box3_devices.scanning
+                        or main_settings_widget.state.location_switching
                     )
                 ):
                     return 50 if sys.platform.startswith("linux") else 16
@@ -11434,6 +11528,7 @@ def main() -> int:
                             or st_ms.wifi_connecting
                             or st_ms.box2_devices.scanning
                             or st_ms.box3_devices.scanning
+                            or st_ms.location_switching
                         )
                     if (
                         no_anim

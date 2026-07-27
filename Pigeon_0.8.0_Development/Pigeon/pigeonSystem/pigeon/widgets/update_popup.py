@@ -201,8 +201,10 @@ def _apply_choice_chrome(
                 if node.tag.endswith("rect") or node is btn:
                     if node.tag.endswith("rect") or node.tag.endswith("path"):
                         _set_paint(node, fill=fill, stroke=fill)
-        # Text: white on black (deselected), black on white (selected).
-        _apply_contrast_paint(text, selected=selected, theme=theme)
+        # Text: grey on black (deselected), black on white (selected).
+        _apply_contrast_paint(
+            text, selected=selected, theme=theme, muted_deselected=True
+        )
         if accent is not None:
             # Focus ring: black when selected, white when deselected (matches dual-buttons).
             stroke = theme.deselected if selected else theme.selected

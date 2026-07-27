@@ -81,9 +81,9 @@ _ARTWORK_BG_BLUR_SIGMA = 6.0
 
 # Red accent fills (volume pie + progress pie + elapsed bar): normal alpha so blur shows through.
 _ACCENT_OPACITY = 0.70
-# Chrome outline on accent pies / elapsed bar (2px, half-transparent).
+# Ellipse / rounded-rect outlines: keep a faint edge, mostly blur showing through.
 _ACCENT_STROKE_PX = 2
-_ACCENT_STROKE_OPACITY = 0.50
+_ACCENT_STROKE_OPACITY = 0.12
 # Grey unplayed track / volume headroom: mostly see-through over artwork.
 _CHROME_FILL_OPACITY = 0.12
 # Dark inner discs (clock / volume centers): translucent so blur reads through.
@@ -1338,7 +1338,7 @@ class ViewCirclesWidget:
             if x0 < x1 and y0 < y1:
                 under = np.zeros((eh, ew, out.shape[2]), dtype=out.dtype)
                 under[y0 - bar_y : y1 - bar_y, x0 - bar_x : x1 - bar_x] = out[y0:y1, x0:x1]
-        # Fixed remaining (full bar, grey) with full perimeter stroke.
+        # Fixed remaining (full bar, grey) with faint perimeter stroke over blur.
         _draw_rounded_bar_bgra(
             out,
             x=_BAR_L,
@@ -1348,8 +1348,9 @@ class ViewCirclesWidget:
             fill_bgr=_COLOR_UNPLAYED_BGR,
             radius=_BAR_RX,
             stroke_bgr=_COLOR_CHROME_BGR,
-            stroke=2,
+            stroke=_ACCENT_STROKE_PX,
             fill_opacity=_CHROME_FILL_OPACITY,
+            stroke_opacity=_ACCENT_STROKE_OPACITY,
         )
         if elapsed_w > 0:
             if under is not None:

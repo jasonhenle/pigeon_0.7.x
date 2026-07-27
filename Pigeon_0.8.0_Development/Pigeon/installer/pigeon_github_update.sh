@@ -52,12 +52,18 @@ schedule_in_app_relaunch() {
     return 0
   fi
   log "scheduling in-app relaunch via ${relaunch}"
+  # Wait for the in-app parent to exit, but never hang forever if it stalls.
   nohup bash -c '
     parent="$1"
     launcher="$2"
     if [[ -n "${parent}" && "${parent}" != "0" ]]; then
+      waited=0
       while kill -0 "${parent}" 2>/dev/null; do
         sleep 0.25
+        waited=$((waited + 1))
+        if [[ "${waited}" -ge 120 ]]; then
+          break
+        fi
       done
       sleep 1
     else
@@ -161,11 +167,8 @@ echo ""
 echo "Pigeon ${VER} installed."
 
 if [[ "${PIGEON_UPDATE_IN_APP:-}" == "1" ]]; then
-  if command -v systemctl >/dev/null 2>&1; then
-    sudo -n systemctl stop pigeon.service 2>/dev/null \
-      || systemctl stop pigeon.service 2>/dev/null \
-      || true
-  fi
+  # Do not systemctl-stop here: that can kill this updater before relaunch is
+  # scheduled, and sudoers typically allows restart but not stop.
   schedule_in_app_relaunch
   log "in-app update — Pigeon 0.8 will start after the current app exits"
   echo "Restarting Pigeon…"

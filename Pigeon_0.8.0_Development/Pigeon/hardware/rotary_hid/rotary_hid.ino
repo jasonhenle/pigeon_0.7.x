@@ -3,8 +3,8 @@
 
   Intended map (matches pigeon_0_8.py hotkeys):
     CW   → forward  (Right / serial RIGHT)
-    CCW  → backward (Left  / serial LEFT)   — not a "password" action
-    click → activate (Space / serial PRESS)
+    CCW  → backward (Left  / serial LEFT)
+    PUSH → activate (Space / serial PRESS; host also accepts PUSH)
 
   Two transport modes (picked at compile time):
 
@@ -13,8 +13,8 @@
 
   2) USB Serial line protocol — Arduino UNO Q (STM32 MCU / Zephyr) and
      other boards without Keyboard HID.
-     Emits lines: RIGHT / LEFT / PRESS (+ PIGEON_CONTROLLER_READY).
-     Host: pigeon.rotary_serial in pigeon_0_8.py synthesizes the same keys.
+     Emits lines: RIGHT / LEFT / PUSH (+ PIGEON_CONTROLLER_READY).
+     Host: pigeon.rotary_serial maps those to navigate / activate.
 
   Arduino UNO Q ("Arduino Q"):
     Tools → Board → Arduino UNO Q (Arduino UNO Q Zephyr Core / Zephyr Boards).
@@ -35,32 +35,32 @@
 
 // --- Transport selection ----------------------------------------------------
 #if defined(PIGEON_FORCE_SERIAL)
-  #define PIGEON_USE_SERIAL 1
+#define PIGEON_USE_SERIAL 1
 #elif defined(PIGEON_FORCE_HID)
-  #define PIGEON_USE_SERIAL 0
+#define PIGEON_USE_SERIAL 0
 #elif defined(ARDUINO_ARCH_ESP32)
-  #define PIGEON_USE_SERIAL 0
+#define PIGEON_USE_SERIAL 0
 #elif defined(USBCON) || defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_MBED)
-  #define PIGEON_USE_SERIAL 0
+#define PIGEON_USE_SERIAL 0
 #else
-  // UNO Q (Zephyr), classic Uno/Nano/Mega UART USB, etc.
-  #define PIGEON_USE_SERIAL 1
+// UNO Q (Zephyr), classic Uno/Nano/Mega UART USB, etc.
+#define PIGEON_USE_SERIAL 1
 #endif
 
 #if !PIGEON_USE_SERIAL
-  #if defined(ARDUINO_ARCH_ESP32)
-    #include "USB.h"
-    #include "USBHIDKeyboard.h"
-    static USBHIDKeyboard Keyboard;
-    #ifndef KEY_LEFT_ARROW
-      #define KEY_LEFT_ARROW 0xD8
-    #endif
-    #ifndef KEY_RIGHT_ARROW
-      #define KEY_RIGHT_ARROW 0xD7
-    #endif
-  #else
-    #include <Keyboard.h>
-  #endif
+#if defined(ARDUINO_ARCH_ESP32)
+#include "USB.h"
+#include "USBHIDKeyboard.h"
+static USBHIDKeyboard Keyboard;
+#ifndef KEY_LEFT_ARROW
+#define KEY_LEFT_ARROW 0xD8
+#endif
+#ifndef KEY_RIGHT_ARROW
+#define KEY_RIGHT_ARROW 0xD7
+#endif
+#else
+#include <Keyboard.h>
+#endif
 #endif
 
 // --- Pins (change to match your wiring) ---
@@ -111,7 +111,8 @@ static void emitBackward() {
 
 static void emitActivate() {
 #if PIGEON_USE_SERIAL
-  Serial.println(F("PRESS"));
+  // Host accepts PRESS and PUSH (and SELECT / CLICK / SPACE).
+  Serial.println(F("PUSH"));
 #else
   tapKey(' ');
 #endif
@@ -133,9 +134,9 @@ void setup() {
   delay(100);
   Serial.println(F("PIGEON_CONTROLLER_READY"));
 #else
-  #if defined(ARDUINO_ARCH_ESP32)
-    USB.begin();
-  #endif
+#if defined(ARDUINO_ARCH_ESP32)
+  USB.begin();
+#endif
   Keyboard.begin();
   // Optional later: Serial.begin(115200) for audio / telemetry on the same USB device.
 #endif
@@ -152,7 +153,7 @@ void loop() {
       if ((now - lastTurnMs) >= TURN_COOLDOWN_MS) {
         lastTurnMs = now;
         if (digitalRead(PIN_DT) == HIGH) {
-          emitForward();   // CW
+          emitForward();  // CW
         } else {
           emitBackward();  // CCW → Left / backward (not password)
         }
