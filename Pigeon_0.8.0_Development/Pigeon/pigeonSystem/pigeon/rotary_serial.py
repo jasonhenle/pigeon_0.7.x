@@ -298,6 +298,7 @@ def _read_loop(
     invert: bool,
 ) -> None:
     ignored = 0
+    logged_ok = 0
     while not stop.is_set():
         try:
             raw = ser.readline()
@@ -317,6 +318,9 @@ def _read_loop(
             continue
         if invert and action in ("forward", "backward"):
             action = "backward" if action == "forward" else "forward"
+        if logged_ok < 8:
+            _stderr(f"pigeon: rotary_serial: {line!r} → {action}")
+            logged_ok += 1
         try:
             root.after(
                 0,

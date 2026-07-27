@@ -11317,47 +11317,70 @@ def main() -> int:
 
         # Serial rotary (Arduino UNO Q / non-HID): CW/CCW/PUSH → navigate / activate.
         # Prefer a direct callback so settings work even when Tk focus is elsewhere.
-        def _on_rotary_action(action: str) -> None:
+        def _enter_main_settings_for_rotary() -> bool:
+            """Bring up main settings so the encoder can drive the new menus."""
             nonlocal skip_cache, dev_phase
-            if (
-                dev_phase == DevPhase.MAIN_SETTINGS
-                and main_settings_widget is not None
-            ):
-                if action == "forward":
-                    main_settings_widget.navigate(forward=True)
-                    skip_cache = None
-                    render_once()
-                    return
-                if action == "backward":
-                    main_settings_widget.navigate(forward=False)
-                    skip_cache = None
-                    render_once()
-                    return
-                if action == "activate":
-                    ms_action = main_settings_widget.activate()
-                    if ms_action == "exit":
-                        dev_phase = DevPhase.OFF
-                        skip_cache = None
-                        sync_developer_chrome()
-                        render_once()
-                    else:
-                        _handle_main_settings_action(ms_action)
-                        skip_cache = None
-                        render_once()
-                    return
-            # Outside main settings: synthesize the same keys HID boards emit.
+            if main_settings_widget is None:
+                return False
+            if dev_phase == DevPhase.MAIN_SETTINGS:
+                return True
             try:
-                from pigeon.rotary_serial import inject_keysym
-
-                keysym = {
-                    "forward": "Right",
-                    "backward": "Left",
-                    "activate": "space",
-                }.get(action)
-                if keysym:
-                    inject_keysym(root, keysym)
+                if main_settings_widget.state.keyboard_open:
+                    main_settings_widget.state.close_keyboard(commit=False)
+                    main_settings_widget.invalidate()
             except Exception:
                 pass
+            dev_phase = DevPhase.MAIN_SETTINGS
+            try:
+                main_settings_widget.prefetch_scans_for_settings()
+            except Exception:
+                pass
+            skip_cache = None
+            sync_developer_chrome()
+            render_once()
+            return True
+
+        def _on_rotary_action(action: str) -> None:
+            nonlocal skip_cache, dev_phase
+            was_main = dev_phase == DevPhase.MAIN_SETTINGS
+            if not _enter_main_settings_for_rotary():
+                try:
+                    from pigeon.rotary_serial import inject_keysym
+
+                    keysym = {
+                        "forward": "Right",
+                        "backward": "Left",
+                        "activate": "space",
+                    }.get(action)
+                    if keysym:
+                        inject_keysym(root, keysym)
+                except Exception:
+                    pass
+                return
+            # First click that opens settings should not also activate a control.
+            if action == "activate" and not was_main:
+                return
+            if action == "forward":
+                main_settings_widget.navigate(forward=True)
+                skip_cache = None
+                render_once()
+                return
+            if action == "backward":
+                main_settings_widget.navigate(forward=False)
+                skip_cache = None
+                render_once()
+                return
+            if action == "activate":
+                ms_action = main_settings_widget.activate()
+                if ms_action == "exit":
+                    dev_phase = DevPhase.OFF
+                    skip_cache = None
+                    sync_developer_chrome()
+                    render_once()
+                else:
+                    _handle_main_settings_action(ms_action)
+                    skip_cache = None
+                    render_once()
 
         try:
             from pigeon.rotary_serial import start_rotary_serial_listener
