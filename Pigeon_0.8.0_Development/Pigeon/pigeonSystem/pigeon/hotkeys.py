@@ -39,8 +39,9 @@ PIGEON_HOTKEY_ROWS: list[tuple[str, str]] = [
     ),
     (
         "Rotary encoder (USB)",
-        "CW=Right (forward), CCW=Left (backward), click=Space (activate). "
-        "HID boards emit keys directly; Arduino UNO Q uses serial LEFT/RIGHT/PRESS via pigeon.rotary_serial.",
+        "CW=Right (forward), CCW=Left (backward), PUSH=Space (activate). "
+        "HID boards emit keys directly; Arduino UNO Q uses serial RIGHT/LEFT/PUSH "
+        "(aliases CW/CCW/PRESS) via pigeon.rotary_serial.",
     ),
     ("S", "Toggle scene on/off (only while grid overlay is visible: key 5 or developer grid)"),
     (

@@ -556,6 +556,7 @@ def apply_keyboard_selection(
     theme: SettingsTheme,
     button_ids: set[str],
     icon_ids_by_button: dict[str, tuple[str, ...]] | None = None,
+    muted_deselected: bool = False,
 ) -> None:
     """Recolor every known button; contrast paint on paired icons/text."""
     from pigeon.widgets.main_settings import _iter_style_fill_stroke, _set_paint
@@ -564,6 +565,7 @@ def apply_keyboard_selection(
     fill_ok = set(_BUTTON_FILL_CANDIDATES) | _KB_BUTTON_EXTRA | {
         theme.selected.lower(),
         theme.deselected.lower(),
+        theme.inactive.lower(),
         "#ffffff",
         "#fff",
     }
@@ -614,7 +616,12 @@ def apply_keyboard_selection(
             seen_icons.add(icon_logical)
             icon_el = _find_by_logical_id(root, icon_logical)
             if icon_el is not None:
-                _apply_contrast_paint(icon_el, selected=selected, theme=theme)
+                _apply_contrast_paint(
+                    icon_el,
+                    selected=selected,
+                    theme=theme,
+                    muted_deselected=muted_deselected,
+                )
 
         # Grouped layouts (PIN / numeric): icon is a sibling under the same parent.
         expected_icons = seen_icons
@@ -623,7 +630,12 @@ def apply_keyboard_selection(
             for child in parent:
                 cid = _normalize_logical(child.get("id") or "")
                 if cid in expected_icons:
-                    _apply_contrast_paint(child, selected=selected, theme=theme)
+                    _apply_contrast_paint(
+                        child,
+                        selected=selected,
+                        theme=theme,
+                        muted_deselected=muted_deselected,
+                    )
 
 
 def _bottom_row_icons(root: ET.Element, group_logical: str, *icon_logicals: str) -> list[ET.Element]:
@@ -1002,6 +1014,7 @@ def _rasterize_keyboard_chars(
         theme=state.theme,
         button_ids=button_ids,
         icon_ids_by_button=icon_map,
+        muted_deselected=(state.mode == KeyboardMode.YES_NO),
     )
 
     # Compact cropped pads (PIN / yes-no). IP uses the full 800×480 artboard

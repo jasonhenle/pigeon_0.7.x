@@ -26,7 +26,7 @@ If direction feels reversed, swap CLK/DT wires or invert the DT check in the ske
 | Board class | Transport | Host |
 |-------------|-----------|------|
 | Leonardo, Pro Micro, Pico, ESP32-S2/S3, … | USB **HID Keyboard** | Built-in key binds only |
-| **Arduino UNO Q** (“Arduino Q”), classic Uno UART USB, … | USB **Serial** lines `RIGHT` / `LEFT` / `PRESS` | `pigeon.rotary_serial` synthesizes the same keys |
+| **Arduino UNO Q** (“Arduino Q”), classic Uno UART USB, … | USB **Serial** lines `RIGHT` / `LEFT` / `PUSH` (aliases: `CW`/`CCW`/`PRESS`) | `pigeon.rotary_serial` drives navigate/activate (or synthesizes keys) |
 
 ### Fix for `'Keyboard' was not declared`
 
@@ -78,4 +78,4 @@ For serial mode, stderr / `~/.pigeon_0_6/pigeon.log` should show
 
 ## Later: audio on the same Arduino
 
-Keep HID keys (or serial LEFT/RIGHT/PRESS) for the encoder. When you add audio / meters, prefer a second Serial channel or tagged telemetry lines so navigation stays on the existing key path.
+Keep HID keys (or serial LEFT/RIGHT/PUSH) for the encoder. When you add audio / meters, prefer a second Serial channel or tagged telemetry lines so navigation stays on the existing key path.

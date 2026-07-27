@@ -215,6 +215,9 @@ _WIFI_SCAN_MAX_DURATION_S = 55.0
 _WIFI_SCAN_ROTATION_DPS = 720.0
 _WIFI_SCAN_CACHE_TTL_S = 120.0
 _BOX_SCAN_CACHE_TTL_S = 120.0
+# Location switch: show centered search spinner only if reload takes this long.
+_LOCATION_SWITCH_SPINNER_DELAY_S = 2.0
+_LOCATION_SWITCH_ROTATION_DPS = _WIFI_SCAN_ROTATION_DPS
 _DUAL_LOCATION_TEXT_X0_SVG = 82.0
 _DUAL_LOCATION_TEXT_X1_SVG = 395.0
 _DUAL_NETWORK_TEXT_X0_SVG = 417.0
@@ -350,11 +353,13 @@ _CONTRAST_SWAP_CANDIDATES = frozenset(
     {
         COLOR_SELECTED.lower(),
         COLOR_DESELECTED.lower(),
+        COLOR_INACTIVE.lower(),
         COLOR_LEGACY_GREEN.lower(),
         "#ffffff",
         "#000013",
         "#000000",
         "#202020",
+        "#404040",
         "white",
         "black",
     }
@@ -444,6 +449,10 @@ class MainSettingsState:
     location_slots: tuple[tuple[str, str], ...] = ()
     renaming_location_id: str = ""
     renaming_location_slot: int = 0  # 1–3 while keyboard is open for a slot
+    # True while applying a location change (devices / LEDs / runtime reload).
+    location_switching: bool = False
+    location_switch_started_mono: float = 0.0
+    location_switch_angle_deg: float = 0.0
     box2_devices: BoxDevicePanelState = field(default_factory=BoxDevicePanelState)
     box3_devices: BoxDevicePanelState = field(default_factory=BoxDevicePanelState)
     box_pairing: BoxPairingSession | None = None
@@ -696,6 +705,8 @@ class MainSettingsState:
 
     def select_location_slot(self, box_num: int) -> bool:
         """Make the nest in ``box_num`` the active location (dual-location picker)."""
+        if self.location_switching:
+            return False
         slot = self.location_slot(box_num)
         if slot is None:
             self.refresh_location_slots()
@@ -718,6 +729,23 @@ class MainSettingsState:
         except Exception:
             pass
         return True
+
+    def begin_location_switching(self) -> None:
+        """Mark a location reload in progress (spinner appears after a short delay)."""
+        self.location_switching = True
+        self.location_switch_started_mono = time.monotonic()
+        self.location_switch_angle_deg = 0.0
+
+    def finish_location_switching(self) -> None:
+        self.location_switching = False
+        self.location_switch_angle_deg = 0.0
+
+    def location_switch_spinner_visible(self) -> bool:
+        if not self.location_switching:
+            return False
+        return (time.monotonic() - float(self.location_switch_started_mono)) >= float(
+            _LOCATION_SWITCH_SPINNER_DELAY_S
+        )
 
     def begin_rename_current_location(self) -> bool:
         """Prepare rename keyboard for the currently active location."""
@@ -2158,11 +2186,26 @@ def _apply_direct_glyph_contrast(
             _set_paint(node, stroke=color)
 
 
-def _apply_contrast_paint(group: ET.Element | None, *, selected: bool, theme: SettingsTheme) -> None:
-    """Contrasting text/icons on buttons (white on black, black on white). Leaves accent alone."""
+def _apply_contrast_paint(
+    group: ET.Element | None,
+    *,
+    selected: bool,
+    theme: SettingsTheme,
+    muted_deselected: bool = False,
+) -> None:
+    """Contrasting text/icons on buttons (white on black, black on white). Leaves accent alone.
+
+    When ``muted_deselected`` is True (binary yes/no / later/now choices), deselected
+    labels use grey (``theme.inactive``) on the black button instead of white.
+    """
     if group is None:
         return
-    contrast = theme.deselected if selected else theme.selected
+    if selected:
+        contrast = theme.deselected
+    elif muted_deselected:
+        contrast = theme.inactive
+    else:
+        contrast = theme.selected
     for node in group.iter():
         nid = _normalize_logical(node.get("id") or "")
         if nid.endswith("_accent") or "_accent_" in nid:
@@ -5270,6 +5313,8 @@ class MainSettingsWidget:
         self._box_scan_cache: dict[int, tuple[tuple[tuple[str, str], ...], tuple[dict[str, str], ...], float]] = {}
         self._box_search_glyph_cache: dict[int, np.ndarray | None] = {}
         self._wifi_search_rotated_cache: tuple[np.ndarray, ...] | None = None
+        self._location_switch_spinner_frames: tuple[np.ndarray, ...] | None = None
+        self._location_switch_spinner_tried = False
         self._box_search_rotated_cache: dict[int, tuple[np.ndarray, ...]] = {}
         self._box_scan_pending: set[int] = set()
         self._wifi_prefetch_inflight: bool = False
@@ -5331,6 +5376,9 @@ class MainSettingsWidget:
             round(float(self._state.box3_devices.scan_angle_deg), 0)
             if self._state.box3_devices.scanning
             else 0,
+            round(float(self._state.location_switch_angle_deg), 0)
+            if self._state.location_switch_spinner_visible()
+            else 0,
             # Drive caret blink without forcing a full redraw every wake.
             int(time.monotonic() * 2) % 2 if kb_open else 0,
             1 if kb_open else 0,
@@ -5385,6 +5433,11 @@ class MainSettingsWidget:
             bool(st.show_box2_panel),
             bool(st.show_box3_panel),
             bool(st.show_location_picker),
+            bool(st.location_switching),
+            bool(st.location_switch_spinner_visible()),
+            round(float(st.location_switch_angle_deg) / 10.0)
+            if st.location_switch_spinner_visible()
+            else -1,
             bool(st.show_pigeon_settings),
             bool(st.show_update_popup),
             bool(st.update_available),
@@ -5519,6 +5572,11 @@ class MainSettingsWidget:
             bool(st.show_box2_panel),
             bool(st.show_box3_panel),
             bool(st.show_location_picker),
+            bool(st.location_switching),
+            bool(st.location_switch_spinner_visible()),
+            round(float(st.location_switch_angle_deg) / 10.0)
+            if st.location_switch_spinner_visible()
+            else -1,
             tuple(st.location_slots),
             str(st.renaming_location_id),
             int(st.renaming_location_slot),
@@ -5611,6 +5669,11 @@ class MainSettingsWidget:
             bool(st.show_box2_panel),
             bool(st.show_box3_panel),
             bool(st.show_location_picker),
+            bool(st.location_switching),
+            bool(st.location_switch_spinner_visible()),
+            round(float(st.location_switch_angle_deg) / 10.0)
+            if st.location_switch_spinner_visible()
+            else -1,
             tuple(st.location_slots),
             str(st.renaming_location_id),
             int(st.renaming_location_slot),
@@ -6189,7 +6252,7 @@ class MainSettingsWidget:
         return bool(self._state.box2_devices.scanning or self._state.box3_devices.scanning)
 
     def tick(self) -> None:
-        """Advance WiFi/box scan animations; complete when platform scan returns."""
+        """Advance WiFi/box/location-switch animations; complete when platform scan returns."""
         st = self._state
         now = time.monotonic()
         dt = max(0.0, now - self._last_tick_mono)
@@ -6197,6 +6260,20 @@ class MainSettingsWidget:
         invalidated = False
         if st.wifi_scanning or st.wifi_connecting:
             st.wifi_scan_angle_deg = (st.wifi_scan_angle_deg + _WIFI_SCAN_ROTATION_DPS * dt) % 360.0
+        if st.location_switching:
+            # Keep advancing once the delayed spinner is eligible so frames stay smooth.
+            if st.location_switch_spinner_visible():
+                prev = st.location_switch_angle_deg
+                st.location_switch_angle_deg = (
+                    st.location_switch_angle_deg + _LOCATION_SWITCH_ROTATION_DPS * dt
+                ) % 360.0
+                if int(round(prev / 10.0)) != int(round(st.location_switch_angle_deg / 10.0)):
+                    invalidated = True
+            elif (now - float(st.location_switch_started_mono)) >= float(
+                _LOCATION_SWITCH_SPINNER_DELAY_S
+            ):
+                # Crossed the delay threshold — force a paint so the spinner appears.
+                invalidated = True
         if st.wifi_scanning:
             elapsed = now - st.wifi_scan_started_mono
             result_ready = self._wifi_scan_result is not None
@@ -6236,8 +6313,51 @@ class MainSettingsWidget:
                     self._box_scan_cache[box_num] = (*devices, now)
                 invalidated = True
                 self.invalidate()
-        if invalidated and not (st.wifi_scanning or self._any_box_scanning()):
+        if invalidated and not (
+            st.wifi_scanning
+            or self._any_box_scanning()
+            or st.location_switch_spinner_visible()
+        ):
             self.invalidate()
+        elif invalidated:
+            # Spinner still animating — drop composed frames so the next blit rotates.
+            self._cached_bgra = None
+            self._cached_sig = None
+
+    def _ensure_location_switch_spinner_frames(self) -> tuple[np.ndarray, ...] | None:
+        if self._location_switch_spinner_frames is not None:
+            return self._location_switch_spinner_frames
+        if self._location_switch_spinner_tried:
+            return None
+        self._location_switch_spinner_tried = True
+        try:
+            from pigeon.widgets.search_spinner import build_search_spinner_frames
+
+            frames = build_search_spinner_frames(self._assets_dir)
+        except Exception:
+            frames = None
+        if frames:
+            self._location_switch_spinner_frames = frames
+        return self._location_switch_spinner_frames
+
+    def _draw_location_switch_spinner(self, frame: np.ndarray) -> None:
+        frames = self._ensure_location_switch_spinner_frames()
+        if not frames:
+            return
+        from pigeon.widgets.search_spinner import blit_spinner_patch, rotated_patch_for_angle
+
+        patch = rotated_patch_for_angle(frames, self._state.location_switch_angle_deg)
+        blit_spinner_patch(
+            frame,
+            patch,
+            cx=int(DESIGN_W) // 2,
+            cy=int(DESIGN_H) // 2,
+        )
+
+    def _apply_location_switch_overlay(self, frame: np.ndarray) -> None:
+        if not self._state.location_switch_spinner_visible():
+            return
+        self._draw_location_switch_spinner(frame)
 
     def _clear_box_search_spinner_cache(self, box_num: int) -> None:
         self._box_search_glyph_cache.pop(box_num, None)
@@ -6799,6 +6919,8 @@ class MainSettingsWidget:
             return action
         if action == "focus_box1":
             if st.show_location_picker:
+                if st.location_switching:
+                    return "location_switch:busy"
                 if st.select_location_slot(1):
                     self.invalidate()
                     return "location_switch"
@@ -6808,6 +6930,8 @@ class MainSettingsWidget:
             return "pigeon_settings"
         if action in ("pick_box2_device", "focus_box2"):
             if st.show_location_picker and action == "focus_box2":
+                if st.location_switching:
+                    return "location_switch:busy"
                 if st.select_location_slot(2):
                     self.invalidate()
                     return "location_switch"
@@ -6836,6 +6960,8 @@ class MainSettingsWidget:
             return action
         if action in ("pick_box3_device", "focus_box3"):
             if st.show_location_picker and action == "focus_box3":
+                if st.location_switching:
+                    return "location_switch:busy"
                 if st.select_location_slot(3):
                     self.invalidate()
                     return "location_switch"
@@ -6953,6 +7079,15 @@ class MainSettingsWidget:
                 if not self._state.wifi_scanning and not self._state.wifi_connecting:
                     frame = frame.copy()
                 self._apply_box_search_overlays(frame)
+
+            if self._state.location_switch_spinner_visible():
+                if not (
+                    self._state.wifi_scanning
+                    or self._state.wifi_connecting
+                    or self._any_box_scanning()
+                ):
+                    frame = frame.copy()
+                self._apply_location_switch_overlay(frame)
 
             if self._state.keyboard is not None:
                 from pigeon.widgets.settings_keyboard import render_keyboard_bgra
