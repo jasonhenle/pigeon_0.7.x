@@ -1,40 +1,35 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- From Pigeon0.8_GFX export 2026-07-27; fonts via host rasterizer. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
-  <!-- Exported structure from Pigeon0.8_GFX/update.ai + Illustrator layer names (incl. typos). -->
   <g id="pop_up_update_button_group">
-    <rect id="pop_up_update_button" x="297.246" y="167.367" width="223.262" height="222.051" rx="15.0" ry="15.0" fill="#ff0013" stroke="#000000" stroke-width="7" stroke-miterlimit="10"/>
-    <rect id="pop_up_update_accent" x="296.659" y="166.495" width="223.262" height="222.923" rx="15.0" ry="15.0" fill="none" stroke="#ffffff" stroke-width="2" stroke-miterlimit="10"/>
+    <path id="pop_up_update_button" style="fill:#FF0013;stroke:#000000;stroke-width:7;stroke-miterlimit:10;" d="M263.793,38.642   h290.424c8.284,0,15,6.716,15,15v320.776c0,8.284-6.716,15-15,15H263.793c-8.284,0-15-6.716-15-15V53.642   C248.793,45.358,255.508,38.642,263.793,38.642z"/>
+    <path id="pop_up_update_accent" style="fill:none;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" d="M262.95,37.264h290.424   c8.284,0,15,6.716,15,15v322.154c0,8.284-6.716,15-15,15H262.95c-8.284,0-15-6.716-15-15V52.264   C247.95,43.98,254.666,37.264,262.95,37.264z"/>
   </g>
-
   <g id="pop_up_update_later_and_now_group">
-    <g id="pop_uo_update__later_group" data-name="pop_uo_update__later_group">
-      <rect id="pop_uo_update_later_button" x="323.104" y="335.039" width="78.556" height="37.929" rx="9.56" ry="9.56" fill="#202020" stroke="#000000" stroke-width="7" stroke-miterlimit="10"/>
-      <rect id="pop_uo_update_later_accent" x="323.105" y="334.508" width="78.556" height="37.929" rx="9.56" ry="9.56" fill="none" stroke="#ffffff" stroke-width="2" stroke-miterlimit="10"/>
-      <text id="pop_uo_update_later_text" transform="translate(362.382 363.223)" text-anchor="middle" fill="#ffffff" font-family="Digital-7, Digital-7" font-size="26"><tspan x="0" y="0">LATER</tspan></text>
+    <g id="pop_uo_update__later_group">
+      <path id="pop_uo_update_later_button" style="fill:#202020;stroke:#000000;stroke-width:7;stroke-miterlimit:10;" d="    M322.664,335.039H382.1c5.28,0,9.56,4.28,9.56,9.56v18.809c0,5.28-4.28,9.56-9.56,9.56h-59.436c-5.28,0-9.56-4.28-9.56-9.56    v-18.809C313.104,339.319,317.384,335.039,322.664,335.039z"/>
+      <path id="pop_uo_update_later_accent" style="fill:none;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" d="    M322.665,334.508h59.436c5.28,0,9.56,4.28,9.56,9.56v18.809c0,5.28-4.28,9.56-9.56,9.56h-59.436c-5.28,0-9.56-4.28-9.56-9.56    v-18.809C313.105,338.788,317.385,334.508,322.665,334.508z"/>
+      <text transform="translate(352.382 363.223)" style="fill:#6E6E6E; font-family:'Digital-7'; font-size:26px;" id="pop_uo_update_later_text" text-anchor="middle">LATER</text>
     </g>
-    <g id="pop_uo_update_now_group" data-name="pop_uo_update_now_group">
-      <rect id="pop_uo_update_now_button" x="415.506" y="335.039" width="78.556" height="37.929" rx="9.56" ry="9.56" fill="#202020" stroke="#000000" stroke-width="7" stroke-miterlimit="10"/>
-      <rect id="pop_uo_update_now_accent" x="415.506" y="334.508" width="78.556" height="37.929" rx="9.56" ry="9.56" fill="none" stroke="#ffffff" stroke-width="2" stroke-miterlimit="10"/>
-      <text id="pop_uo_update_now_text" transform="translate(454.784 363.223)" text-anchor="middle" fill="#ffffff" font-family="Digital-7, Digital-7" font-size="26"><tspan x="0" y="0">NOW</tspan></text>
+    <g id="pop_uo_update_now_group">
+      <path id="pop_uo_update_now_button" style="fill:#202020;stroke:#000000;stroke-width:7;stroke-miterlimit:10;" d="    M435.066,335.039h59.436c5.28,0,9.56,4.28,9.56,9.56v18.809c0,5.28-4.28,9.56-9.56,9.56h-59.436c-5.28,0-9.56-4.28-9.56-9.56    v-18.809C425.506,339.319,429.786,335.039,435.066,335.039z"/>
+      <path id="pop_uo_update_now_accent" style="fill:none;stroke:#FFFFFF;stroke-width:2;stroke-miterlimit:10;" d="M435.066,334.508    h59.436c5.28,0,9.56,4.28,9.56,9.56v18.809c0,5.28-4.28,9.56-9.56,9.56h-59.436c-5.28,0-9.56-4.28-9.56-9.56v-18.809    C425.506,338.788,429.786,334.508,435.066,334.508z"/>
+      <text transform="translate(464.784 363.223)" style="fill:#FFFFFF; font-family:'Digital-7'; font-size:26px;" id="pop_uo_update_now_text" text-anchor="middle">NOW</text>
     </g>
   </g>
-
   <g id="pop_up_update_changes_text">
-    <text id="pop_up_update_changes_label" transform="translate(410.48 282.136)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-Semibold, 'Sharp Sans Semibold'" font-size="10"><tspan x="0" y="0">bug fixes and optimizations.</tspan></text>
+    <text transform="translate(409.005 269.757)" style="fill:#FFFFFF; font-family:'SharpSans-Semibold'; font-size:18px;" id="pop_up_update_changes_label" text-anchor="middle">bug fixes and optimizations.</text>
   </g>
-
   <g id="pop_up_update_current_to_new_group">
-    <text id="pop_up_update_current_text" transform="translate(360.565 260.066)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-Semibold, 'Sharp Sans Semibold'" font-size="14"><tspan x="0" y="0">0.8.54</tspan></text>
-    <path id="pop_up_update_arrow_icon" d="M411.387,251.793 L404.033,247.524 L404.041,251.024 L400.404,251.024 L400.404,261.031 L404.041,261.031 L404.033,264.531 L411.387,260.262 L418.761,256.027 Z" fill="#ffffff" stroke="#000000" stroke-width="2" stroke-linejoin="round" stroke-miterlimit="10"/>
-    <text id="pop_up_update_new_text" transform="translate(449.931 261.031)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-Semibold, 'Sharp Sans Semibold'" font-size="14"><tspan x="0" y="0">0.8.55</tspan></text>
+    <text transform="translate(340.000 201.255)" style="fill:#FFFFFF; font-family:'SharpSans-Semibold'; font-size:24px;" id="pop_up_update_current_text" text-anchor="middle">0.8.54</text>
+    <polygon style="fill:#FFFFFF;stroke:#000000;stroke-width:2;stroke-linejoin:round;stroke-miterlimit:10;" points="414.318,190.35    406.733,186.496 406.689,190.726 389.803,190.726 389.803,197.936 406.689,197.936 406.733,202.167 414.318,198.312    421.821,194.331  " id="pop_up_update_arrow_icon"/>
+    <text transform="translate(470.000 201.255)" style="fill:#FFFFFF; font-family:'SharpSans-Semibold'; font-size:24px;" id="pop_up_update_new_text" text-anchor="middle">0.8.55</text>
   </g>
-
   <g id="pop_up_update_pigeonos_stroke_text_group">
-    <text id="pop_up_update_pigeonos_stroke_text" transform="translate(408.097 231.256)" text-anchor="middle" fill="none" stroke="#000000" stroke-width="8" stroke-linejoin="round" font-family="SharpSans-ExtraboldItali, 'Sharp Sans ExtraBold Italic'" font-size="36" font-style="italic" font-weight="800"><tspan x="0" y="0">PigeonOS</tspan></text>
-    <text id="pop_up_update_pigeonos_fill_text" transform="translate(408.097 231.256)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-ExtraboldItali, 'Sharp Sans ExtraBold Italic'" font-size="36" font-style="italic" font-weight="800"><tspan x="0" y="0">PigeonOS</tspan></text>
+    <text transform="translate(409.005 143.522)" style="fill:none;stroke:#000000;stroke-width:21;stroke-linejoin:round; font-family:'SharpSans-Extrabold'; font-size:51.4248px;" id="pop_up_update_pigeonos_stroke_text" text-anchor="middle">PigeonOS</text>
+    <text transform="translate(409.005 143.522)" style="fill:#FFFFFF; font-family:'SharpSans-Extrabold'; font-size:51.4248px;" id="pop_up_update_pigeonos_fill_text" text-anchor="middle">PigeonOS</text>
   </g>
-
   <g id="pop__x29_up_update_update_text" data-name="pop_)up_update_update_text">
-    <text id="pop_up_update_update_text" transform="translate(407.877 190.007)" text-anchor="middle" fill="#ffffff" font-family="SharpSans-Extrabold, 'Sharp Sans Extrabold'" font-size="14" font-weight="800"><tspan x="0" y="0">Update</tspan></text>
+    <text transform="translate(409.005 85.740)" style="fill:#FFFFFF;stroke:#000000;stroke-miterlimit:10; font-family:'SharpSans-Extrabold'; font-size:36px;" id="pop_up_update_update_text" text-anchor="middle">Update</text>
   </g>
 </svg>
