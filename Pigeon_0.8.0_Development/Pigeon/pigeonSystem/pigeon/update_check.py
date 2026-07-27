@@ -223,6 +223,14 @@ def github_auth_headers(*, user_agent: str | None = None) -> dict[str, str]:
     return headers
 
 
+def _no_cache_headers() -> dict[str, str]:
+    """Bypass intermediary / CDN caches when the user explicitly taps Update."""
+    return {
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+
 @dataclass(frozen=True)
 class UpdateCheckResult:
     local_version: str
@@ -385,14 +393,23 @@ def _linux_curl_get_simple(url: str, *, timeout_s: float) -> bytes | None:
     return None
 
 
-def _fetch_version_text(url: str, *, timeout_s: float, api: bool = False) -> tuple[str | None, str | None]:
+def _fetch_version_text(
+    url: str,
+    *,
+    timeout_s: float,
+    api: bool = False,
+    force: bool = False,
+) -> tuple[str | None, str | None]:
     headers = github_auth_headers()
+    if force:
+        headers.update(_no_cache_headers())
     if api:
         headers["Accept"] = _latin1_header("application/vnd.github.raw")
         headers["X-GitHub-Api-Version"] = _latin1_header("2022-11-28")
     try:
         body: bytes | None = None
-        if not api and not github_token():
+        # Forced checks always use curl with no-cache headers (skip simple GET).
+        if not force and not api and not github_token():
             body = _linux_curl_get_simple(url, timeout_s=timeout_s)
         if body is None:
             body = github_http_get(url, timeout_s=timeout_s, headers=headers)
@@ -407,14 +424,27 @@ def _fetch_version_text(url: str, *, timeout_s: float, api: bool = False) -> tup
         return None, str(e)
 
 
-def fetch_remote_version_tuple(*, timeout_s: float = 12.0) -> tuple[tuple[int, int, int] | None, str | None, str | None, str | None]:
-    """Return ``(remote_tuple, error_message, winning_raw_url, github_branch)``."""
+def fetch_remote_version_tuple(
+    *,
+    timeout_s: float = 12.0,
+    force: bool = False,
+) -> tuple[tuple[int, int, int] | None, str | None, str | None, str | None]:
+    """Return ``(remote_tuple, error_message, winning_raw_url, github_branch)``.
+
+    When ``force`` is True (settings Update button), skip HTTP caches so a
+    just-pushed main version is visible immediately.
+    """
     token = github_token()
     saw_404 = False
     saw_auth_fail = False
     best: tuple[int, int, int] | None = None
     best_url: str | None = None
     best_branch: str | None = None
+    bust = ""
+    if force:
+        import time as _time
+
+        bust = f"pigeon_nocache={int(_time.time())}"
     for branch in _branch_candidates():
         for path in _path_candidates():
             attempts: list[tuple[str, bool]] = []
@@ -422,7 +452,15 @@ def fetch_remote_version_tuple(*, timeout_s: float = 12.0) -> tuple[tuple[int, i
                 attempts.append((version_py_api_url(branch=branch, path=path), True))
             attempts.append((version_py_raw_url(branch=branch, path=path), False))
             for url, api in attempts:
-                body, err = _fetch_version_text(url, timeout_s=timeout_s, api=api)
+                fetch_url = url
+                if bust and not api:
+                    fetch_url = f"{url}{'&' if '?' in url else '?'}{bust}"
+                body, err = _fetch_version_text(
+                    fetch_url,
+                    timeout_s=timeout_s,
+                    api=api,
+                    force=force,
+                )
                 if body is None:
                     if err == "HTTP 404":
                         saw_404 = True
@@ -472,11 +510,19 @@ def format_version_tuple(t: tuple[int, int, int]) -> str:
     return f"{t[0]}.{t[1]}.{t[2]}"
 
 
-def check_for_update(*, timeout_s: float = 12.0) -> UpdateCheckResult:
+def check_for_update(*, timeout_s: float = 12.0, force: bool = False) -> UpdateCheckResult:
+    """Compare local version to GitHub.
+
+    ``force=True`` (settings_pigeon Update button) bypasses HTTP caches so a
+    newly merged main release is detected immediately.
+    """
     prepare_github_update_environment()
     local = version_string()
     local_t = version_tuple()
-    remote_t, err, url, branch = fetch_remote_version_tuple(timeout_s=timeout_s)
+    remote_t, err, url, branch = fetch_remote_version_tuple(
+        timeout_s=timeout_s,
+        force=force,
+    )
     if remote_t is None:
         return UpdateCheckResult(
             local_version=local,

@@ -1915,7 +1915,9 @@ def main() -> int:
             try:
                 from pigeon.update_check import fetch_remote_version_tuple, format_version_tuple
 
-                remote_t, _, _, _ = fetch_remote_version_tuple(timeout_s=10.0)
+                remote_t, _, _, _ = fetch_remote_version_tuple(
+                    timeout_s=10.0, force=True
+                )
                 if remote_t is not None:
                     github_target = format_version_tuple(remote_t)
             except Exception:
@@ -1973,7 +1975,7 @@ def main() -> int:
                 try:
                     from pigeon.update_check import check_for_update
 
-                    result = check_for_update()
+                    result = check_for_update(force=True)
                 except Exception as e:
                     from pigeon.update_check import UpdateCheckResult
 
@@ -7995,9 +7997,14 @@ def main() -> int:
             st = main_settings_widget.state
 
             if action == "update_popup:open":
+                # Always re-check GitHub (ignore any prior in-memory poll).
                 st.update_local_version = version_string()
                 st.update_checking = True
                 st.update_error = None
+                st.update_available = False
+                st.update_remote_version = None
+                st.update_github_branch = None
+                st.update_changelog = "Checking GitHub for updates…"
                 main_settings_widget.invalidate()
                 skip_cache = None
 
@@ -8005,7 +8012,7 @@ def main() -> int:
                     try:
                         from pigeon.update_check import check_for_update
 
-                        result = check_for_update()
+                        result = check_for_update(force=True)
                     except Exception as e:
                         from pigeon.update_check import UpdateCheckResult
 
