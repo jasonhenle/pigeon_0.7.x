@@ -56,6 +56,9 @@ grep rotary ~/.pigeon_0_6/pigeon.log | tail -30
 | `PIGEON_ROTARY_INVERT=1` | Swap CW/CCW |
 | `PIGEON_ROTARY_SERIAL=0` | Disable bridge entirely |
 | `PIGEON_ADB=/path/to/adb` | Custom adb binary |
+| `PIGEON_ADB_SERIAL=<serial>` | Required when multiple authorized ADB devices are present; selects which device gets `adb forward tcp:7500` |
+
+When more than one authorized device shows up in `adb devices`, Pigeon will not guess. Set `PIGEON_ADB_SERIAL` to the UNO Q serial from that list.
 
 ## HID boards (Leonardo / Pro Micro / Pico)
 
