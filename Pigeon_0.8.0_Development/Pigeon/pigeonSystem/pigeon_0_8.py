@@ -119,6 +119,94 @@ except ImportError:
         return []
 
 
+def _log_optional_import_failure(group: str, exc: BaseException) -> None:
+    """Report which optional UI group failed without silencing the root cause."""
+    import traceback
+
+    name = getattr(exc, "name", None) or ""
+    detail = f"{type(exc).__name__}: {exc}"
+    if name:
+        detail = f"{detail} (module={name})"
+    msg = f"pigeon: optional import group {group!r} disabled — {detail}"
+    try:
+        sys.stderr.write(msg + "\n")
+        sys.stderr.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        from pigeon.pi_diagnostics import append_pigeon_log
+
+        append_pigeon_log(msg)
+    except Exception:
+        pass
+
+
+# Optional UI extension groups. A failure disables only that group.
+_PIGEON_EXT = False
+alpha_blend_bgra_over_bgr = None  # type: ignore[misc, assignment]
+lerp_bgr_red_monochrome = None  # type: ignore[misc, assignment]
+scale_bgra_rgb = None  # type: ignore[misc, assignment]
+scale_height_and_center_crop = None  # type: ignore[misc, assignment]
+scale_cover_center_crop = None  # type: ignore[misc, assignment]
+scale_uniform_letterbox = None  # type: ignore[misc, assignment]
+rect_for_span_at_cell = None  # type: ignore[misc, assignment]
+rect_for_span_top_right_at_cell = None  # type: ignore[misc, assignment]
+get_grid_geometry = None  # type: ignore[misc, assignment]
+playback_lower_gradient_bgra = None  # type: ignore[misc, assignment]
+DESIGN_W = DESIGN_H = 0
+blend_overlay_bgr = None  # type: ignore[misc, assignment]
+build_stage_overlay_source_bgra = None  # type: ignore[misc, assignment]
+ClockCalendarWidget = None  # type: ignore[misc, assignment]
+CLOCK_ANCHOR_ROW = 1.0
+CLOCK_ANCHOR_COL = int(VIEW_ONE_CLOCK_COL_RIGHT)
+LOCATION_TOAST_FULL_S = 15.0
+LOCATION_TOAST_FADE_S = 2.0
+location_toast_patch_bgra = None  # type: ignore[misc, assignment]
+TmdbLogoWidget = None  # type: ignore[misc, assignment]
+ViewOneVariant = None  # type: ignore[misc, assignment]
+resolve_view_one_variant = None  # type: ignore[misc, assignment]
+variant_has_alternate = None  # type: ignore[misc, assignment]
+variant_uses_full_path = None  # type: ignore[misc, assignment]
+render_ui_text_patch_bgra = None  # type: ignore[misc, assignment]
+render_view_one_video_content_b_title_patch_bgra = None  # type: ignore[misc, assignment]
+render_ui_music_text_patch_bgra = None  # type: ignore[misc, assignment]
+load_pigeon_temp_logo_bgra = None  # type: ignore[misc, assignment]
+StatusBarWidget = None  # type: ignore[misc, assignment]
+clock_saver_composite_bgra = None  # type: ignore[misc, assignment]
+PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
+compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
+PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"  # type: ignore[misc, assignment]
+PATCH_LAYER_STREAMING_BADGE = "streaming_badge"  # type: ignore[misc, assignment]
+pigeon_wordmark_design_patch = None  # type: ignore[misc, assignment]
+NowPlayingScreenWidget = None  # type: ignore[misc, assignment]
+ViewCirclesWidget = None  # type: ignore[misc, assignment]
+MainSettingsWidget = None  # type: ignore[misc, assignment]
+build_info_cluster_design_patches = None  # type: ignore[misc, assignment]
+INFO_CLUSTER_COL_RIGHT = 18.0
+INFO_CLUSTER_CLOCK_ROW_1BASED = 1.0  # type: ignore[misc, assignment]
+prepare_default_poster_at_startup = None  # type: ignore[misc, assignment]
+metadata_has_playback_title = None  # type: ignore[misc, assignment]
+resolve_metadata_tmdb_query = None  # type: ignore[misc, assignment]
+_blend_mic_visualizer = None  # type: ignore[misc, assignment]
+
+# Splash symbols stay importable when splash group fails (call sites check paths).
+FALLBACK_SPLASH_FRAME_COUNT = 0
+SPLASH_FADE_OUT_FRAMES = 0
+SPLASH_FPS = 30
+SPLASH_MAX_DURATION_S = 0.0
+apply_splash_global_alpha = None  # type: ignore[misc, assignment]
+bgra_to_pil_rgba = None  # type: ignore[misc, assignment]
+builtin_splash_bgra_frame = None  # type: ignore[misc, assignment]
+composite_splash_over_bg = None  # type: ignore[misc, assignment]
+find_splash_video_path = None  # type: ignore[misc, assignment]
+flatten_bgra_over_bg_to_rgb = None  # type: ignore[misc, assignment]
+list_splash_png_paths = None  # type: ignore[misc, assignment]
+load_splash_bgra = None  # type: ignore[misc, assignment]
+resolve_splash_media = None  # type: ignore[misc, assignment]
+resize_bgra_if_needed = None  # type: ignore[misc, assignment]
+splash_end_fade_factor = None  # type: ignore[misc, assignment]
+
 try:
     from pigeon.compositing import (
         alpha_blend_bgra_over_bgr,
@@ -137,11 +225,18 @@ try:
         rect_for_span_top_right_at_cell,
     )
     from pigeon.overlay import blend_overlay_bgr, build_stage_overlay_source_bgra
+
+    _PIGEON_EXT = True
+except ImportError as _exc:
+    _log_optional_import_failure("core_compositing", _exc)
+
+try:
     from pigeon.widgets.clock_calendar import (
         CLOCK_WIDGET_COL_RIGHT,
         CLOCK_WIDGET_ROW,
         ClockCalendarWidget,
     )
+
     CLOCK_ANCHOR_ROW = CLOCK_WIDGET_ROW
     CLOCK_ANCHOR_COL = int(VIEW_ONE_CLOCK_COL_RIGHT)
     from pigeon.widgets.location_toast import (
@@ -150,6 +245,12 @@ try:
         location_toast_patch_bgra,
     )
     from pigeon.widgets.logo_tmdb import TmdbLogoWidget
+    from pigeon.widgets.status_bar import StatusBarWidget
+    from pigeon.widgets.clock_saver import clock_saver_composite_bgra
+except ImportError as _exc:
+    _log_optional_import_failure("clock_status_widgets", _exc)
+
+try:
     from pigeon.view_one_variants import (
         ViewOneVariant,
         load_pigeon_temp_logo_bgra,
@@ -160,8 +261,10 @@ try:
         variant_has_alternate,
         variant_uses_full_path,
     )
-    from pigeon.widgets.status_bar import StatusBarWidget
-    from pigeon.widgets.clock_saver import clock_saver_composite_bgra
+except ImportError as _exc:
+    _log_optional_import_failure("view_one_variants", _exc)
+
+try:
     from pigeon.widgets.playback_overlay import (
         PATCH_LAYER_RECEIVER_AUDIO,
         PATCH_LAYER_STREAMING_BADGE,
@@ -170,14 +273,22 @@ try:
         pigeon_wordmark_design_patch,
     )
     from pigeon.widgets.now_playing_screen import NowPlayingScreenWidget
-    try:
-        from pigeon.widgets.view_circles import ViewCirclesWidget
-    except ImportError:
-        ViewCirclesWidget = None  # type: ignore[misc, assignment]
-    try:
-        from pigeon.widgets.main_settings import MainSettingsWidget
-    except ImportError:
-        MainSettingsWidget = None  # type: ignore[misc, assignment]
+except ImportError as _exc:
+    _log_optional_import_failure("playback_widgets", _exc)
+
+try:
+    from pigeon.widgets.view_circles import ViewCirclesWidget
+except ImportError as _exc:
+    _log_optional_import_failure("view_circles", _exc)
+    ViewCirclesWidget = None  # type: ignore[misc, assignment]
+
+try:
+    from pigeon.widgets.main_settings import MainSettingsWidget
+except ImportError as _exc:
+    _log_optional_import_failure("main_settings", _exc)
+    MainSettingsWidget = None  # type: ignore[misc, assignment]
+
+try:
     from pigeon.widgets.info_cluster import (
         INFO_CLUSTER_CLOCK_ROW_1BASED,
         INFO_CLUSTER_COL_RIGHT,
@@ -185,6 +296,10 @@ try:
     )
     from pigeon.widgets.poster_art import prepare_default_poster_at_startup
     from pigeon.raw_title import metadata_has_playback_title, resolve_metadata_tmdb_query
+except ImportError as _exc:
+    _log_optional_import_failure("info_poster_metadata", _exc)
+
+try:
     from pigeon.splash_sequence import (
         FALLBACK_SPLASH_FRAME_COUNT,
         SPLASH_FADE_OUT_FRAMES,
@@ -202,55 +317,10 @@ try:
         resize_bgra_if_needed,
         splash_end_fade_factor,
     )
+except ImportError as _exc:
+    _log_optional_import_failure("splash_sequence", _exc)
 
-    _blend_mic_visualizer = None  # microphone visualizer disabled
-
-    _PIGEON_EXT = True
-except ImportError:
-    alpha_blend_bgra_over_bgr = None  # type: ignore[misc, assignment]
-    lerp_bgr_red_monochrome = None  # type: ignore[misc, assignment]
-    scale_bgra_rgb = None  # type: ignore[misc, assignment]
-    scale_height_and_center_crop = None  # type: ignore[misc, assignment]
-    scale_cover_center_crop = None  # type: ignore[misc, assignment]
-    scale_uniform_letterbox = None  # type: ignore[misc, assignment]
-    rect_for_span_at_cell = None  # type: ignore[misc, assignment]
-    rect_for_span_top_right_at_cell = None  # type: ignore[misc, assignment]
-    get_grid_geometry = None  # type: ignore[misc, assignment]
-    playback_lower_gradient_bgra = None  # type: ignore[misc, assignment]
-    DESIGN_W = DESIGN_H = 0
-    blend_overlay_bgr = None  # type: ignore[misc, assignment]
-    build_stage_overlay_source_bgra = None  # type: ignore[misc, assignment]
-    prepare_default_poster_at_startup = None  # type: ignore[misc, assignment]
-    ClockCalendarWidget = None  # type: ignore[misc, assignment]
-    TmdbLogoWidget = None  # type: ignore[misc, assignment]
-    StatusBarWidget = None  # type: ignore[misc, assignment]
-    PlaybackOverlayWidget = None  # type: ignore[misc, assignment]
-    NowPlayingScreenWidget = None  # type: ignore[misc, assignment]
-    ViewCirclesWidget = None  # type: ignore[misc, assignment]
-    MainSettingsWidget = None  # type: ignore[misc, assignment]
-    compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
-    PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"  # type: ignore[misc, assignment]
-    PATCH_LAYER_STREAMING_BADGE = "streaming_badge"  # type: ignore[misc, assignment]
-    build_info_cluster_design_patches = None  # type: ignore[misc, assignment]
-    INFO_CLUSTER_COL_RIGHT = 18.0  # fallback if ``info_cluster`` import failed
-    metadata_has_playback_title = None  # type: ignore[misc, assignment]
-    resolve_metadata_tmdb_query = None  # type: ignore[misc, assignment]
-    INFO_CLUSTER_CLOCK_ROW_1BASED = 1.0  # type: ignore[misc, assignment]
-    clock_saver_composite_bgra = None  # type: ignore[misc, assignment]
-    pigeon_wordmark_design_patch = None  # type: ignore[misc, assignment]
-    LOCATION_TOAST_FULL_S = 15.0
-    LOCATION_TOAST_FADE_S = 2.0
-    location_toast_patch_bgra = None  # type: ignore[misc, assignment]
-    _blend_mic_visualizer = None  # type: ignore[misc, assignment]
-    ViewOneVariant = None  # type: ignore[misc, assignment]
-    resolve_view_one_variant = None  # type: ignore[misc, assignment]
-    variant_has_alternate = None  # type: ignore[misc, assignment]
-    variant_uses_full_path = None  # type: ignore[misc, assignment]
-    render_ui_text_patch_bgra = None  # type: ignore[misc, assignment]
-    render_view_one_video_content_b_title_patch_bgra = None  # type: ignore[misc, assignment]
-    render_ui_music_text_patch_bgra = None  # type: ignore[misc, assignment]
-    load_pigeon_temp_logo_bgra = None  # type: ignore[misc, assignment]
-    _PIGEON_EXT = False
+_blend_mic_visualizer = None  # microphone visualizer disabled
 
 
 def _env_int(name: str, default: int) -> int:
