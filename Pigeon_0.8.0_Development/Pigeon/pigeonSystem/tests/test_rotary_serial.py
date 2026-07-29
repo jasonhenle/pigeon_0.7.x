@@ -191,6 +191,27 @@ class BackoffAndStateLogTests(unittest.TestCase):
         self.assertEqual(err.call_args_list[1][0][0], "msg b")
 
 
+class MegaProtocolLineTests(unittest.TestCase):
+    def test_mega_encoder_and_button_map(self) -> None:
+        self.assertEqual(
+            rs._action_for_line("MEGA,ENCODER,NAV,RIGHT"), "forward"
+        )
+        self.assertEqual(
+            rs._action_for_line("MEGA,ENCODER,NAV,LEFT"), "backward"
+        )
+        self.assertEqual(
+            rs._action_for_line("MEGA,BUTTON,NAV,PRESSED"), "activate"
+        )
+
+    def test_mega_ready_is_not_an_action(self) -> None:
+        self.assertTrue(rs._is_ready_line("MEGA,SYS,READY,1"))
+        self.assertIsNone(rs._action_for_line("MEGA,SYS,READY,1"))
+
+    def test_legacy_tokens_still_work(self) -> None:
+        self.assertEqual(rs._action_for_line("RIGHT"), "forward")
+        self.assertEqual(rs._action_for_line("PUSH"), "activate")
+
+
 class StartListenerEnvTests(unittest.TestCase):
     def test_disabled_by_env_returns_none(self) -> None:
         with mock.patch.dict(os.environ, {"PIGEON_ROTARY_SERIAL": "0"}):

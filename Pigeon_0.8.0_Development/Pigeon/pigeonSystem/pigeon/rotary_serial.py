@@ -106,8 +106,42 @@ def _normalize_line(raw: str) -> str:
     return line.upper()
 
 
-def _action_for_line(line: str) -> str | None:
-    return _LINE_TO_ACTION.get(_normalize_line(line))
+def _is_ready_line(line: str) -> bool:
+    if not line or line == _READY:
+        return True
+    try:
+        from pigeon.hardware_protocol import is_ready_message, parse_line
+
+        return is_ready_message(parse_line(line))
+    except Exception:
+        return _normalize_line(line) in ("MEGA,SYS,READY,1", "READY")
+
+
+def _action_for_line(line: str, *, invert: bool = False) -> str | None:
+    """Map a serial line to forward/backward/activate.
+
+    Prefers canonical ``MEGA,TYPE,ID,DATA`` (and legacy single tokens) via
+    ``hardware_protocol``; falls back to the local token table.
+    """
+    try:
+        from pigeon.hardware_protocol import navigation_action, parse_line
+
+        msg = parse_line(line)
+        if msg is not None:
+            action = navigation_action(msg, invert=invert)
+            if action is not None:
+                return action
+            # Known protocol shape but not a nav action (e.g. READY) → not unknown.
+            if "," in (line or ""):
+                return None
+    except Exception:
+        pass
+    action = _LINE_TO_ACTION.get(_normalize_line(line))
+    if action is None:
+        return None
+    if invert and action in ("forward", "backward"):
+        return "backward" if action == "forward" else "forward"
+    return action
 
 
 def _port_blob(port_info) -> str:
@@ -128,6 +162,7 @@ def _is_strong_arduino_match(blob: str) -> bool:
         k in blob
         for k in (
             "arduino",
+            "mega",
             "uno q",
             "uno-q",
             "zephyr",
@@ -270,7 +305,7 @@ def _looks_like_controller(ser) -> bool:
             continue
         if not line:
             continue
-        if line == _READY or _action_for_line(line) is not None:
+        if _is_ready_line(line) or _action_for_line(line) is not None:
             return True
     return False
 
@@ -387,16 +422,17 @@ def _handle_line(
     ignored: list[int],
     source: str,
 ) -> None:
-    if not line or line == _READY:
+    if not line or _is_ready_line(line):
         return
-    action = _action_for_line(line)
+    action = _action_for_line(line, invert=invert)
     if action is None:
+        # Canonical MEGA/Q CSV that is not nav — quiet skip (not an "unknown").
+        if "," in line and line.upper().startswith(("MEGA,", "Q,", "PI,")):
+            return
         if ignored[0] < 12:
             _stderr(f"pigeon: rotary_serial: ignore unknown line {line!r} ({source})")
             ignored[0] += 1
         return
-    if invert and action in ("forward", "backward"):
-        action = "backward" if action == "forward" else "forward"
     if logged_ok[0] < 8:
         _stderr(f"pigeon: rotary_serial: {line!r} → {action} ({source})")
         logged_ok[0] += 1
