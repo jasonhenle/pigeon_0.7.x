@@ -2,9 +2,9 @@
 Pigeon device settings menu — ``settings_0.8/settings_pigeon.svg``.
 
 Opened from main settings box1 (device panel). Five icon tabs + BACK.
-Foreground art from ``settings_pigeon.svg``; diagonal stripe background uses
-``menu_container_*`` geometry composited in code (all columns, static — not
-focus-driven). The black canvas rect is hidden before rasterize.
+Foreground art from ``settings_pigeon.svg``; diagonal stripe background uses the
+shared ``settings_background.svg`` theme plate (UI color at 90…40% brightness).
+Embedded ``menu_container_*`` stripe groups are disabled before rasterize.
 """
 
 from __future__ import annotations
@@ -254,25 +254,24 @@ def _pigeon_menu_container_mask() -> np.ndarray:
 
 def _draw_pigeon_container_background_bgra(
     bgra: np.ndarray,
-    stripes: tuple[_ContainerStripeSpec, ...],
+    stripes: tuple[_ContainerStripeSpec, ...] | None = None,
+    *,
+    ui_hex: str | None = None,
+    assets_dir: Path | str | None = None,
 ) -> None:
-    """Paint all pigeon menu stripe columns (static background, not focus-driven)."""
-    if not stripes:
-        return
-    mask = _pigeon_menu_container_mask()
-    for stripe in stripes:
-        corners = _transform_rect_corners_svg(
-            stripe.x_svg,
-            stripe.y_svg,
-            stripe.width_svg,
-            stripe.height_svg,
-            stripe.matrix,
-        )
-        pts = np.array([_svg_to_pigeon_px(x, y) for x, y in corners], dtype=np.int32)
-        poly_mask = np.zeros(bgra.shape[:2], dtype=np.uint8)
-        cv2.fillConvexPoly(poly_mask, pts, 255)
-        poly_mask = cv2.bitwise_and(poly_mask, mask)
-        _composite_stroke_mask(bgra, poly_mask, _hex_to_bgr(stripe.fill_hex))
+    """Paint shared theme slants under pigeon settings (full-panel clip)."""
+    del stripes
+    from pigeon.widgets.main_settings import COLOR_UI_DEFAULT
+    from pigeon.widgets.settings_theme_background import (
+        draw_settings_theme_background_bgra,
+    )
+
+    draw_settings_theme_background_bgra(
+        bgra,
+        ui_hex=ui_hex or COLOR_UI_DEFAULT,
+        clip_mask=_pigeon_menu_container_mask(),
+        assets_dir=assets_dir,
+    )
 
 
 def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
@@ -322,8 +321,9 @@ def render_pigeon_settings_bgra(
     st = state if state is not None else MainSettingsState()
     root = _pigeon_svg_tree_from_path(path)
     apply_pigeon_settings_svg_state(root, st)
-    stripe_specs = _discover_pigeon_stripe_specs(root)
     _hide_container_stripe_rects(root, _PIGEON_BACKGROUND_CONTAINERS)
+    for cid in _PIGEON_BACKGROUND_CONTAINERS:
+        _set_visible(_find_by_logical_id(root, cid), False)
     bg = _find_by_logical_id(root, "background")
     if bg is not None:
         _set_visible(bg, False)
@@ -332,7 +332,11 @@ def render_pigeon_settings_bgra(
     bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     bg_bgra[:, :, :3] = 0
     bg_bgra[:, :, 3] = 255
-    _draw_pigeon_container_background_bgra(bg_bgra, stripe_specs)
+    _draw_pigeon_container_background_bgra(
+        bg_bgra,
+        ui_hex=st.theme.ui,
+        assets_dir=assets_dir if assets_dir is not None else path.parent.parent,
+    )
     return _composite_bgra_over_bgra(bg_bgra, ui_bgra)
 
 

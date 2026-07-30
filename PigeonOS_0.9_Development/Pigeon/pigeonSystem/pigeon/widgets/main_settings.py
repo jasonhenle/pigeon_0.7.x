@@ -3730,9 +3730,10 @@ def _apply_background_container(
     *,
     focused: str,
 ) -> None:
-    active = _active_background_container(state, focused)
+    """Legacy no-op: stripe backgrounds come from ``settings_background.svg`` now."""
+    del state, focused
     for cid in _BACKGROUND_CONTAINERS:
-        _set_visible(_find_by_logical_id(root, cid), cid == active)
+        _set_visible(_find_by_logical_id(root, cid), False)
 
 
 def _style_has_display_none(style: str | None) -> bool:
@@ -3795,37 +3796,39 @@ def _container_stripe_cache_key(stripes: tuple[_ContainerStripeSpec, ...]) -> tu
 def _draw_container_background_bgra(
     bgra: np.ndarray,
     stripes: tuple[_ContainerStripeSpec, ...] | None = None,
+    *,
+    ui_hex: str | None = None,
+    assets_dir: Path | str | None = None,
 ) -> None:
-    """Paint solid red menu plate + clipped diagonal stripes (PyMuPDF clip-path fix)."""
-    stripe_tuple = stripes or ()
-    key = _container_stripe_cache_key(stripe_tuple)
-    cached = _CONTAINER_BG_PLATE_CACHE.get(key)
-    if cached is not None:
-        bgra[:] = cached
-        return
+    """Paint black frame + UI-tinted theme slants (shared settings_background.svg).
 
-    plate = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
-    plate[:, :, 3] = 255
-    mask = _menu_container_mask()
-    _composite_stroke_mask(plate, mask, _hex_to_bgr(COLOR_UI_DEFAULT))
-    for stripe in stripe_tuple:
-        corners = _transform_rect_corners_svg(
-            stripe.x_svg,
-            stripe.y_svg,
-            stripe.width_svg,
-            stripe.height_svg,
-            stripe.matrix,
-        )
-        pts = np.array([_svg_to_px(x, y) for x, y in corners], dtype=np.int32)
-        poly_mask = np.zeros((DESIGN_H, DESIGN_W), dtype=np.uint8)
-        cv2.fillConvexPoly(poly_mask, pts, 255)
-        poly_mask = cv2.bitwise_and(poly_mask, mask)
-        _composite_stroke_mask(plate, poly_mask, _hex_to_bgr(stripe.fill_hex))
-    if len(_CONTAINER_BG_PLATE_CACHE) >= 8:
-        _CONTAINER_BG_PLATE_CACHE.clear()
-    _CONTAINER_BG_PLATE_CACHE[key] = plate
-    bgra[:] = plate
+    ``stripes`` is ignored (legacy baked SVG discovery); kept for call-site compat.
+    """
+    del stripes  # embedded chrome SVG stripes are no longer used
+    from pigeon.widgets.settings_theme_background import (
+        draw_settings_theme_background_bgra,
+    )
 
+    draw_settings_theme_background_bgra(
+        bgra,
+        ui_hex=ui_hex or COLOR_UI_DEFAULT,
+        clip_mask=_menu_container_mask(),
+        assets_dir=assets_dir,
+    )
+
+
+def _disable_embedded_settings_background_layers(root: ET.Element) -> None:
+    """Hide/remove baked stripe + canvas background groups from chrome SVGs."""
+    for cid in _BACKGROUND_CONTAINERS:
+        el = _find_by_logical_id(root, cid)
+        if el is not None:
+            _set_visible(el, False)
+    _hide_container_stripe_rects(root)
+    _remove_canvas_background_rect(root)
+    for lid in ("settings_background", "background"):
+        el = _find_by_logical_id(root, lid)
+        if el is not None:
+            _set_visible(el, False)
 
 def _composite_bgra_over_bgra(base: np.ndarray, overlay: np.ndarray) -> np.ndarray:
     """Alpha-composite overlay onto base. Fast paths for empty / fully opaque pixels."""
@@ -5218,10 +5221,7 @@ def render_main_settings_bgra(
     st.focus_index = int(st.focus_index) % max(1, len(present))
     apply_main_settings_svg_state(root, st)
     focused_logical = "" if st.keyboard_open else st.focused_id
-    active_container = _active_background_container(st, focused_logical or st.focused_id)
-    stripe_specs = _discover_container_stripe_specs(root, active_container)
-    _hide_container_stripe_rects(root)
-    _remove_canvas_background_rect(root)
+    _disable_embedded_settings_background_layers(root)
     # Discover after apply so hidden pigeon-logo icons are skipped, and circle
     # element ids match this tree for hide + OpenCV star-clip redraw.
     star_specs = _discover_star_masked_circles(root)
@@ -5236,7 +5236,11 @@ def render_main_settings_bgra(
     bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     bg_bgra[:, :, :3] = 0
     bg_bgra[:, :, 3] = 255
-    _draw_container_background_bgra(bg_bgra, stripe_specs)
+    _draw_container_background_bgra(
+        bg_bgra,
+        ui_hex=st.theme.ui,
+        assets_dir=assets_dir if assets_dir is not None else path.parent.parent,
+    )
     bgra = _composite_bgra_over_bgra(bg_bgra, ui_bgra)
     _draw_wifi_overlays(bgra, st, wifi_layouts, focused_logical=focused_logical)
     _draw_star_masked_circle_overlays(bgra, st, star_specs, focused_logical=focused_logical)
