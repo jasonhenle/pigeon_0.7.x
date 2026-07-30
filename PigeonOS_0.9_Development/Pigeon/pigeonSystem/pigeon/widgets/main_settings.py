@@ -1442,12 +1442,31 @@ def _discover_onboarding_search_arc_specs(root: ET.Element) -> tuple[_Onboarding
     return _discover_search_arc_specs_in_group(root, search_group)
 
 
+def _find_box_column_search_icon(root: ET.Element, box_num: int) -> ET.Element | None:
+    """Column ``main_box{N}_search_icon`` (skip WiFi onboarding art under add-search)."""
+    parents = _parent_map(root)
+    add_group = _wifi_onboarding_add_search_group(root)
+    box_root = _find_box_root_group(root, box_num)
+    want = f"main_box{box_num}_search_icon"
+    for el in _find_all_by_logical_id(root, want):
+        if add_group is not None and _is_descendant_of(el, add_group, parents):
+            continue
+        if box_root is not None and not _is_descendant_of(el, box_root, parents):
+            continue
+        return el
+    for el in _find_all_by_logical_id(root, want):
+        if add_group is not None and _is_descendant_of(el, add_group, parents):
+            continue
+        return el
+    return None
+
+
 def _discover_box_search_arc_specs(
     root: ET.Element,
     box_num: int,
 ) -> tuple[_OnboardingSearchArcSpec, ...]:
     """Clip-masked ring arcs for ``main_box{N}_search_icon`` column spinners."""
-    search_group = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    search_group = _find_box_column_search_icon(root, box_num)
     if search_group is None:
         return ()
     return _discover_search_arc_specs_in_group(root, search_group)
@@ -3186,6 +3205,61 @@ def _hide_svg_wifi_icons(root: ET.Element) -> None:
             parent.remove(el)
 
 
+def _hide_box_column_search_svg_circles(root: ET.Element) -> None:
+    """Hide column search ring circles; OpenCV redraws them with rect clip masks.
+
+    Triangles and ``+`` stay in the SVG (PyMuPDF renders those correctly). Stroke-only
+    ``clip-path`` circles become full rings under PyMuPDF, so they must not rasterize.
+    """
+    parents = _parent_map(root)
+    for box_num in (2, 3):
+        search_icon = _find_box_column_search_icon(root, box_num)
+        if search_icon is None or _is_subtree_hidden(search_icon, parents):
+            continue
+        for el in search_icon.iter():
+            if el.tag.endswith("circle"):
+                _set_visible(el, False)
+
+
+def _collect_box_search_arc_overlays(
+    root: ET.Element,
+    state: MainSettingsState,
+    *,
+    focused_logical: str,
+) -> list[_BoxSearchArcOverlay]:
+    """Arc specs + stroke colors for visible idle box2/box3 search icons."""
+    parents = _parent_map(root)
+    overlays: list[_BoxSearchArcOverlay] = []
+    for box_num in (2, 3):
+        search_icon = _find_box_column_search_icon(root, box_num)
+        if search_icon is None or _is_subtree_hidden(search_icon, parents):
+            continue
+        panel = state._box_panel(box_num)
+        # Rotating spinner path draws its own glyph; skip static arcs.
+        if panel.scanning and panel.active and not bool(
+            getattr(state, "spinner_glyph_capture", False)
+        ):
+            continue
+        specs = _discover_search_arc_specs_in_group(root, search_icon)
+        if not specs:
+            continue
+        selected = focused_logical == f"main_box{box_num}_button" or (
+            panel.scanning and panel.active
+        )
+        color_bgr = _hex_to_bgr("#202020" if selected else "#ffffff")
+        overlays.append(_BoxSearchArcOverlay(specs=specs, color_bgr=color_bgr))
+    return overlays
+
+
+def _draw_box_search_arc_overlays(
+    bgra: np.ndarray,
+    overlays: list[_BoxSearchArcOverlay],
+) -> None:
+    for overlay in overlays:
+        for spec in overlay.specs:
+            _draw_onboarding_search_arc_stroke(bgra, spec, color_bgr=overlay.color_bgr)
+
+
 def _svg_id_index(root: ET.Element) -> dict[str, ET.Element]:
     return {raw: el for el in root.iter() if (raw := el.get("id"))}
 
@@ -3462,13 +3536,21 @@ def _draw_wifi_overlays(
 
 @dataclass(frozen=True)
 class _OnboardingSearchArcSpec:
-    """Single clipped ring arc from onboarding ``main_box2_search_icon`` art."""
+    """Single clipped ring arc from search-icon art (box columns + onboarding)."""
 
     cx_svg: float
     cy_svg: float
     radius_svg: float
     stroke_svg: float
     clip_corners_svg: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class _BoxSearchArcOverlay:
+    """Idle box2/box3 search arcs redrawn after rasterize (PyMuPDF drops clip-path)."""
+
+    specs: tuple[_OnboardingSearchArcSpec, ...]
+    color_bgr: tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -3616,7 +3698,7 @@ def _hide_star_masked_svg_circles(root: ET.Element, specs: list[_StarMaskedCircl
 
 def _hide_box_search_animation_layers(root: ET.Element, box_num: int) -> None:
     """Force-hide search spinner art for a column (SVG vectors + group)."""
-    search_icon = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    search_icon = _find_box_column_search_icon(root, box_num)
     if search_icon is not None:
         _set_visible(search_icon, False)
         _hide_box_search_icon_vectors(search_icon)
@@ -4478,7 +4560,7 @@ def _discover_box_search_triangle_specs(
     root: ET.Element,
     box_num: int,
 ) -> tuple[tuple[tuple[float, float], ...], ...]:
-    search_icon = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    search_icon = _find_box_column_search_icon(root, box_num)
     if search_icon is None:
         return ()
     specs: list[tuple[tuple[float, float], ...]] = []
@@ -4609,12 +4691,16 @@ def _set_box_search_plus_visible(search_icon: ET.Element | None, visible: bool) 
 
 
 def _show_box_search_icon_vectors(search_icon: ET.Element | None) -> None:
+    """Show SVG triangles; ring circles stay hidden (OpenCV clip redraw)."""
     if search_icon is None:
         return
     for el in search_icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
-        if tag in ("circle", "polygon"):
+        if tag == "polygon":
             _set_visible(el, True)
+        elif tag == "circle":
+            # PyMuPDF ignores circle clip-path → full rings; hide for OpenCV redraw.
+            _set_visible(el, False)
 
 
 def _hide_box_search_icon_vectors(search_icon: ET.Element | None) -> None:
@@ -4633,20 +4719,26 @@ def _apply_box_search_icon_variant(
     selected: bool,
     show_plus: bool = True,
 ) -> None:
-    """Paint box column search art (black glyphs on white pill, white on black)."""
+    """Paint box column search art (black glyphs on white pill, white on black).
+
+    Ellipse/triangle layers are Illustrator-named ``*_selected`` but have no
+    ``*_deselected`` twins — keep groups present and only recolor. Ring circles
+    are stroke-only with rect ``clip-path``; PyMuPDF drops those clips, so circles
+    are hidden before rasterize and redrawn via OpenCV (triangles stay in SVG).
+    """
     if search_icon is None:
         return
     color = "#202020" if selected else "#ffffff"
     _apply_box_search_icon_glyph_styles(search_icon, color=color)
+    # Keep ellipse clip groups in the tree for geometry discovery; hide circles.
     for el in search_icon.iter():
-        logical = _normalize_logical(el.get("id") or "")
         if el is search_icon:
             continue
-        if "_selected" in logical or "_deselected" in logical:
-            if "_selected" in logical:
-                _set_visible(el, selected)
-            if "_deselected" in logical:
-                _set_visible(el, not selected)
+        logical = _normalize_logical(el.get("id") or "")
+        if "ellipse" in logical or "eplipse" in logical:
+            _set_visible(el, True)
+        if el.tag.endswith("circle"):
+            _set_visible(el, False)
     plus_visible = bool(show_plus and not selected)
     _set_box_search_plus_visible(search_icon, plus_visible)
     if plus_visible:
@@ -4803,7 +4895,7 @@ def _apply_box_device_panel_layers(
     panel = state._box_panel(box_num)
     device_group = _find_box_device_group(root, box_num)
     location_group = _find_by_logical_id(root, f"main_box{box_num}_location_group")
-    search_icon = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    search_icon = _find_box_column_search_icon(root, box_num)
     has_device = state.box_has_saved_device(box_num)
     capture = bool(getattr(state, "spinner_glyph_capture", False))
 
@@ -5229,8 +5321,14 @@ def render_main_settings_bgra(
     onboarding_arc_specs = geom["onboarding_arcs"]  # type: ignore[assignment]
     onboarding_triangle_specs = geom["onboarding_tris"]  # type: ignore[assignment]
     wifi_layouts = geom["wifi_layouts"]  # type: ignore[assignment]
+    # Box search rings: discover clip geometry while circles still exist, then
+    # strip them before PyMuPDF (which ignores clip-path → full rings).
+    box_search_arc_overlays = _collect_box_search_arc_overlays(
+        root, st, focused_logical=focused_logical
+    )
     _hide_svg_wifi_icons(root)
     _hide_star_masked_svg_circles(root, star_specs)
+    _hide_box_column_search_svg_circles(root)
     _prune_display_none(root)
     ui_bgra = _rasterize_svg_tree(root)
     bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
@@ -5244,6 +5342,7 @@ def render_main_settings_bgra(
     bgra = _composite_bgra_over_bgra(bg_bgra, ui_bgra)
     _draw_wifi_overlays(bgra, st, wifi_layouts, focused_logical=focused_logical)
     _draw_star_masked_circle_overlays(bgra, st, star_specs, focused_logical=focused_logical)
+    _draw_box_search_arc_overlays(bgra, box_search_arc_overlays)
     _draw_wifi_onboarding_search_overlays(
         bgra, st, onboarding_arc_specs, onboarding_triangle_specs
     )

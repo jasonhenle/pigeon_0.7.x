@@ -23,6 +23,7 @@ from pigeon.widgets.main_settings import (
     _composite_bgra_over_bgra,
     _ContainerStripeSpec,
     _discover_container_stripe_specs,
+    _draw_container_background_bgra,
     _find_by_logical_id,
     _hex_to_bgr,
     _hide_container_stripe_rects,
@@ -235,23 +236,6 @@ def _discover_pigeon_stripe_specs(root: ET.Element) -> tuple[_ContainerStripeSpe
     return tuple(specs)
 
 
-_PIGEON_MENU_RADIUS_PX = 20
-
-
-def _pigeon_menu_container_mask() -> np.ndarray:
-    """Full-panel rounded clip (pigeon is box1 zoomed to 800×480; black outside corners)."""
-    from PIL import Image, ImageDraw
-
-    mask = Image.new("L", (DESIGN_W, DESIGN_H), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle(
-        (0, 0, DESIGN_W - 1, DESIGN_H - 1),
-        radius=_PIGEON_MENU_RADIUS_PX,
-        fill=255,
-    )
-    return np.asarray(mask, dtype=np.uint8)
-
-
 def _draw_pigeon_container_background_bgra(
     bgra: np.ndarray,
     stripes: tuple[_ContainerStripeSpec, ...] | None = None,
@@ -259,17 +243,11 @@ def _draw_pigeon_container_background_bgra(
     ui_hex: str | None = None,
     assets_dir: Path | str | None = None,
 ) -> None:
-    """Paint shared theme slants under pigeon settings (full-panel clip)."""
-    del stripes
-    from pigeon.widgets.main_settings import COLOR_UI_DEFAULT
-    from pigeon.widgets.settings_theme_background import (
-        draw_settings_theme_background_bgra,
-    )
-
-    draw_settings_theme_background_bgra(
+    """Paint shared theme plate using main settings menu-container clip."""
+    _draw_container_background_bgra(
         bgra,
-        ui_hex=ui_hex or COLOR_UI_DEFAULT,
-        clip_mask=_pigeon_menu_container_mask(),
+        stripes,
+        ui_hex=ui_hex,
         assets_dir=assets_dir,
     )
 
