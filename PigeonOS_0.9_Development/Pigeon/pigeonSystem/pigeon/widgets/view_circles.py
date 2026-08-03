@@ -201,6 +201,8 @@ class ViewCirclesState:
     # True while a TMDb / artwork fetch is in flight — poster shows the searching spinner.
     searching: bool = False
     search_angle_deg: float = 0.0
+    # True when TMDb gave up (no match / error-flag retries exhausted) — show "?" in poster slot.
+    missing_art: bool = False
 
 
 def _normalize_content_mode(mode: str | None) -> str:
@@ -490,7 +492,8 @@ def _text_patch_digital7(
     if max_width_px is not None and max_width_px > 0:
         l, t, r, b = _measure(draw_text)
         if (r - l) > max_width_px:
-            ell = "…"
+            # Digital-7 has no U+2026; "…" renders as a 7-segment O/D. Use ASCII dots.
+            ell = "..."
             for n in range(len(draw_text), 0, -1):
                 candidate = draw_text[:n].rstrip() + ell
                 l2, t2, r2, b2 = _measure(candidate)
@@ -1094,6 +1097,7 @@ class ViewCirclesWidget:
         poster_bgra: np.ndarray | None = None,
         has_now_playing: bool = True,
         searching: bool | None = None,
+        missing_art: bool | None = None,
         content_mode: str | None = None,
         song_title: str | None = None,
         album_title: str | None = None,
@@ -1185,6 +1189,11 @@ class ViewCirclesWidget:
                     self._last_tick_mono = None
                     self._ensure_search_frames()
                 changed = True
+        if missing_art is not None:
+            want_miss = bool(missing_art)
+            if want_miss != self._state.missing_art:
+                self._state.missing_art = want_miss
+                changed = True
         # While searching, keep the poster empty so the spinner is the only art.
         if self._state.searching:
             if self.set_poster_bgra(None):
@@ -1230,7 +1239,7 @@ class ViewCirclesWidget:
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
         return (
-            14,  # cache schema version (accent stroke over blur only)
+            15,  # cache schema version (missing-art "?" placeholder)
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -1247,6 +1256,7 @@ class ViewCirclesWidget:
             st.artist_title,
             poster_id,
             st.searching,
+            st.missing_art,
             search_frame,
             int(now.strftime("%H%M")),
             f"{now.month}/{now.day}/{now.strftime('%y')}",
@@ -1279,6 +1289,61 @@ class ViewCirclesWidget:
         self._svg_chrome_sig_by_mode[mode] = sig
         return base
 
+    def _draw_missing_art_placeholder(self, out: np.ndarray, px: int, py: int, pw: int, ph: int, prx: int) -> None:
+        """Draw a soft dark plate with a centered "?" in the 2×3 poster slot."""
+        mask = _rounded_rect_mask(pw, ph, prx)
+        plate = np.zeros((ph, pw, 4), dtype=np.uint8)
+        plate[:, :, 0] = 28
+        plate[:, :, 1] = 28
+        plate[:, :, 2] = 28
+        plate[:, :, 3] = np.minimum(np.uint8(210), mask)
+        _paste_patch_bgra(out, plate, px, py)
+        # Prefer Sharp Sans when available; fall back to Hershey for headless/dev.
+        try:
+            from pigeon.font_paths import resolve_ui_font_extrabold
+
+            font_path = resolve_ui_font_extrabold()
+        except Exception:
+            font_path = None
+        cx = int(round(px + pw / 2.0))
+        cy = int(round(py + ph / 2.0))
+        if font_path is not None:
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+
+                font = ImageFont.truetype(str(font_path), size=max(48, int(round(ph * 0.42))))
+                img = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(img)
+                glyph = "?"
+                bbox = draw.textbbox((0, 0), glyph, font=font)
+                tw = max(1, int(bbox[2] - bbox[0]))
+                th = max(1, int(bbox[3] - bbox[1]))
+                tx = (pw - tw) // 2 - int(bbox[0])
+                ty = (ph - th) // 2 - int(bbox[1]) - max(2, ph // 40)
+                draw.text((tx, ty), glyph, font=font, fill=(220, 220, 220, 255))
+                arr = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA)
+                arr[:, :, 3] = np.minimum(arr[:, :, 3], mask)
+                _paste_patch_bgra(out, arr, px, py)
+                return
+            except Exception:
+                pass
+        # OpenCV fallback (no custom font).
+        scale = max(1.5, ph / 140.0)
+        thickness = max(2, int(round(scale * 2.2)))
+        (tw, th), _ = cv2.getTextSize("?", cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+        tx = cx - tw // 2
+        ty = cy + th // 2
+        cv2.putText(
+            out,
+            "?",
+            (tx, ty),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            (220, 220, 220, 255) if out.shape[2] == 4 else (220, 220, 220),
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
+
     def _draw_poster(self, out: np.ndarray) -> None:
         px, py, pw, ph, prx = _poster_geometry(self.content_mode)
         src = self._poster_bgra
@@ -1307,6 +1372,12 @@ class ViewCirclesWidget:
                     patch = cv2.cvtColor(patch, cv2.COLOR_BGR2BGRA)
                 patch[:, :, 3] = np.minimum(patch[:, :, 3], mask)
                 _paste_patch_bgra(out, patch, px, py)
+        elif (
+            self._state.missing_art
+            and not self._state.searching
+            and self._state.content_mode != _CONTENT_MODE_MUSIC
+        ):
+            self._draw_missing_art_placeholder(out, px, py, pw, ph, prx)
         if self._state.searching:
             frames = self._ensure_search_frames()
             if frames:
@@ -1434,7 +1505,8 @@ class ViewCirclesWidget:
         st = self._state
         vol = _receiver_volume_display_line(st.volume)
         if vol and vol.strip().lower() not in ("mute", "muted"):
-            vol_p, _, _ = _text_patch_digital7(vol, size_px=72, max_width_px=180)
+            # No max_width: short levels (e.g. "45", "-20.5 dB") must never ellipsize.
+            vol_p, _, _ = _text_patch_digital7(vol, size_px=72)
             _paste_centered(out, vol_p, _VOLUME_CX, _VOLUME_CY)
         cfg = receiver_audio_config_display_line(st.incoming, st.config)
         if cfg:

@@ -1,4 +1,4 @@
-# device_capability_matrix.py — lives next to pigeon_0_8.py (avoids importing pigeon package).
+# device_capability_matrix.py — lives next to pigeon_0_9.py (avoids importing pigeon package).
 # Static capability levels for Settings → Advanced matrix (replace with live probes later).
 
 from __future__ import annotations

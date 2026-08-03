@@ -64,7 +64,7 @@ APP="${app}"
 BRANCH="${branch}"
 LAUNCHER="${label}"
 
-if [[ ! -f "\${APP}/installer/run_pigeon_0_9.command" && ! -f "\${APP}/installer/run_pigeon_0_8.command" ]]; then
+if [[ ! -f "\${APP}/installer/run_pigeon_0_9.command" ]]; then
   osascript -e "display alert \"Pigeon not found\" message \"Expected install at:\${APP}\" as critical"
   exit 1
 fi
@@ -85,10 +85,7 @@ echo "  branch \${BRANCH}  ·  v\${VERSION}"
 echo "  \${APP}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-if [[ -f "\${APP}/installer/run_pigeon_0_9.command" ]]; then
-  exec bash "\${APP}/installer/run_pigeon_0_9.command"
-fi
-exec bash "\${APP}/installer/run_pigeon_0_8.command"
+exec bash "\${APP}/installer/run_pigeon_0_9.command"
 EOF
   chmod +x "${path}"
   echo "==> Wrote ${path}"

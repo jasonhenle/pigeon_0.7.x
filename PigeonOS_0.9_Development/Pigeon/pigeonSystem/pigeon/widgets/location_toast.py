@@ -47,7 +47,7 @@ def _load_font(path: str, size: int) -> ImageFont.ImageFont:
 def _ellipsize(text: str, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, max_w: int) -> str:
     if _text_size(draw, text, font)[0] <= max_w:
         return text
-    ell = "…"
+    ell = "..."
     if _text_size(draw, ell, font)[0] > max_w:
         return ""
     lo, hi = 0, len(text)

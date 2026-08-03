@@ -14,21 +14,15 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.widgets.main_settings import (
     MainSettingsState,
     _composite_bgra_over_bgra,
-    _ContainerStripeSpec,
-    _discover_container_stripe_specs,
+    _disable_embedded_settings_background_layers,
     _draw_container_background_bgra,
     _find_by_logical_id,
-    _hex_to_bgr,
-    _hide_container_stripe_rects,
-    _composite_stroke_mask,
-    _transform_rect_corners_svg,
     _prune_display_none,
     _rasterize_svg_tree,
     _set_text_content,
@@ -46,10 +40,6 @@ _PIGEON_FOCUS_RING: tuple[str, ...] = (
     "audio_button",
     "music_button",
     "update_button",
-)
-
-_PIGEON_BACKGROUND_CONTAINERS: tuple[str, ...] = tuple(
-    f"menu_container_{i}" for i in range(1, 7)
 )
 
 _PIGEON_BACK_LAYERS: dict[str, tuple[str, ...]] = {
@@ -222,31 +212,15 @@ def _set_heading_text(el: ET.Element | None, text: str) -> None:
         tspan.text = text
 
 
-def _svg_to_pigeon_px(x_svg: float, y_svg: float) -> tuple[int, int]:
-    vx, vy, vw, vh = _PIGEON_VIEWBOX
-    x = int(round((x_svg - vx) * DESIGN_W / vw))
-    y = int(round((y_svg - vy) * DESIGN_H / vh))
-    return x, y
-
-
-def _discover_pigeon_stripe_specs(root: ET.Element) -> tuple[_ContainerStripeSpec, ...]:
-    specs: list[_ContainerStripeSpec] = []
-    for cid in _PIGEON_BACKGROUND_CONTAINERS:
-        specs.extend(_discover_container_stripe_specs(root, cid))
-    return tuple(specs)
-
-
 def _draw_pigeon_container_background_bgra(
     bgra: np.ndarray,
-    stripes: tuple[_ContainerStripeSpec, ...] | None = None,
     *,
     ui_hex: str | None = None,
     assets_dir: Path | str | None = None,
 ) -> None:
-    """Paint shared theme plate using main settings menu-container clip."""
+    """Paint shared ``settings_background.svg`` plate (same clip as main settings)."""
     _draw_container_background_bgra(
         bgra,
-        stripes,
         ui_hex=ui_hex,
         assets_dir=assets_dir,
     )
@@ -299,12 +273,7 @@ def render_pigeon_settings_bgra(
     st = state if state is not None else MainSettingsState()
     root = _pigeon_svg_tree_from_path(path)
     apply_pigeon_settings_svg_state(root, st)
-    _hide_container_stripe_rects(root, _PIGEON_BACKGROUND_CONTAINERS)
-    for cid in _PIGEON_BACKGROUND_CONTAINERS:
-        _set_visible(_find_by_logical_id(root, cid), False)
-    bg = _find_by_logical_id(root, "background")
-    if bg is not None:
-        _set_visible(bg, False)
+    _disable_embedded_settings_background_layers(root)
     _prune_display_none(root)
     ui_bgra = _rasterize_svg_tree(root)
     bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)

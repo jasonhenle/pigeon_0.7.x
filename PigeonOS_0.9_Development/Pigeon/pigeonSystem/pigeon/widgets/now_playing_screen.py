@@ -232,7 +232,7 @@ _CONTAINER_RX = 12
 
 @dataclass
 class NowPlayingScreenState:
-    """External inputs mirrored from pigeon_0_8 holders."""
+    """External inputs mirrored from pigeon_0_9 holders."""
 
     progress: float = 0.0
     remaining_text: str = ""
@@ -759,7 +759,7 @@ def _fit_text_patch(
         )
         if probe_w <= max_width_px:
             return probe_patch, probe_w, probe_h
-        ell = "…"
+        ell = "..."
         for n in range(len(draw_text), 0, -1):
             candidate = draw_text[:n].rstrip() + ell
             cp, cw, ch = _fit_text_patch(
@@ -1396,7 +1396,7 @@ class NowPlayingScreenWidget:
         layout_mode: str | None = None,
         indicator_now_playing: bool | None = None,
     ) -> bool:
-        """Batch update from ``pigeon_0_8`` holders; returns True when the cached frame is stale."""
+        """Batch update from ``pigeon_0_9`` holders; returns True when the cached frame is stale."""
         changed = False
         if self.set_now_playing_chrome_visible(has_now_playing):
             changed = True

@@ -37,7 +37,8 @@ _BOOTSTRAP_SCRIPT_RAW = (
 _LAUNCHER_NAMES = (
     "run_pigeon_0_9.command",
     "run_pigeon_0_9.sh",
-    "run_pigeon_0_8.command",  # macOS double-click (legacy name)
+    # Legacy names accepted when scanning old GitHub zips for migration.
+    "run_pigeon_0_8.command",
     "run_pigeon_0_8.sh",
     "run_pigeon_0_7.sh",
     "run_pigeon_0_6.sh",
@@ -45,7 +46,8 @@ _LAUNCHER_NAMES = (
     "run-pigeon.sh",
 )
 _INSTALLER_DIR = "installer"
-_MAIN_PY_NAMES = ("pigeon_0_8.py", "pigeon_0_7.py", "pigeon_0_6.py")
+# Prefer 0.9; legacy names accepted when scanning old zips for migration.
+_MAIN_PY_NAMES = ("pigeon_0_9.py", "pigeon_0_8.py", "pigeon_0_7.py", "pigeon_0_6.py")
 _PREFERRED_APP_REL = Path("PigeonOS_0.9_Development") / "Pigeon"
 
 
@@ -158,11 +160,11 @@ def _find_launcher_script(install_root: Path) -> Path | None:
 
 
 def _preferred_launcher_script(install_root: Path) -> Path | None:
-    """Prefer the 0.8 entry point after a 0.7 -> 0.8 GitHub update."""
+    """Prefer the 0.9 entry point after a GitHub update."""
     installer = install_root / _INSTALLER_DIR
     for name in (
-        "run_pigeon_0_8.sh",
-        "run_pigeon_0_8.command",
+        "run_pigeon_0_9.sh",
+        "run_pigeon_0_9.command",
         "click_run_pigeon_pi.sh",
         "Run-Pigeon",
         "run-pigeon.sh",
@@ -298,14 +300,14 @@ def restart_pigeon_after_update(
     launcher = _preferred_launcher_script(install_root)
 
     if sys.platform.startswith("linux"):
-        launcher_08 = install_root / _INSTALLER_DIR / "run_pigeon_0_8.sh"
-        if launcher_08.is_file():
-            # Never systemd-restart back into a legacy 0.7 entry point after updating files.
-            if _systemd_points_to_launcher(install_root, "run_pigeon_0_8.sh"):
+        launcher_09 = install_root / _INSTALLER_DIR / "run_pigeon_0_9.sh"
+        if launcher_09.is_file():
+            # Prefer systemd when the unit already points at the 0.9 launcher.
+            if _systemd_points_to_launcher(install_root, "run_pigeon_0_9.sh"):
                 ok, msg = _try_systemd_restart()
                 if ok:
                     return True, msg
-            return _schedule_delayed_launch(launcher_08, install_root, parent_pid=pid)
+            return _schedule_delayed_launch(launcher_09, install_root, parent_pid=pid)
 
     if launcher is None:
         return False, "no launcher script found"
@@ -365,33 +367,46 @@ def github_full_download_page_url() -> str:
 
 
 def _find_app_root_in_tree(root: Path) -> Path | None:
-    """Locate the Pigeon app folder inside a GitHub zip extract (prefer 0.8 layout)."""
+    """Locate the Pigeon app folder inside a GitHub zip extract (prefer 0.9 layout)."""
     bases: list[Path] = [root]
     if root.is_dir():
         bases.extend(p for p in root.iterdir() if p.is_dir())
 
     for base in bases:
         preferred = base / _PREFERRED_APP_REL
-        if (preferred / "pigeonSystem" / "pigeon_0_8.py").is_file() and _has_launcher(preferred):
+        if any(
+            (preferred / "pigeonSystem" / name).is_file() for name in ("pigeon_0_9.py", "pigeon_0_8.py")
+        ) and _has_launcher(preferred):
             return preferred
         if any((preferred / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and _has_launcher(
             preferred
         ):
             return preferred
         if any((base / "pigeonSystem" / name).is_file() for name in _MAIN_PY_NAMES) and _has_launcher(base):
-            if (base / "pigeonSystem" / "pigeon_0_8.py").is_file():
-                return base
             return base
 
     try:
-        for pattern in ("run_pigeon_0_8.sh", "run_pigeon_0_7.sh", "run_pigeon_0_6.sh"):
+        for pattern in (
+            "run_pigeon_0_9.sh",
+            "run_pigeon_0_8.sh",
+            "run_pigeon_0_7.sh",
+            "run_pigeon_0_6.sh",
+        ):
             for launcher in sorted(root.rglob(pattern)):
                 parent = launcher.parent
                 if parent.name == _INSTALLER_DIR:
                     parent = parent.parent
-                if (parent / "pigeonSystem" / "pigeon_0_8.py").is_file():
+                if any(
+                    (parent / "pigeonSystem" / name).is_file()
+                    for name in ("pigeon_0_9.py", "pigeon_0_8.py")
+                ):
                     return parent
-        for pattern in ("run_pigeon_0_8.sh", "run_pigeon_0_7.sh", "run_pigeon_0_6.sh"):
+        for pattern in (
+            "run_pigeon_0_9.sh",
+            "run_pigeon_0_8.sh",
+            "run_pigeon_0_7.sh",
+            "run_pigeon_0_6.sh",
+        ):
             for launcher in sorted(root.rglob(pattern)):
                 parent = launcher.parent
                 if parent.name == _INSTALLER_DIR:
@@ -471,11 +486,15 @@ def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
 
 def _run_bootstrap(install_root: Path) -> tuple[bool, str]:
     installer = install_root / _INSTALLER_DIR
-    launcher = installer / "run_pigeon_0_8.sh"
+    launcher = installer / "run_pigeon_0_9.sh"
+    if not launcher.is_file():
+        launcher = installer / "run_pigeon_0_8.sh"  # legacy zip fallback
     if not launcher.is_file():
         launcher = installer / "run_pigeon_0_6.sh"
     if not launcher.is_file():
-        launcher = install_root / "run_pigeon_0_8.sh"
+        launcher = install_root / "run_pigeon_0_9.sh"
+    if not launcher.is_file():
+        launcher = install_root / "run_pigeon_0_8.sh"  # legacy zip fallback
     if not launcher.is_file():
         launcher = install_root / "run_pigeon_0_6.sh"
     if not launcher.is_file():
@@ -682,7 +701,7 @@ def apply_github_update(
         if app_src is None:
             return ApplyUpdateResult(
                 False,
-                "Could not find Pigeon app folder (installer/run_pigeon_0_8.sh) inside GitHub zip.",
+                "Could not find Pigeon app folder (installer/run_pigeon_0_9.sh) inside GitHub zip.",
             )
 
         _report_progress(progress, 0.68, "Installing files…")

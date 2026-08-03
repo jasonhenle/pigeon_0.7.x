@@ -1,7 +1,7 @@
 /*
   Pigeon rotary encoder → host navigation
 
-  Intended map (matches pigeon_0_8.py hotkeys):
+  Intended map (matches pigeon_0_9.py hotkeys):
     CW   → forward  (Right / serial RIGHT)
     CCW  → backward (Left  / serial LEFT)
     PUSH → activate (Space / serial PUSH)

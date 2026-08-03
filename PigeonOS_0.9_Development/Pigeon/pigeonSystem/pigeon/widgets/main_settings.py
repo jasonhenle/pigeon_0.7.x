@@ -280,7 +280,11 @@ _HIDE_ALWAYS_LOGICAL: tuple[str, ...] = (
     "keyboardtemp",
 )
 
-_BACKGROUND_CONTAINERS: tuple[str, ...] = tuple(f"container{i}" for i in range(1, 8))
+# Baked stripe groups in settings_main (containerN) and settings_pigeon (menu_container_N).
+_BACKGROUND_CONTAINERS: tuple[str, ...] = tuple(
+    [f"container{i}" for i in range(1, 8)]
+    + [f"menu_container_{i}" for i in range(1, 7)]
+)
 
 # Launch-visible layer groups (``settingInstructions_0.8.0``).
 _LAUNCH_VISIBLE_LOGICAL: frozenset[str] = frozenset(
@@ -3900,11 +3904,23 @@ def _draw_container_background_bgra(
 
 
 def _disable_embedded_settings_background_layers(root: ET.Element) -> None:
-    """Hide/remove baked stripe + canvas background groups from chrome SVGs."""
+    """Hide/remove baked stripe + canvas background groups from chrome SVGs.
+
+    All settings menus paint the shared ``settings_background.svg`` plate in code;
+    embedded Illustrator stripe/background layers must never rasterize.
+    """
     for cid in _BACKGROUND_CONTAINERS:
         el = _find_by_logical_id(root, cid)
         if el is not None:
             _set_visible(el, False)
+    # Catch any leftover stripe groups by logical id prefix.
+    for el in root.iter():
+        logical = _normalize_logical(el.get("id") or "")
+        if logical in ("background", "settings_background") or logical.startswith(
+            ("container", "menu_container_")
+        ):
+            if el.tag.endswith("g") or el.tag.endswith("rect"):
+                _set_visible(el, False)
     _hide_container_stripe_rects(root)
     _remove_canvas_background_rect(root)
     for lid in ("settings_background", "background"):
@@ -3969,6 +3985,31 @@ def _discover_container_stripe_specs(root: ET.Element, container_id: str) -> tup
     return tuple(specs)
 
 
+def _parse_svg_slant_transform(
+    transform: str | None,
+) -> tuple[float, float, float, float, float, float] | None:
+    """Parse ``matrix(...)`` or Illustrator ``translate(...) rotate(...)`` CTMs."""
+    matrix = _parse_svg_matrix(transform)
+    if matrix is not None:
+        return matrix
+    if not transform:
+        return None
+    m = _TRANSLATE_RE.search(transform)
+    if not m:
+        return None
+    rot = re.search(r"rotate\(\s*([-\d.]+)\s*\)", transform, re.IGNORECASE)
+    if rot is None:
+        return None
+    import math
+
+    tx = float(m.group(1))
+    ty = float(m.group(2) or 0.0)
+    rad = math.radians(float(rot.group(1)))
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    return (cos_a, sin_a, -sin_a, cos_a, tx, ty)
+
+
 def _hide_container_stripe_rects(
     root: ET.Element,
     container_ids: tuple[str, ...] | None = None,
@@ -3984,7 +4025,7 @@ def _hide_container_stripe_rects(
                 continue
             style = el.get("style") or ""
             transform = el.get("transform") or _style_prop(style, "transform")
-            if _parse_svg_matrix(transform) is not None:
+            if _parse_svg_slant_transform(transform) is not None:
                 parent = parents.get(el)
                 if parent is not None:
                     parent.remove(el)
@@ -7279,7 +7320,7 @@ class MainSettingsWidget:
         else:
             roi[:] = alpha_blend_bgra_over_bgr(roi, resized)
 
-    # Alias used by ``pigeon_0_8`` composite paths.
+    # Alias used by ``pigeon_0_9`` composite paths.
     render_on_bgr = render
 
 

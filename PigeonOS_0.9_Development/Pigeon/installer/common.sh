@@ -70,7 +70,7 @@ pigeon_install_bundled_fonts() {
 }
 
 # Passwordless ``systemctl restart pigeon`` for in-app GitHub updates (Pi autostart).
-# Rewrite an existing Pi autostart unit to launch run_pigeon_0_8.sh (0.7 -> 0.8 migration).
+# Rewrite an existing Pi autostart unit to launch run_pigeon_0_9.sh (legacy -> 0.9 migration).
 pigeon_refresh_systemd_service() {
   local install_dir="${1:-}"
   local install_user="${2:-$(id -un)}"
@@ -80,7 +80,7 @@ pigeon_refresh_systemd_service() {
   if [[ -z "${install_dir}" || ! -f "${template}" || ! -f "${service}" ]]; then
     return 0
   fi
-  if grep -q "run_pigeon_0_8.sh" "${service}" 2>/dev/null; then
+  if grep -q "run_pigeon_0_9.sh" "${service}" 2>/dev/null; then
     return 0
   fi
   local version tmp
@@ -147,7 +147,7 @@ macOS default install dir:  ~/Applications/Pigeon_${ver}
 Linux / Pi default dir:   ~/Pigeon_${ver}
 
 After install, launch with:
-  macOS:  ~/Desktop/Pigeon.command   (or installer/run_pigeon_0_8.command in the install folder)
-  Linux:  ./installer/run_pigeon_0_8.sh (in the install folder)
+  macOS:  ~/Desktop/Pigeon.command   (or installer/run_pigeon_0_9.command in the install folder)
+  Linux:  ./installer/run_pigeon_0_9.sh (in the install folder)
 EOF
 }

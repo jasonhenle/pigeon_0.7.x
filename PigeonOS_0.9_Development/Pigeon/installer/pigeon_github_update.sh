@@ -15,7 +15,7 @@ LOG_FILE="${STATE_DIR}/pigeon.log"
 INSTALL_DIR="${1:-${PIGEON_INSTALL_ROOT:-}}"
 if [[ -z "${INSTALL_DIR}" ]]; then
   for d in "${HOME}"/Pigeon_*; do
-    if [[ -f "${d}/pigeonSystem/pigeon_0_8.py" || -f "${d}/pigeonSystem/pigeon_0_7.py" ]]; then
+    if [[ -f "${d}/pigeonSystem/pigeon_0_9.py" || -f "${d}/pigeonSystem/pigeon_0_8.py" || -f "${d}/pigeonSystem/pigeon_0_7.py" ]]; then
       INSTALL_DIR="${d}"
       break
     fi
@@ -43,12 +43,12 @@ INSTALL_DIR="$(cd "${INSTALL_DIR}" && pwd)"
 
 schedule_in_app_relaunch() {
   local parent_pid="${PIGEON_UPDATE_PARENT_PID:-}"
-  local relaunch="${INSTALL_DIR}/installer/run_pigeon_0_8.sh"
+  local relaunch="${INSTALL_DIR}/installer/run_pigeon_0_9.sh"
   if [[ ! -x "${relaunch}" ]]; then
     relaunch="${INSTALL_DIR}/installer/click_run_pigeon_pi.sh"
   fi
   if [[ ! -x "${relaunch}" ]]; then
-    log "no 0.8 launcher found for in-app relaunch"
+    log "no 0.9 launcher found for in-app relaunch"
     return 0
   fi
   log "scheduling in-app relaunch via ${relaunch}"
@@ -118,7 +118,7 @@ for candidate in \
   "${EXTRACT}"/*/"${APP_REL}" \
   "${EXTRACT}/${APP_REL}" \
   "${EXTRACT}"/*; do
-  if [[ -f "${candidate}/pigeonSystem/pigeon_0_8.py" ]]; then
+  if [[ -f "${candidate}/pigeonSystem/pigeon_0_9.py" || -f "${candidate}/pigeonSystem/pigeon_0_8.py" ]]; then
     SRC="${candidate}"
     break
   fi
@@ -147,6 +147,7 @@ fi
 # GitHub zip extraction drops Unix +x bits; desktop double-click launchers need them.
 if [[ -d "${INSTALL_DIR}/installer" ]]; then
   chmod +x "${INSTALL_DIR}/installer/"*.sh 2>/dev/null || true
+  chmod +x "${INSTALL_DIR}/installer/"*.command 2>/dev/null || true
   chmod +x "${INSTALL_DIR}/installer/Run-Pigeon" "${INSTALL_DIR}/installer/Install-Pigeon" 2>/dev/null || true
 fi
 
@@ -154,8 +155,8 @@ fi
 source "${INSTALL_DIR}/installer/common.sh"
 
 log "running pip bootstrap"
-if ! bash "${INSTALL_DIR}/installer/run_pigeon_0_8.sh" --bootstrap-only; then
-  die "pip bootstrap failed — check ${LOG_FILE} and run: bash ${INSTALL_DIR}/installer/run_pigeon_0_8.sh --bootstrap-only"
+if ! bash "${INSTALL_DIR}/installer/run_pigeon_0_9.sh" --bootstrap-only; then
+  die "pip bootstrap failed — check ${LOG_FILE} and run: bash ${INSTALL_DIR}/installer/run_pigeon_0_9.sh --bootstrap-only"
 fi
 
 pigeon_install_bundled_fonts "${INSTALL_DIR}" "${HOME}"
@@ -170,14 +171,14 @@ if [[ "${PIGEON_UPDATE_IN_APP:-}" == "1" ]]; then
   # Do not systemctl-stop here: that can kill this updater before relaunch is
   # scheduled, and sudoers typically allows restart but not stop.
   schedule_in_app_relaunch
-  log "in-app update — Pigeon 0.8 will start after the current app exits"
+  log "in-app update — Pigeon 0.9 will start after the current app exits"
   echo "Restarting Pigeon…"
   exit 0
 fi
 
 log "restarting pigeon"
 if [[ -f "/etc/systemd/system/pigeon.service" ]] \
-  && grep -q "run_pigeon_0_8.sh" "/etc/systemd/system/pigeon.service" 2>/dev/null \
+  && grep -qE "run_pigeon_0_9\.sh|run_pigeon_0_8\.sh" "/etc/systemd/system/pigeon.service" 2>/dev/null \
   && command -v systemctl >/dev/null 2>&1; then
   if sudo -n systemctl restart pigeon.service 2>/dev/null \
     || systemctl restart pigeon.service 2>/dev/null \
@@ -189,7 +190,7 @@ if [[ -f "/etc/systemd/system/pigeon.service" ]] \
   fi
 fi
 
-LAUNCHER="${INSTALL_DIR}/installer/run_pigeon_0_8.sh"
+LAUNCHER="${INSTALL_DIR}/installer/run_pigeon_0_9.sh"
 if [[ ! -x "${LAUNCHER}" ]]; then
   LAUNCHER="${INSTALL_DIR}/installer/click_run_pigeon_pi.sh"
 fi
@@ -198,5 +199,5 @@ if [[ -x "${LAUNCHER}" ]]; then
   nohup bash "${LAUNCHER}" >/dev/null 2>&1 &
   echo "Pigeon relaunched."
 else
-  echo "Restart manually: bash ${INSTALL_DIR}/installer/run_pigeon_0_8.sh"
+  echo "Restart manually: bash ${INSTALL_DIR}/installer/run_pigeon_0_9.sh"
 fi

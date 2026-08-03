@@ -93,7 +93,7 @@ zipfile.ZipFile(sys.argv[1]).extractall(Path(sys.argv[2]))
 PY
   local app=""
   for d in "${WORKDIR}/extract"/*/"${APP_PREFIX}"; do
-    if [[ -f "${d}/pigeonSystem/pigeon_0_8.py" ]]; then
+    if [[ -f "${d}/pigeonSystem/pigeon_0_9.py" || -f "${d}/pigeonSystem/pigeon_0_8.py" ]]; then
       app="${d}"
       break
     fi
@@ -114,7 +114,7 @@ install_pi_linux() {
     tar -xzf "${WORKDIR}/pigeon.tar.gz" -C "${WORKDIR}"
     local app=""
     for d in "${WORKDIR}"/Pigeon_*; do
-      if [[ -f "${d}/pigeonSystem/pigeon_0_8.py" ]]; then
+      if [[ -f "${d}/pigeonSystem/pigeon_0_9.py" || -f "${d}/pigeonSystem/pigeon_0_8.py" ]]; then
         app="${d}"
         break
       fi
@@ -123,7 +123,7 @@ install_pi_linux() {
       echo "${app}"
       return
     fi
-    echo "==> Latest release tarball is not a 0.8 package — falling back to main-branch zip." >&2
+    echo "==> Latest release tarball is not a 0.9 package — falling back to main-branch zip." >&2
   fi
 
   echo "==> Using main-branch zip (full repo snapshot)." >&2

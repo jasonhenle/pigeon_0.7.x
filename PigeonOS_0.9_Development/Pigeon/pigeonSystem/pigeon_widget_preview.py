@@ -24,7 +24,7 @@ import numpy as np
 import tkinter as tk
 from PIL import Image, ImageTk
 
-import pigeon_0_5 as pigeon_app
+import pigeon_0_9 as pigeon_app
 from pigeon.widgets.clock_calendar import DEFAULT_FAKE_TIME_STRING, ClockCalendarWidget
 from pigeon.widgets.placeholder import PlaceholderWidget
 from pigeon.widgets.poster_art import PosterArtWidget
