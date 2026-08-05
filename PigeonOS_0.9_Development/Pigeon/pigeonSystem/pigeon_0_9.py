@@ -545,10 +545,12 @@ CLOCK_SAVER_BACKDROP_DIM = 0.3
 # (typical re-buffer is < 2 s) without prematurely arming the saver. A position advance while the
 # saver is already open ends it on the next render tick via the same bump.
 CLOCK_SAVER_POSITION_STALL_GRACE_S = 5.0
-# When reported playback ``position`` stops changing for this long, force the clock saver on
-# (independent of the 300 s UI+device idle path). Ends as soon as position advances again.
-# Live content (no position) keeps the stamp fresh while Playing so this path does not arm.
-CLOCK_SAVER_POSITION_STALL_AFTER_S = 120.0
+# When player poll metadata stays unchanged for this long **and** no local Pigeon
+# controls were used for the same span, force the clock saver on (independent of the
+# 300 s UI+device idle path and independent of TMDb art). Content/title/app/state/position
+# changes refresh the stamp; so does any control via ``_bump_pigeon_user_activity``.
+# No TMDb / no position does **not** block this — idle or empty metadata still ages out.
+CLOCK_SAVER_METADATA_IDLE_AFTER_S = 120.0
 
 # Idle composite cadence when video is paused (lower than live playback).
 PAUSED_COMPOSITE_MS = 83  # ~12 FPS
@@ -1436,10 +1438,18 @@ def main() -> int:
 
         settings_wheel_all_bound = [False]
         last_pigeon_user_activity_mono = [time.monotonic()]
+        # Shared with metadata-idle clock saver (defined early so control bumps can dismiss it).
+        last_metadata_activity_mono = [time.monotonic()]
+        # Until playback is seen (or the user uses a control), stay on the clock saver after splash.
+        _boot_clock_saver_until_playback = [True]
 
         def _bump_pigeon_user_activity(_event: object | None = None) -> None:
-            """Marks local UI activity so theater idle-dim can ease out (see also bind_all + hotkey handlers)."""
-            last_pigeon_user_activity_mono[0] = time.monotonic()
+            """Marks local UI activity (theater idle-dim + dismiss metadata-idle clock saver)."""
+            now_act = time.monotonic()
+            last_pigeon_user_activity_mono[0] = now_act
+            # Any Pigeon control (key, click, rotary, settings) exits the 2-minute saver.
+            last_metadata_activity_mono[0] = now_act
+            _boot_clock_saver_until_playback[0] = False
 
         def _settings_wheel_target_should_ignore(widget: tk.Misc) -> bool:
             """Let Listbox/Text/Entry keep their own scroll behavior."""
@@ -2314,14 +2324,13 @@ def main() -> int:
         last_atv_interaction_mono = 0.0
         last_device_interaction_mono = 0.0
         last_timecode_motion_mono = 0.0
-        # Wall time of last *reported* position change (not extrapolated). Drives the
-        # 2-minute position-stall clock saver. 0 = never / cleared (path inactive).
-        last_reported_position_change_mono = [0.0]
+        # ``last_metadata_activity_mono`` is initialized with pigeon user-activity state above.
         last_clock_saver_significant_device_mono = [time.monotonic()]
         _cs_sig_init = [False]
         _cs_sig_ck: list[str | None] = [None]
         _cs_sig_ds = [""]
         _cs_sig_vol = [""]
+        _cs_sig_fp = [""]
         _atv_ix_sig_ds = ""
         _atv_ix_sig_ck: str | None = None
         _atv_ix_pos: float | None = None
@@ -2360,32 +2369,84 @@ def main() -> int:
         def _bump_clock_saver_significant_device() -> None:
             last_clock_saver_significant_device_mono[0] = time.monotonic()
 
+        def _note_metadata_activity(now: float | None = None) -> None:
+            """Refresh the 2-minute metadata-idle clock-saver stamp."""
+            last_metadata_activity_mono[0] = float(
+                time.monotonic() if now is None else now
+            )
+
         def _clear_reported_position_stall_stamp() -> None:
-            """Drop the 2-minute position-stall saver arm (device removed / location change)."""
-            last_reported_position_change_mono[0] = 0.0
+            """Reset metadata-idle saver stamp (device removed / location change)."""
+            last_metadata_activity_mono[0] = time.monotonic()
+
+        def _coarse_device_state_for_saver(ds: str) -> str:
+            d = str(ds or "").strip().lower()
+            if "playing" in d:
+                return "playing"
+            if "paus" in d:
+                return "paused"
+            if (not d) or ("idle" in d) or ("stop" in d):
+                return "idle"
+            return d
+
+        def _metadata_activity_fingerprint(md: dict[str, object]) -> str:
+            """Content/playback signature for the 2-minute metadata-idle saver.
+
+            Volume is excluded (receiver/ATV level noise must not reset the timer).
+            Position is only included while Playing so Idle/home None↔0 flaps are ignored.
+            TMDb art presence is ignored.
+            """
+            ck = _content_key_from_metadata(md) or ""
+            ds = _coarse_device_state_for_saver(str(md.get("device_state") or ""))
+            title = str(md.get("title") or "").strip().lower()
+            artist = str(md.get("artist") or "").strip().lower()
+            album = str(md.get("album") or "").strip().lower()
+            series = str(md.get("series_name") or "").strip().lower()
+            app = str(md.get("app_name") or md.get("app") or "").strip().lower()
+            app_id = str(md.get("app_id") or "").strip().lower()
+            query = str(md.get("query") or "").strip().lower()
+            pos_tok = ""
+            if ds == "playing":
+                pos_raw = md.get("position")
+                if pos_raw is not None:
+                    try:
+                        pos_tok = f"{int(max(0.0, float(pos_raw)) * 4.0)}"
+                    except (TypeError, ValueError):
+                        pos_tok = ""
+            return "|".join(
+                (ck, ds, title, artist, album, series, app, app_id, query, pos_tok)
+            )
 
         def _bump_clock_saver_significant_device_from_metadata(md: dict[str, object]) -> None:
-            """Selection / play-state / volume changes reset or postpone the clock saver (not timecode drift)."""
+            """Content/play-state changes postpone savers; volume only affects the 300 s path."""
             ck = _content_key_from_metadata(md)
-            ds = str(md.get("device_state") or "").strip()
+            ds = _coarse_device_state_for_saver(str(md.get("device_state") or ""))
             vk = _vol_norm_for_clock_saver(md.get("volume_percent"))
+            fp = _metadata_activity_fingerprint(md)
             if not _cs_sig_init[0]:
                 _cs_sig_init[0] = True
                 _cs_sig_ck[0] = ck
                 _cs_sig_ds[0] = ds
                 _cs_sig_vol[0] = vk
+                _cs_sig_fp[0] = fp
+                _note_metadata_activity()
                 return
-            bump = False
+            vol_bump = vk != _cs_sig_vol[0] and (vk or _cs_sig_vol[0])
+            content_bump = fp != _cs_sig_fp[0]
+            # Keep legacy ck/ds tracking for diagnostics; content fingerprint is authoritative.
             if ck != _cs_sig_ck[0] and (ck or _cs_sig_ck[0]):
-                bump = True
+                content_bump = True
             if ds != _cs_sig_ds[0]:
-                bump = True
-            if vk != _cs_sig_vol[0] and (vk or _cs_sig_vol[0]):
-                bump = True
+                content_bump = True
             _cs_sig_ck[0] = ck
             _cs_sig_ds[0] = ds
             _cs_sig_vol[0] = vk
-            if bump:
+            _cs_sig_fp[0] = fp
+            if content_bump:
+                _bump_clock_saver_significant_device()
+                _note_metadata_activity()
+            elif vol_bump:
+                # Volume must not reset the 2-minute metadata-idle saver.
                 _bump_clock_saver_significant_device()
 
         def _reset_clock_saver_device_signal_baseline() -> None:
@@ -2393,7 +2454,9 @@ def main() -> int:
             _cs_sig_ck[0] = None
             _cs_sig_ds[0] = ""
             _cs_sig_vol[0] = ""
+            _cs_sig_fp[0] = ""
             _bump_clock_saver_significant_device()
+            _note_metadata_activity()
 
         def _apply_position_stall_grace_to_clock_saver(now: float) -> None:
             """Keep the saver device-signal timer pinned to ``now`` while content position is live.
@@ -2412,17 +2475,58 @@ def main() -> int:
                 return
             last_clock_saver_significant_device_mono[0] = now
 
+        _cs_meta_idle_log_mono = [0.0]
+        _cs_meta_idle_was_active = [False]
+
+        def _something_playing_now() -> bool:
+            """True when the player reports active playback (not idle/home/paused-only)."""
+            if bool(apple_tv_playback_clock.get("playing")):
+                return True
+            lm = apple_tv_auto_state.get("last_metadata")
+            if not isinstance(lm, dict):
+                return False
+            return "Playing" in str(lm.get("device_state") or "")
+
         def _clock_saver_active(now: float) -> bool:
             if clock_saver_composite_bgra is None:
                 return False
             if dev_phase != DevPhase.OFF:
                 return False
-            if not scene_enabled:
-                return False
+            # Do not require ``scene_enabled``: view ONE now-playing (circles) commonly
+            # runs with the video scene off, and the saver must still arm there.
             _apply_position_stall_grace_to_clock_saver(now)
-            # Reported position flat for 2 min → saver until the next position advance.
-            lrp = float(last_reported_position_change_mono[0])
-            if lrp > 0.0 and (now - lrp) >= CLOCK_SAVER_POSITION_STALL_AFTER_S:
+            # Boot: if nothing is playing after splash, stay on the saver until playback
+            # starts or a local control dismisses it.
+            if _boot_clock_saver_until_playback[0]:
+                if _something_playing_now():
+                    _boot_clock_saver_until_playback[0] = False
+                    _note_metadata_activity(now)
+                elif startup_ph[0] is None:
+                    return True
+            # Content metadata unchanged for 2 min → saver until content changes **or**
+            # any local Pigeon control is used (``_bump_pigeon_user_activity`` refreshes
+            # both stamps). Does not require TMDb art, position sync, or volume quiet.
+            lma = float(last_metadata_activity_mono[0])
+            meta_age = (now - lma) if lma > 0.0 else 0.0
+            ui_age = now - float(last_pigeon_user_activity_mono[0])
+            meta_idle = (
+                lma > 0.0
+                and meta_age >= CLOCK_SAVER_METADATA_IDLE_AFTER_S
+                and ui_age >= CLOCK_SAVER_METADATA_IDLE_AFTER_S
+            )
+            if meta_idle != _cs_meta_idle_was_active[0] or (
+                now - float(_cs_meta_idle_log_mono[0])
+            ) >= 30.0:
+                _cs_meta_idle_log_mono[0] = now
+                _cs_meta_idle_was_active[0] = bool(meta_idle)
+                sys.stderr.write(
+                    f"pigeon: clock_saver meta_idle age={meta_age:.0f}s "
+                    f"ui_age={ui_age:.0f}s need={CLOCK_SAVER_METADATA_IDLE_AFTER_S:.0f}s "
+                    f"active={bool(meta_idle)} boot={bool(_boot_clock_saver_until_playback[0])} "
+                    f"scene={bool(scene_enabled)} phase={dev_phase!s}\n"
+                )
+                sys.stderr.flush()
+            if meta_idle:
                 return True
             ui_idle = (now - float(last_pigeon_user_activity_mono[0])) >= CLOCK_SAVER_AFTER_S
             dev_idle = (now - float(last_clock_saver_significant_device_mono[0])) >= CLOCK_SAVER_AFTER_S
@@ -2487,8 +2591,6 @@ def main() -> int:
                 return True
             if dev_phase != DevPhase.OFF:
                 return False
-            if not scene_enabled:
-                return False
             # Splash overlay — never draw the legacy full-screen saver clock.
             if startup_ph[0] is not None:
                 return False
@@ -2497,6 +2599,9 @@ def main() -> int:
                 return False
             if ev == DisplayView.THREE:
                 return True
+            # View ONE now-playing may run with scene off; still allow the idle saver.
+            if (not scene_enabled) and ev != DisplayView.ONE:
+                return False
             return _clock_saver_active(now)
 
         def _app_logo_clock_saver_style_now() -> bool:
@@ -2860,6 +2965,12 @@ def main() -> int:
                     vol_frac = float(volume_fraction_from_display_line(vol))
                 except Exception:
                     vol_frac = 0.0
+                circles_paused = bool(_show_paused_row_overlay())
+                circles_service = badge_label
+                if not circles_service:
+                    lm_svc = apple_tv_auto_state.get("last_metadata")
+                    if isinstance(lm_svc, dict):
+                        circles_service = str(lm_svc.get("app_name") or "").strip()
                 if _vv_is_music():
                     lm_music = apple_tv_auto_state.get("last_metadata")
                     song_t = album_t = artist_t = ""
@@ -2887,6 +2998,8 @@ def main() -> int:
                         song_title=song_t,
                         album_title=album_t,
                         artist_title=artist_t,
+                        paused=circles_paused,
+                        service_name=circles_service,
                     ):
                         changed = True
                 else:
@@ -2921,6 +3034,8 @@ def main() -> int:
                         song_title="",
                         album_title="",
                         artist_title="",
+                        paused=circles_paused,
+                        service_name=circles_service,
                     ):
                         changed = True
             if changed:
@@ -9631,9 +9746,8 @@ def main() -> int:
                 # Still latch content so TMDb artwork doesn't keep swapping.
                 if content_key and content_key != clk.get("latched_content_key"):
                     clk["latched_content_key"] = content_key
-                # No position on live — keep the stall timer from arming while Playing.
-                if playing_now:
-                    last_reported_position_change_mono[0] = now_m
+                # Live has no position; metadata fingerprint (title/state) alone
+                # decides whether the 2-minute idle saver arms.
                 return
             clk["live_mode"] = False
 
@@ -9649,11 +9763,10 @@ def main() -> int:
                 clk["playing"] = playing_now
                 clk["has_sync"] = True
                 pos_moved = not prev_has_sync or abs(pos_f - prev_pos) >= 0.25
-                if pos_moved:
-                    # Raw metadata position changed (or first sync) — dismisses position-stall saver.
-                    last_reported_position_change_mono[0] = now_m
                 if playing_now and pos_moved:
                     last_timecode_motion_mono = now_m
+                # Metadata-idle saver stamp is refreshed via fingerprint (incl. position)
+                # in ``_bump_clock_saver_significant_device_from_metadata``.
                 return
 
             if not clk.get("has_sync"):
@@ -9675,8 +9788,6 @@ def main() -> int:
             clk["playing"] = playing_now
             if playing_now and abs(extrap - sp) >= 0.25:
                 last_timecode_motion_mono = now_m
-            # No fresh ``position`` in this poll — do not refresh
-            # ``last_reported_position_change_mono`` (stall timer keeps counting).
 
         def _playback_extrapolated_pair() -> tuple[int, int] | None:
             clk = apple_tv_playback_clock
@@ -11569,6 +11680,7 @@ def main() -> int:
 
         def _on_rotary_action(action: str) -> None:
             nonlocal skip_cache, dev_phase
+            _bump_pigeon_user_activity()
             was_main = dev_phase == DevPhase.MAIN_SETTINGS
             if not _enter_main_settings_for_rotary():
                 try:
@@ -11801,6 +11913,20 @@ def main() -> int:
                         no_anim = False
                     if tmdb_x_animating_off or tmdb_flag_badge_on_off:
                         no_anim = False
+                    # Must re-evaluate every second: circles clock digits + metadata-idle saver.
+                    # A static scene_off_key previously froze the UI after the first frame and
+                    # prevented the 2-minute clock saver from ever arming when scene was off.
+                    tick_key_off = (
+                        main_settings_widget.frame_cache_token()
+                        if (
+                            dev_phase == DevPhase.MAIN_SETTINGS
+                            and main_settings_widget is not None
+                        )
+                        else int(time.time())
+                    )
+                    clock_saver_off = 1 if _clock_saver_for_compose(now) else 0
+                    if clock_saver_off:
+                        no_anim = False
                     scene_off_key = (
                         int(dev_phase),
                         settings_tok,
@@ -11812,6 +11938,9 @@ def main() -> int:
                         ),
                         tmdb_x_cache_key_off,
                         1 if tmdb_flag_badge_on_off else 0,
+                        tick_key_off,
+                        clock_saver_off,
+                        int(display_view_holder[0]),
                     )
                     if no_anim and skip_cache == scene_off_key:
                         _schedule_next_render()

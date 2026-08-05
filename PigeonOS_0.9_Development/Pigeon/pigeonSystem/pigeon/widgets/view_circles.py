@@ -1,9 +1,10 @@
 """
-Pigeon 0.8 ``view_circles`` now-playing skin (800×480).
+Pigeon 0.9 zoned now-playing skin (800×480).
 
-Static chrome is rasterized from ``pigeonAssets/view_circles.svg`` (video) or
-``pigeonAssets/view_circles_music.svg`` (music). Dynamic layers (cast / track
-titles, clock, volume, progress rings, status bar, poster art) are drawn on top.
+Static chrome is rasterized from ``pigeonAssets/pigeon_now_playing.svg``.
+Zone widget groups are shown/hidden per defaults + content mode + pause state
+before rasterize. Dynamic layers (cast, clock digital, volume pie/text, progress
+bar, poster/album art) are drawn on top with Pillow / OpenCV.
 """
 
 from __future__ import annotations
@@ -25,7 +26,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.compositing import alpha_blend_bgra_over_bgr, cv_resize_interp
 from pigeon.design import DESIGN_H, DESIGN_W
-from pigeon.font_paths import resolve_digital7_font
+from pigeon.font_paths import (
+    resolve_digital7_font,
+    resolve_ui_font_extrabold_italic,
+    resolve_ui_font_light_italic,
+)
 from pigeon.widgets.playback_overlay import (
     _receiver_volume_display_line,
     receiver_audio_config_display_line,
@@ -40,6 +45,7 @@ from pigeon.widgets.search_spinner import (
 
 SVG_NS = "http://www.w3.org/2000/svg"
 ET.register_namespace("", SVG_NS)
+ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
 
 _SVG_W = 800.0
 _SVG_H = 480.0
@@ -48,138 +54,187 @@ _COLOR_BG_HEX = "#000000"
 _COLOR_ACCENT_BGR = (0, 0, 255)  # #FF0000
 _COLOR_UNPLAYED_BGR = (147, 147, 147)  # #939393
 _COLOR_BUTTON_BGR = (35, 35, 35)  # #232323
-# Strokes, CTI, Digital-7 labels — gray accents (was pure white).
 _COLOR_CHROME_BGR = (147, 147, 147)  # #939393
 _COLOR_CHROME_RGB = (147, 147, 147)
 
-# Geometry from ``view_circles.svg`` (design coords = SVG 800×480).
+# Zone centers (design coords).
+_ZONE1_CX, _ZONE1_CY = 152.0, 192.0
+_ZONE2_CX, _ZONE2_CY = 401.0, 192.0
+_ZONE3_CX, _ZONE3_CY = 650.0, 192.0
+
 _RING_OUTER_R = 114.26
 _RING_INNER_R = 93.54
-_CIRCLE1_CX = 152.958
-_CIRCLE1_CY = 158.37
-_CIRCLE2_CX = 646.958
-_CIRCLE2_CY = 158.37
 
-# Video poster (portrait TMDb).
-_POSTER_VIDEO_X = 300
-_POSTER_VIDEO_Y = 23
-_POSTER_VIDEO_W = 200
-_POSTER_VIDEO_H = 300
+# Zone2 poster 2×3 / album 1×1.
+# SVG ``poster_accent-2`` path bbox ≈ 200×300 @ (300.7, 14.5); placed demo image is
+# 780×1170 × 0.26 (=202.8×304.2) @ translate(300.52, 14.47). Overfill slightly so
+# cover-fit art seats under the accent stroke without a gap.
+_POSTER_VIDEO_X = 299
+_POSTER_VIDEO_Y = 12
+_POSTER_VIDEO_W = 204
+_POSTER_VIDEO_H = 306
 _POSTER_VIDEO_RX = 10
+_CLOCK_EXTERIOR_ACCENT_R = 116.72
+_CLOCK_MIDDLE_ACCENT_R = 96.46
+# Dimmed minute/second ticks: red mixed with 50% black → dark red; current stays full red.
+_TICK_DIM_FILL = "#800000"
+_TICK_ACTIVE_FILL = "red"
 
-# Music poster: true 1:1 album-art frame (centered on design x=400).
-_POSTER_MUSIC_X = 300
-_POSTER_MUSIC_Y = 53
-_POSTER_MUSIC_W = 200
-_POSTER_MUSIC_H = 200
+# SVG ``zone2_album_art_1x1`` is 198.65² @ (303.04, 93.1).
+_POSTER_MUSIC_X = 301
+_POSTER_MUSIC_Y = 91
+_POSTER_MUSIC_W = 203
+_POSTER_MUSIC_H = 203
 _POSTER_MUSIC_RX = 10
 
-# Full-frame artwork backdrop under SVG chrome (music album art / video poster).
-_ARTWORK_BG_OPACITY = 0.24  # 20% brighter than the original 0.20
+_ARTWORK_BG_OPACITY = 0.24
 _ARTWORK_BG_BLUR_DOWNSCALE = 4
 _ARTWORK_BG_BLUR_SIGMA = 6.0
 
-# Red accent fills (volume pie + progress pie + elapsed bar): normal alpha so blur shows through.
+# Soft white halo behind active circular zone widgets (clock / volume).
+_ZONE_HALO_R = _CLOCK_EXTERIOR_ACCENT_R
+_ZONE_HALO_OPACITY = 0.36  # 10% more transparent than 0.40
+_ZONE_HALO_BLUR_SIGMA = 3.0  # slight soft edge only
+
+# While TMDb is fetching (``searching``), clock ticks + volume race ahead of wall time.
+_CLOCK_SPIN_SEC_RATE = 48.0  # second-ticks per real second (~1.25s / full ring)
+_CLOCK_SPIN_MIN_RATE = 16.0  # minute-ticks per real second
+_CLOCK_SPIN_HOUR_RATE = 6.0  # hour faces per real second
+_CLOCK_SPIN_VOL_RATE = 1.8  # volume-ring revolutions per real second
+_ZONE_CIRCLE_HALO_KEYS: tuple[tuple[str, float, float], ...] = (
+    ("zone1_clock_group", _ZONE1_CX, _ZONE1_CY),
+    ("zone2_clock_group", _ZONE2_CX, _ZONE2_CY),
+    ("zone3_clock_group", _ZONE3_CX, _ZONE3_CY),
+    ("zone1_volume_group", _ZONE1_CX, _ZONE1_CY),
+    ("zone2_volume_group", _ZONE2_CX, _ZONE2_CY),
+    ("zone3_volume_group", _ZONE3_CX, _ZONE3_CY),
+)
+
 _ACCENT_OPACITY = 0.70
-# Ellipse / rounded-rect outlines: keep a faint edge, mostly blur showing through.
 _ACCENT_STROKE_PX = 2
 _ACCENT_STROKE_OPACITY = 0.12
-# Grey unplayed track / volume headroom: mostly see-through over artwork.
 _CHROME_FILL_OPACITY = 0.12
-# Dark inner discs (clock / volume centers): translucent so blur reads through.
 _BUTTON_FILL_OPACITY = 0.35
+_POSTER_PAUSED_DIM = 0.30
 
-# Back-compat aliases (video geometry).
 _POSTER_X = _POSTER_VIDEO_X
 _POSTER_Y = _POSTER_VIDEO_Y
 _POSTER_W = _POSTER_VIDEO_W
 _POSTER_H = _POSTER_VIDEO_H
 _POSTER_RX = _POSTER_VIDEO_RX
 
-# Music track titles — centered at cx=400 (SVG baselines ≈ song/album/artist y).
+# Music track titles under zone2 album art.
 _TRACK_CX = 400.0
 _TRACK_MAX_W = 360
-_SONG_CY, _SONG_SIZE = 302.0, 36
-_ALBUM_CY, _ALBUM_SIZE = 329.0, 24
-_ARTIST_CY, _ARTIST_SIZE = 356.0, 24
+_SONG_CY, _SONG_SIZE = 320.0, 28
+_ALBUM_CY, _ALBUM_SIZE = 344.0, 20
+_ARTIST_CY, _ARTIST_SIZE = 364.0, 20
 
 _CONTENT_MODE_VIDEO = "video"
 _CONTENT_MODE_MUSIC = "music"
 
+# Zone5 status bar (SVG paths ≈ 76–724, y≈391, h≈40).
 _BAR_L = 76
 _BAR_R = 724
-_BAR_T = 408
-_BAR_H = 25
+_BAR_T = 391
+_BAR_H = 40
 _BAR_RX = 8
 _BAR_W = _BAR_R - _BAR_L
-_BAR_CENTER_Y = _BAR_T + _BAR_H / 2.0
 _CTI_W = 8
-# Tall enough to read on the bar, short enough to clear elapsed text below.
-_CTI_OVERHANG_TOP = 10
-_CTI_OVERHANG_BOTTOM = 2
+_CTI_OVERHANG_TOP = 0
+_CTI_OVERHANG_BOTTOM = 0
 _CTI_H = _BAR_H + _CTI_OVERHANG_TOP + _CTI_OVERHANG_BOTTOM
 _CTI_Y = _BAR_T - _CTI_OVERHANG_TOP
-_MIN_ELAPSED_W = 4  # one column of pixels
+_MIN_ELAPSED_W = 4
 _ELAPSED_REMAINING_GAP_PX = 16
+_SERVICE_FADE_PROGRESS = 0.12
 
-# Text anchors (SVG matrix translations ≈ baseline-ish; we center/align programmatically).
-_DATE_CX, _DATE_CY = 152.958, 128.0
-_TIME_CX, _TIME_CY = 152.958, 168.0
-_REMAINING_TIME_CX, _REMAINING_TIME_CY = 152.958, 300.0
-_VOLUME_CX, _VOLUME_CY = 646.958, 150.0
-_AUDIO_CFG_CX, _AUDIO_CFG_CY = 646.958, 188.0
+# Short rule between volume + audio config; Y matches digital clock center.
+_AUDIO_SEP_CY = _ZONE1_CY
+_AUDIO_SEP_HALF_W = 22
+_AUDIO_SEP_THICKNESS = 2
+# Equal clear gap from separator edge → volume bottom / config top.
+_AUDIO_STACK_GAP = 10.0
+_VOLUME_CX = _ZONE3_CX
+_AUDIO_CFG_CX = _ZONE3_CX
+_VOLUME_SIZE_PX = 32
+_AUDIO_CFG_SIZE_PX = 21
+_CLOCK_DIGITAL_SIZE = 42
 
-# Cast columns: shared horizontal center for actor + character in each column.
+# Zone4 cast columns (actor / character).
 _CAST_COLS: tuple[tuple[float, int, int], ...] = (
-    # (center_x, actor_y, character_y)
-    (152.958, 344, 362),
-    (400.0, 344, 362),
-    (646.958, 344, 362),
+    (152.0, 336, 356),
+    (400.0, 336, 356),
+    (650.0, 336, 356),
 )
 _CAST_COL_W = 220
 
-_ELAPSED_TEXT_Y = 448
-_REMAINING_TEXT_Y = 448
+_ELAPSED_TEXT_Y = 460
+_REMAINING_TEXT_Y = 460
+_SERVICE_TEXT_X = 28
+_SERVICE_TEXT_Y = 460
+_PAUSED_TEXT_CX = 400.0
+_PAUSED_TEXT_CY = 411.0
 
-# Dynamic SVG layer ids (Illustrator-encoded) to strip before rasterize.
-_STRIP_SVG_IDS_COMMON: tuple[str, ...] = (
-    "time_x5F_text",
-    "date_x5F_text",
-    "remaining_x5F_time_x5F_text",
-    "volume_x5F_text",
-    "audio_x5F_config_x5F_text",
-    "elapsed_x5F_text",
-    "remaining_x5F_text",
-    "actor1_x5F_text",
-    "character1_x5F_text",
-    "actor2_x5F_text",
-    "character2_x5F_text",
-    "actor3_x5F_text",
-    "character3_x5F_text",
-    "poster_x5F_tmdb",
-    "circle2_x5F_accent",
-    "now_x5F_playing_x5F_played_x5F_icon",
-    "now_x5F_playing_x5F_circle_x5F_group",
-    "elapsed_x5F_icon",
-    "cti_x5F_icon",
-    # Demo remaining bar is full-width grey; we redraw it with elapsed overlay.
-    "remainikng_x5F_icon",
-    # Circle chrome redrawn programmatically so both rings share one pipeline.
-    "clock_x5F_button",
-    "circle2_x5F_button",
-    "circle2_x5F_volume_x5F_headroom_x5F_buton",
-    "circle1_x5F_botton_00000082351325665415078510000008606994160936758171_",
+# Hour face layers: wall-clock hour → SVG data-name.
+_HOUR_FACE_NAMES: dict[int, str] = {
+    1: "hours_05_01",
+    2: "hours_10_02",
+    3: "hours_15_03",
+    4: "hours_20_04",
+    5: "hours_25_05",
+    6: "hours_30_06",
+    7: "hours_35_07",
+    8: "hours_40_08",
+    9: "hours_45_09",
+    10: "hours_50_10",
+    11: "hours_55_11",
+    12: "hours_60_12",
+}
+
+# Canonical names (or id prefixes) stripped / hidden before rasterize (demo text / images).
+_STRIP_OR_HIDE_NAMES: tuple[str, ...] = (
+    "zone1_clock_digital_text",
+    "zone2_clock_digital_text",
+    "zone3_clock_digital_text",
+    "zone3_volume_text",
+    "zone3_voume_audio_config_text",
+    "zone2_volume_text",
+    "zone1_volume_text",
+    "zone5_now_playing_remaining_text",
+    "zone5_now_playing_elapsed_text",
+    "zone5_now_playing_service_text",
+    "zone5_now_playing_paused_text",
+    "zone5_now_playing_remaining_icon",
+    "zone5_now_playing_elapsed_icon",
+    "zone5_now_playing_cti_icon",
+    "zone4_actor1_text",
+    "zone4_character1_text",
+    "zone4_actor2_text",
+    "zone4_character2_text",
+    "zone4_actor3_text",
+    "zone4_character3_text",
+    "zone0_date_left_text",
+    "zone0_date_center_text",
+    "zone0_date_right_text",
+    "poster_tmdb",
+    "zone3_volume_deselected_buton",
+    "zone3_volume_selected_button",
+    "zone3_volume_container",
+    "zone2_volume_deselected_buton",
+    "zone2_volume_selected_button",
+    "zone1_volume_deselected_buton",
+    "zone1_volume_selected_button",
 )
 
-# Music demo track titles (redrawn programmatically). Keep ``poster_x5F_1X1_x5F_accent``.
-_STRIP_SVG_IDS_MUSIC_EXTRA: tuple[str, ...] = (
-    "song_x5F_title_x5F_text",
-    "album_x5F_title_x5F_text",
-    "artist_x5F_title",
-)
-
-_STRIP_SVG_IDS: tuple[str, ...] = _STRIP_SVG_IDS_COMMON
-_STRIP_SVG_IDS_MUSIC: tuple[str, ...] = _STRIP_SVG_IDS_COMMON + _STRIP_SVG_IDS_MUSIC_EXTRA
+# Zone0 date header (SVG left/center/right; default = left).
+_ZONE0_DATE_ALIGN_DEFAULT = "left"
+_ZONE0_DATE_SIZE_PX = 16
+_ZONE0_DATE_BASELINE: dict[str, tuple[float, float]] = {
+    "left": (35.22, 39.94),
+    "center": (282.27, 39.94),
+    "right": (522.95, 39.94),
+}
 
 
 @dataclass
@@ -198,11 +253,11 @@ class ViewCirclesState:
     song_title: str = ""
     album_title: str = ""
     artist_title: str = ""
-    # True while a TMDb / artwork fetch is in flight — poster shows the searching spinner.
     searching: bool = False
     search_angle_deg: float = 0.0
-    # True when TMDb gave up (no match / error-flag retries exhausted) — show "?" in poster slot.
     missing_art: bool = False
+    paused: bool = False
+    service_name: str = ""
 
 
 def _normalize_content_mode(mode: str | None) -> str:
@@ -217,13 +272,13 @@ def default_view_circles_svg_path(
     *,
     content_mode: str = _CONTENT_MODE_VIDEO,
 ) -> Path:
-    mode = _normalize_content_mode(content_mode)
-    if mode == _CONTENT_MODE_MUSIC:
-        env = os.environ.get("PIGEON_VIEW_CIRCLES_MUSIC_SVG", "").strip()
-        filename = "view_circles_music.svg"
-    else:
-        env = os.environ.get("PIGEON_VIEW_CIRCLES_SVG", "").strip()
-        filename = "view_circles.svg"
+    """Single zoned SVG for video and music (zone2 poster vs album toggled)."""
+    del content_mode  # one asset for both modes
+    env = (
+        os.environ.get("PIGEON_VIEW_CIRCLES_SVG", "").strip()
+        or os.environ.get("PIGEON_NOW_PLAYING_SVG", "").strip()
+    )
+    filename = "pigeon_now_playing.svg"
     if env:
         return Path(env).expanduser().resolve()
     if assets_dir is not None:
@@ -251,7 +306,6 @@ def _poster_geometry(content_mode: str) -> tuple[int, int, int, int, int]:
 
 
 def _cover_fit_bgra(src: np.ndarray, tw: int, th: int) -> np.ndarray:
-    """Scale ``src`` to cover ``tw×th`` (centered crop). Returns BGRA."""
     if src is None or src.size == 0 or tw < 1 or th < 1:
         return np.zeros((max(1, th), max(1, tw), 4), dtype=np.uint8)
     arr = src
@@ -279,7 +333,6 @@ def _cover_fit_bgra(src: np.ndarray, tw: int, th: int) -> np.ndarray:
 
 
 def _build_artwork_blur_bgra(src: np.ndarray) -> np.ndarray:
-    """Full-frame cover-fit artwork, Gaussian-blurred, ~24% opacity (BGRA)."""
     tw, th = int(DESIGN_W), int(DESIGN_H)
     cover = _cover_fit_bgra(src, tw, th)
     dw = max(1, tw // _ARTWORK_BG_BLUR_DOWNSCALE)
@@ -296,11 +349,50 @@ def _build_artwork_blur_bgra(src: np.ndarray) -> np.ndarray:
     return out
 
 
+def _layer_key(el: ET.Element) -> str:
+    """Prefer data-name; strip Illustrator ``-N`` id suffixes; normalize spaces."""
+    dn = (el.get("data-name") or "").strip()
+    raw = dn if dn else (el.get("id") or "").strip()
+    if not dn and raw:
+        raw = re.sub(r"-\d+$", "", raw)
+    return re.sub(r"\s+", "_", raw)
+
+
 def _find_by_id(root: ET.Element, layer_id: str) -> ET.Element | None:
     for el in root.iter():
         if el.get("id") == layer_id:
             return el
     return None
+
+
+def _find_by_key(scope: ET.Element, name: str) -> ET.Element | None:
+    want = re.sub(r"\s+", "_", str(name or "").strip())
+    if not want:
+        return None
+    for el in scope.iter():
+        if _layer_key(el) == want or el.get("id") == want:
+            return el
+    return None
+
+
+def _find_direct_child_by_key(parent: ET.Element, name: str) -> ET.Element | None:
+    want = re.sub(r"\s+", "_", str(name or "").strip())
+    for el in list(parent):
+        if _layer_key(el) == want or el.get("id") == want:
+            return el
+    return None
+
+
+def _detach_element(root: ET.Element, el: ET.Element | None) -> bool:
+    """Remove ``el`` from its parent. PyMuPDF ignores ``display:none`` on SVG groups."""
+    if el is None:
+        return False
+    for parent in root.iter():
+        for child in list(parent):
+            if child is el:
+                parent.remove(child)
+                return True
+    return False
 
 
 def _remove_element_by_id(root: ET.Element, element_id: str) -> None:
@@ -311,16 +403,25 @@ def _remove_element_by_id(root: ET.Element, element_id: str) -> None:
                 return
 
 
-def _replace_background_with_black(root: ET.Element) -> None:
-    el = _find_by_id(root, "background")
-    if el is None:
-        return
-    for node in el.iter():
-        style = node.get("style") or ""
-        if "fill:" in style:
-            node.set("style", re.sub(r"fill:[^;\"']+", f"fill:{_COLOR_BG_HEX}", style))
-        if node.get("fill"):
-            node.set("fill", _COLOR_BG_HEX)
+def _remove_by_key(root: ET.Element, name: str) -> bool:
+    """Remove every element whose canonical key or id matches ``name``."""
+    want = re.sub(r"\s+", "_", str(name or "").strip())
+    if not want:
+        return False
+    removed = False
+    # Restart scan after each removal — tree mutates under iter().
+    while True:
+        hit = None
+        for el in root.iter():
+            if _layer_key(el) == want or el.get("id") == want:
+                hit = el
+                break
+        if hit is None:
+            break
+        if not _detach_element(root, hit):
+            break
+        removed = True
+    return removed
 
 
 def _svg_tree_from_path(path: Path) -> ET.Element:
@@ -398,7 +499,6 @@ def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
 
 
 def _decanvas_white_bgra(src: np.ndarray, *, threshold: int = 252) -> np.ndarray:
-    """Make PyMuPDF/cairosvg white canvas pixels transparent before compositing."""
     if src is None or src.size == 0 or src.ndim != 3 or src.shape[2] < 4:
         return src
     out = src.copy()
@@ -412,20 +512,370 @@ def _decanvas_white_bgra(src: np.ndarray, *, threshold: int = 252) -> np.ndarray
     return out
 
 
+def _zone_widget_visibility(
+    *,
+    content_mode: str,
+    paused: bool,
+) -> dict[str, bool]:
+    """Default zone widget on/off map (customization UI later)."""
+    mode = _normalize_content_mode(content_mode)
+    is_music = mode == _CONTENT_MODE_MUSIC
+    # Zone2 shows poster XOR album.
+    z2_poster = not is_music
+    z2_album = is_music
+    # Play button only on zones that currently show poster/album, when paused.
+    play_z2 = bool(paused) and (z2_poster or z2_album)
+    vis = {
+        # zone1 — clock only
+        "zone1_volume_group": False,
+        "zone1_audio_levels_group": False,
+        "zone1_clock_group": True,
+        "zone1_poster_2x3": False,
+        "zone1_album_art_1x1": False,
+        "zone1_cast_group": False,
+        "zone1_play_button": False,
+        # zone2 — poster or album
+        "zone2_volume_group": False,
+        "zone2_audio_levels_group": False,
+        "zone2_audio_levles_gtoup": False,  # Illustrator typo id
+        "zone2_clock_group": False,
+        "zone2_poster_2x3": z2_poster,
+        "zone2_album_art_1x1": z2_album,
+        "zone2_cast_group": False,
+        "zone2_play_button": play_z2,
+        # zone3 — volume only
+        "zone3_volume_group": True,
+        "zone3_audio_levels_group": False,
+        "zone3_clock_group": False,
+        "zone3_poster_2x3": False,
+        "zone3_2x3_poster_group": False,
+        "zone3_album_art_1x1": False,
+        "zone3_cast_group": False,
+        "zone3_play_button": False,
+        # zone4 — cast
+        "zone4_cast_group": True,
+        # zone5 — status bar
+        "zone5_now_playing_group": True,
+        "zone5_locations_group": False,
+        "zone5_cast_group": False,
+        "zone5_now_playing_paused_text": False,  # redrawn with Sharp Sans
+        # zone0 — date header (text redrawn; keep group chrome)
+        "zone0_header_group": True,
+    }
+    return vis
+
+
+def _ordinal_day(day: int) -> str:
+    d = int(day)
+    if 11 <= (d % 100) <= 13:
+        suf = "th"
+    else:
+        suf = {1: "st", 2: "nd", 3: "rd"}.get(d % 10, "th")
+    return f"{d}{suf}"
+
+
+def _format_zone0_date(now: datetime) -> str:
+    """``Wednesday, August 5th`` — matches Illustrator zone0 sample."""
+    return f"{now.strftime('%A')}, {now.strftime('%B')} {_ordinal_day(now.day)}"
+
+
+def _apply_zone_visibility(root: ET.Element, vis: dict[str, bool]) -> None:
+    for name, on in vis.items():
+        if not on:
+            _remove_by_key(root, name)
+
+
+def _clock_group_for_zone(root: ET.Element, zone: int) -> ET.Element | None:
+    return _find_by_key(root, f"zone{zone}_clock_group")
+
+
+def _seconds_group(clock_group: ET.Element) -> ET.Element | None:
+    for el in list(clock_group):
+        key = _layer_key(el)
+        if "seconds" in key and "group" in key:
+            return el
+    return _find_by_key(clock_group, "zone1_clock_seconds_group")
+
+
+def _minutes_group(clock_group: ET.Element) -> ET.Element | None:
+    for el in list(clock_group):
+        key = _layer_key(el)
+        if "minutes" in key and "group" in key:
+            return el
+    return None
+
+
+def _hours_group(clock_group: ET.Element) -> ET.Element | None:
+    for el in list(clock_group):
+        key = _layer_key(el)
+        if "hours" in key and "group" in key:
+            return el
+    return None
+
+
+def _iter_named_children(group: ET.Element | None):
+    if group is None:
+        return
+    for el in list(group):
+        yield el, _layer_key(el)
+
+
+def _fix_seconds_08_label(seconds_group: ET.Element | None) -> None:
+    """SVG ships a mislabeled duplicate ``seconds_60`` where ``seconds_08`` should be."""
+    if seconds_group is None:
+        return
+    if _find_direct_child_by_key(seconds_group, "seconds_08") is not None:
+        return
+    kids = list(seconds_group)
+    idx09 = idx07 = None
+    for i, child in enumerate(kids):
+        key = _layer_key(child)
+        if key == "seconds_09":
+            idx09 = i
+        elif key == "seconds_07":
+            idx07 = i
+    if idx09 is None or idx07 is None:
+        return
+    lo, hi = (idx09, idx07) if idx09 < idx07 else (idx07, idx09)
+    for child in kids[lo + 1 : hi]:
+        if _layer_key(child) == "seconds_60":
+            child.set("data-name", "seconds_08")
+            return
+
+
+def _resolve_seconds_el(seconds_group: ET.Element | None, second_index: int) -> ET.Element | None:
+    """``second_index`` in 1..60."""
+    if seconds_group is None:
+        return None
+    _fix_seconds_08_label(seconds_group)
+    name = f"seconds_{second_index:02d}"
+    el = _find_direct_child_by_key(seconds_group, name)
+    if el is not None:
+        return el
+    return _find_by_key(seconds_group, name)
+
+
+def _resolve_hour_face_el(hours_group: ET.Element | None, hour_1_12: int) -> ET.Element | None:
+    if hours_group is None:
+        return None
+    name = _HOUR_FACE_NAMES.get(int(hour_1_12))
+    if not name:
+        return None
+    el = _find_direct_child_by_key(hours_group, name)
+    if el is not None:
+        return el
+    return _find_by_key(hours_group, name)
+
+
+def _zone_clock_center(zone: int) -> tuple[float, float]:
+    if zone == 2:
+        return _ZONE2_CX, _ZONE2_CY
+    if zone == 3:
+        return _ZONE3_CX, _ZONE3_CY
+    return _ZONE1_CX, _ZONE1_CY
+
+
+def _local_tag(tag: str) -> str:
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def _set_tick_paint(el: ET.Element, *, color: str) -> None:
+    """Recolor path fills/strokes under ``el`` (solid color, full opacity)."""
+    if "opacity" in el.attrib:
+        del el.attrib["opacity"]
+    for node in el.iter():
+        tag = _local_tag(node.tag)
+        if tag not in ("path", "polygon", "polyline", "circle", "ellipse", "rect"):
+            continue
+        if "opacity" in node.attrib:
+            del node.attrib["opacity"]
+        fill = (node.get("fill") or "").strip().lower()
+        stroke = (node.get("stroke") or "").strip().lower()
+        if fill and fill != "none":
+            node.set("fill", color)
+        if stroke and stroke != "none":
+            node.set("stroke", color)
+        # Bare paths sometimes omit fill (Illustrator default = black); force paint.
+        if not fill and not stroke:
+            node.set("fill", color)
+
+
+def _raise_in_group(group: ET.Element | None, el: ET.Element | None) -> None:
+    """Move ``el`` to the end of ``group`` so it paints above siblings."""
+    if group is None or el is None:
+        return
+    kids = list(group)
+    if el not in kids:
+        return
+    group.remove(el)
+    group.append(el)
+
+
+def _accent_circle_r(clock: ET.Element, zone: int, kind: str, default: float) -> float:
+    el = _find_by_key(clock, f"zone{zone}_clock_{kind}_accent")
+    if el is None:
+        return default
+    try:
+        return float(el.get("r") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _insert_clock_disc_fill(clock: ET.Element, zone: int) -> None:
+    """Solid black disc under the exterior accent (inner face + outer band)."""
+    fill_id = f"zone{zone}_clock_disc_fill"
+    for child in list(clock):
+        key = _layer_key(child)
+        if key in (fill_id, f"zone{zone}_clock_outer_band_fill"):
+            clock.remove(child)
+    cx, cy = _zone_clock_center(zone)
+    outer_r = _accent_circle_r(clock, zone, "exterior", _CLOCK_EXTERIOR_ACCENT_R)
+    el = ET.Element(f"{{{SVG_NS}}}circle")
+    el.set("id", fill_id)
+    el.set("data-name", fill_id)
+    el.set("cx", f"{cx:.3f}")
+    el.set("cy", f"{cy:.3f}")
+    el.set("r", f"{outer_r:.3f}")
+    el.set("fill", "#000000")
+    el.set("stroke", "none")
+    clock.insert(0, el)
+
+
+def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
+    """Drive clock tick layers for the active zone.
+
+    Hours: original geometry; only the current face layer is kept.
+    Minutes + seconds: keep layers 1..current (0 → 60); prior ticks dark red,
+    current full red and raised above siblings.
+    """
+    clock = _clock_group_for_zone(root, zone)
+    if clock is None:
+        return
+    _insert_clock_disc_fill(clock, zone)
+    hours_g = _hours_group(clock)
+    minutes_g = _minutes_group(clock)
+    seconds_g = _seconds_group(clock)
+    _fix_seconds_08_label(seconds_g)
+
+    h12 = now.hour % 12
+    if h12 == 0:
+        h12 = 12
+    minute = int(now.minute)
+    second = int(now.second)
+    # Ring index: 0 → layer 60; 1..59 → matching index.
+    min_idx = 60 if minute == 0 else minute
+    sec_idx = 60 if second == 0 else second
+
+    # Hours: only the matching face layer (original SVG shape).
+    face_name = _HOUR_FACE_NAMES.get(h12, "")
+    for el, key in list(_iter_named_children(hours_g)):
+        if not key.startswith("hours_"):
+            continue
+        # hours_61 maps to missing hours_51 — never a face hour for display.
+        if key != face_name:
+            _detach_element(root, el)
+
+    # Minutes: layers 1..current; dim priors, highlight current.
+    current_min: ET.Element | None = None
+    for el, key in list(_iter_named_children(minutes_g)):
+        m = re.fullmatch(r"minutes_(\d{2})", key)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if not (1 <= idx <= min_idx):
+            _detach_element(root, el)
+            continue
+        if idx == min_idx:
+            current_min = el
+            _set_tick_paint(el, color=_TICK_ACTIVE_FILL)
+        else:
+            _set_tick_paint(el, color=_TICK_DIM_FILL)
+    _raise_in_group(minutes_g, current_min)
+
+    # Seconds: layers 1..current; dim priors, highlight current.
+    current_sec = _resolve_seconds_el(seconds_g, sec_idx)
+    for el, key in list(_iter_named_children(seconds_g)):
+        if not key.startswith("seconds_"):
+            continue
+        if el is current_sec:
+            _set_tick_paint(el, color=_TICK_ACTIVE_FILL)
+            continue
+        m = re.fullmatch(r"seconds_(\d{2})", key)
+        idx = int(m.group(1)) if m else -1
+        if 1 <= idx <= sec_idx:
+            _set_tick_paint(el, color=_TICK_DIM_FILL)
+        else:
+            _detach_element(root, el)
+    _raise_in_group(seconds_g, current_sec)
+
+
+def _clear_text_content(el: ET.Element | None) -> None:
+    if el is None:
+        return
+    el.text = None
+    for node in el.iter():
+        node.text = None
+        node.tail = None
+
+
 def apply_view_circles_svg_state(
     root: ET.Element,
     *,
     content_mode: str = _CONTENT_MODE_VIDEO,
+    paused: bool = False,
+    now: datetime | None = None,
+    active_clock_zone: int = 1,
 ) -> None:
     mode = _normalize_content_mode(content_mode)
-    # Transparent page so the artwork blur layer can sit under chrome.
     root.set("style", "background:transparent")
     _remove_element_by_id(root, "background")
-    strip_ids = (
-        _STRIP_SVG_IDS_MUSIC if mode == _CONTENT_MODE_MUSIC else _STRIP_SVG_IDS
-    )
-    for element_id in strip_ids:
-        _remove_element_by_id(root, element_id)
+    _remove_element_by_id(root, "background-2")
+
+    vis = _zone_widget_visibility(content_mode=mode, paused=paused)
+    _apply_zone_visibility(root, vis)
+
+    # Play triangle: match chrome grey used for icons / unplayed bar (#939393).
+    for z in (1, 2, 3):
+        play = _find_by_key(root, f"zone{z}_play_button")
+        if play is not None:
+            _set_tick_paint(play, color="#939393")
+
+    # Remove demo text / embedded images / volume pies we redraw (keep tick paths).
+    for name in _STRIP_OR_HIDE_NAMES:
+        _remove_by_key(root, name)
+    # Remove poster_tmdb images (Illustrator -N copies) and unused cast demo text.
+    pending: list[ET.Element] = []
+    for el in root.iter():
+        key = _layer_key(el)
+        eid = el.get("id") or ""
+        if key == "poster_tmdb" or eid.startswith("poster_tmdb"):
+            pending.append(el)
+            continue
+        if key.endswith("_text") and any(
+            key.startswith(p)
+            for p in (
+                "zone1_actor",
+                "zone1_character",
+                "zone2_actor",
+                "zone2_character",
+                "zone3_actor",
+                "zone3_character",
+                "zone5_actor",
+                "zone5_character",
+                "zone5character",
+            )
+        ):
+            pending.append(el)
+    for el in pending:
+        _detach_element(root, el)
+
+    dt = now if now is not None else datetime.now()
+    # Only drive ticks for the active (visible) clock zone.
+    if vis.get(f"zone{active_clock_zone}_clock_group", False):
+        _apply_clock_ticks(root, active_clock_zone, dt)
+    # Clear any leftover digital clock text nodes.
+    for z in (1, 2, 3):
+        _clear_text_content(_find_by_key(root, f"zone{z}_clock_digital_text"))
 
 
 def render_view_circles_svg_base_bgra(
@@ -433,6 +883,8 @@ def render_view_circles_svg_base_bgra(
     svg_path: Path | str | None = None,
     assets_dir: Path | str | None = None,
     content_mode: str = _CONTENT_MODE_VIDEO,
+    paused: bool = False,
+    now: datetime | None = None,
 ) -> np.ndarray:
     mode = _normalize_content_mode(content_mode)
     if svg_path is not None:
@@ -440,11 +892,16 @@ def render_view_circles_svg_base_bgra(
     else:
         path = default_view_circles_svg_path(assets_dir, content_mode=mode)
     if not path.is_file():
-        raise FileNotFoundError(f"view_circles SVG not found: {path}")
+        raise FileNotFoundError(f"now-playing SVG not found: {path}")
     root = _svg_tree_from_path(path)
-    apply_view_circles_svg_state(root, content_mode=mode)
+    apply_view_circles_svg_state(
+        root,
+        content_mode=mode,
+        paused=paused,
+        now=now,
+        active_clock_zone=1,
+    )
     bgra = _rasterize_svg_tree(root)
-    # Rasterizers often paint a white page behind transparent SVG roots.
     bgra = _decanvas_white_bgra(bgra)
     return bgra
 
@@ -471,6 +928,30 @@ def _load_digital7(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+@lru_cache(maxsize=8)
+def _load_sharp_italic(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    px = max(6, int(size))
+    path = resolve_ui_font_extrabold_italic()
+    if path:
+        try:
+            return ImageFont.truetype(path, px)
+        except OSError:
+            pass
+    return _load_digital7(px)
+
+
+@lru_cache(maxsize=8)
+def _load_sharp_light_italic(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    px = max(6, int(size))
+    path = resolve_ui_font_light_italic()
+    if path:
+        try:
+            return ImageFont.truetype(path, px)
+        except OSError:
+            pass
+    return _load_sharp_italic(px)
+
+
 def _text_patch_digital7(
     text: str,
     *,
@@ -492,7 +973,6 @@ def _text_patch_digital7(
     if max_width_px is not None and max_width_px > 0:
         l, t, r, b = _measure(draw_text)
         if (r - l) > max_width_px:
-            # Digital-7 has no U+2026; "…" renders as a 7-segment O/D. Use ASCII dots.
             ell = "..."
             for n in range(len(draw_text), 0, -1):
                 candidate = draw_text[:n].rstrip() + ell
@@ -502,6 +982,27 @@ def _text_patch_digital7(
                     break
 
     l, t, r, b = _measure(draw_text)
+    tw, th = max(1, r - l), max(1, b - t)
+    img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.text((pad - l, pad - t), draw_text, font=font, fill=(*fill_rgb, 255))
+    arr = np.asarray(img)
+    return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA), tw + pad * 2, th + pad * 2
+
+
+def _text_patch_font(
+    text: str,
+    *,
+    font: ImageFont.ImageFont,
+    fill_rgb: tuple[int, int, int] = _COLOR_CHROME_RGB,
+) -> tuple[np.ndarray, int, int]:
+    draw_text = str(text or "")
+    if not draw_text:
+        return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
+    pad = 2
+    probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(probe)
+    l, t, r, b = draw.textbbox((0, 0), draw_text, font=font)
     tw, th = max(1, r - l), max(1, b - t)
     img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -545,7 +1046,6 @@ def _restore_masked_region(
     x: int,
     y: int,
 ) -> None:
-    """Copy ``under`` into ``canvas`` where ``mask`` > 0 (same H×W as ``under``/``mask``)."""
     if (
         canvas is None
         or canvas.size == 0
@@ -584,7 +1084,6 @@ def _restore_from_backdrop_abs(
     backdrop_x: int,
     backdrop_y: int,
 ) -> None:
-    """Where ``mask`` > 0 at canvas ``(x,y)``, copy from ``backdrop`` using absolute coords."""
     if (
         canvas is None
         or canvas.size == 0
@@ -628,7 +1127,6 @@ def _paste_stroke_over_blur(
     backdrop_y: int,
     opacity: float,
 ) -> None:
-    """Restore blurred backdrop under stroke coverage, then blend stroke at ``opacity``."""
     if stroke_patch is None or stroke_patch.size == 0:
         return
     coverage = stroke_patch[:, :, 3]
@@ -703,7 +1201,6 @@ def _draw_rounded_bar_bgra(
     if x0 >= x1 or y0 >= y1:
         return
     lw, lh = x1 - x0, y1 - y0
-    # Pad so the outer stroke is not clipped at the patch edge.
     pad = max(0, int(stroke) + 1) if stroke_bgr is not None and stroke > 0 else 0
     mw, mh = lw + pad * 2, lh + pad * 2
     mask = np.zeros((mh, mw), dtype=np.uint8)
@@ -715,7 +1212,6 @@ def _draw_rounded_bar_bgra(
     fill[mask > 0, 3] = fill_a
     _paste_patch_bgra(bgra, fill, x0 - pad, y0 - pad)
     if stroke_bgr is not None and stroke > 0:
-        # Full perimeter stroke (not just the mask edge after erode — that missed ends).
         stroke_patch = np.zeros((mh, mw, 4), dtype=np.uint8)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:
@@ -747,10 +1243,6 @@ def annular_sector_mask(
     fraction: float,
     start_deg: float = -90.0,
 ) -> np.ndarray:
-    """
-    Annular pie mask. ``fraction`` 0..1 grows clockwise from 12-o'clock
-    (OpenCV ellipse angles: 0° = 3-o'clock, -90° = 12-o'clock).
-    """
     s = max(1, int(size))
     mask = np.zeros((s, s), dtype=np.uint8)
     frac = max(0.0, min(1.0, float(fraction)))
@@ -760,7 +1252,6 @@ def annular_sector_mask(
     cy_i = (s - 1) // 2
     outer = max(1, int(round(outer_r)))
     inner = max(0, min(int(round(inner_r)), outer - 1))
-    # Full ring, then keep only the clockwise wedge from 12-o'clock.
     cv2.circle(mask, (cx_i, cy_i), outer, 255, -1, lineType=cv2.LINE_AA)
     if inner > 0:
         cv2.circle(mask, (cx_i, cy_i), inner, 0, -1, lineType=cv2.LINE_AA)
@@ -769,7 +1260,6 @@ def annular_sector_mask(
     sweep = 360.0 * frac
     start = float(start_deg)
     end = start + sweep
-    # Wedge from center through the outer arc (fillPoly handles >180°).
     arc = cv2.ellipse2Poly(
         (cx_i, cy_i),
         (outer + 2, outer + 2),
@@ -782,6 +1272,60 @@ def annular_sector_mask(
     poly = np.vstack([[[cx_i, cy_i]], arc])
     cv2.fillPoly(wedge, [poly], 255)
     return cv2.bitwise_and(mask, wedge)
+
+
+def _halo_pad(sigma: float) -> int:
+    return int(math.ceil(max(0.5, float(sigma)) * 3.0)) + 4
+
+
+def _ui_halo_from_mask(mask01: np.ndarray, *, sigma: float, opacity: float) -> np.ndarray:
+    """Turn a 0..1 float mask into a blurred white BGRA halo patch."""
+    sig = max(0.5, float(sigma))
+    op = max(0.0, min(1.0, float(opacity)))
+    k = max(3, int(round(sig * 4.0)) | 1)
+    soft = cv2.GaussianBlur(mask01, (k, k), sigmaX=sig, sigmaY=sig)
+    patch = np.zeros((mask01.shape[0], mask01.shape[1], 4), dtype=np.uint8)
+    patch[:, :, 0] = 255
+    patch[:, :, 1] = 255
+    patch[:, :, 2] = 255
+    patch[:, :, 3] = np.clip(soft * (255.0 * op), 0, 255).astype(np.uint8)
+    return patch
+
+
+@lru_cache(maxsize=4)
+def _zone_circle_halo_patch(
+    r: float = _ZONE_HALO_R,
+    sigma: float = _ZONE_HALO_BLUR_SIGMA,
+    opacity: float = _ZONE_HALO_OPACITY,
+) -> np.ndarray:
+    """White disc, Gaussian-blurred, at ``opacity`` (BGRA)."""
+    radius = max(1, int(round(float(r))))
+    pad = _halo_pad(sigma)
+    size = radius * 2 + pad * 2
+    mask = np.zeros((size, size), dtype=np.float32)
+    cv2.circle(mask, (size // 2, size // 2), radius, 1.0, -1, lineType=cv2.LINE_AA)
+    return _ui_halo_from_mask(mask, sigma=sigma, opacity=opacity)
+
+
+def _draw_zone_halos(bgra: np.ndarray, *, content_mode: str, paused: bool = False) -> None:
+    """Gentle white glow behind active circular widgets (clock / volume)."""
+    vis = _zone_widget_visibility(content_mode=content_mode, paused=paused)
+    circle = _zone_circle_halo_patch()
+    ch, cw = circle.shape[:2]
+    seen: set[tuple[float, float]] = set()
+    for key, cx, cy in _ZONE_CIRCLE_HALO_KEYS:
+        if not vis.get(key, False):
+            continue
+        pt = (cx, cy)
+        if pt in seen:
+            continue
+        seen.add(pt)
+        _paste_patch_bgra(
+            bgra,
+            circle,
+            int(round(cx - cw / 2.0)),
+            int(round(cy - ch / 2.0)),
+        )
 
 
 def _draw_filled_circle_bgra(
@@ -799,7 +1343,6 @@ def _draw_filled_circle_bgra(
     pad = stroke + 2
     size = radius * 2 + pad * 2
     center = (size // 2, size // 2)
-    # Mask-driven alpha (more reliable than cv2 BGRA Scalar alpha + LINE_AA).
     mask = np.zeros((size, size), dtype=np.uint8)
     cv2.circle(mask, center, radius, 255, -1, lineType=cv2.LINE_AA)
     op = max(0.0, min(1.0, float(fill_opacity)))
@@ -812,7 +1355,6 @@ def _draw_filled_circle_bgra(
     y = int(round(cy - size / 2.0))
     _paste_patch_bgra(bgra, patch, x, y)
     if stroke > 0:
-        # Stroke stays fully opaque so the ring edge stays crisp over translucent fill.
         stroke_patch = np.zeros((size, size, 4), dtype=np.uint8)
         cv2.circle(
             stroke_patch, center, radius, (*stroke_bgr, 255), stroke, lineType=cv2.LINE_AA
@@ -837,7 +1379,6 @@ def _draw_progress_ring(
     stroke_backdrop_x: int = 0,
     stroke_backdrop_y: int = 0,
 ) -> None:
-    """Annular pie from 12-o'clock, clockwise — shared by circle1 (progress) and circle2 (volume)."""
     frac = max(0.0, min(1.0, float(fraction)))
     if frac <= 1e-6:
         return
@@ -857,7 +1398,6 @@ def _draw_progress_ring(
     y = int(round(cy - size / 2.0))
     _paste_patch_bgra(bgra, fill, x, y)
     if stroke > 0:
-        # Arc strokes (not full contour) — contour stroke left a gap at 12-o'clock on small pies.
         stroke_patch = np.zeros((size, size, 4), dtype=np.uint8)
         cx_i = cy_i = size // 2
         outer = max(1, int(round(outer_r)))
@@ -894,11 +1434,8 @@ def _draw_progress_ring(
                     thick,
                     lineType=cv2.LINE_AA,
                 )
-            # Radial edges at start (12-o'clock) and end of the sweep.
             for ang in (start, end):
                 rad = math.radians(ang)
-                # OpenCV angle: 0° along +x, clockwise positive in ellipse args…
-                # cos/sin with image y-down: x = cos(θ), y = sin(θ) for CW-from-+x.
                 x_o = int(round(cx_i + outer * math.cos(rad)))
                 y_o = int(round(cy_i + outer * math.sin(rad)))
                 x_i = int(round(cx_i + inner * math.cos(rad)))
@@ -926,44 +1463,22 @@ def _draw_circle_pair(
     fraction: float,
     show_accent: bool,
 ) -> None:
-    """Headroom disc + optional pie accent + inner button (identical for circle1 / circle2)."""
+    """Volume ring: black annulus for empty, red for level; black center disc."""
+    del show_accent  # always paint black track; red overlay follows fraction
     frac = max(0.0, min(1.0, float(fraction)))
-    # Snapshot underlayer so the red pie can sit over artwork, not solid grey.
-    under = None
-    ring_x = ring_y = ring_size = 0
-    if show_accent and frac > 1e-6:
-        pad = 6
-        ring_size = int(math.ceil(_RING_OUTER_R * 2)) + pad * 2
-        ring_x = int(round(cx - ring_size / 2.0))
-        ring_y = int(round(cy - ring_size / 2.0))
-        x0, y0 = max(0, ring_x), max(0, ring_y)
-        x1 = min(int(DESIGN_W), ring_x + ring_size)
-        y1 = min(int(DESIGN_H), ring_y + ring_size)
-        if x0 < x1 and y0 < y1:
-            under = bgra[y0:y1, x0:x1].copy()
-            # Pad under to full ring_size so mask coords match.
-            if under.shape[0] != ring_size or under.shape[1] != ring_size:
-                full = np.zeros((ring_size, ring_size, bgra.shape[2]), dtype=bgra.dtype)
-                full[y0 - ring_y : y1 - ring_y, x0 - ring_x : x1 - ring_x] = under
-                under = full
-
-    _draw_filled_circle_bgra(
+    # Full track = black (empty space).
+    _draw_progress_ring(
         bgra,
         cx=cx,
         cy=cy,
-        r=_RING_OUTER_R,
-        fill_bgr=_COLOR_UNPLAYED_BGR,
-        fill_opacity=_CHROME_FILL_OPACITY,
+        outer_r=_RING_OUTER_R,
+        inner_r=_RING_INNER_R,
+        fraction=1.0,
+        fill_bgr=(0, 0, 0),
+        fill_opacity=1.0,
+        stroke=0,
     )
-    if show_accent and frac > 1e-6:
-        if under is not None:
-            mask = annular_sector_mask(
-                ring_size,
-                outer_r=_RING_OUTER_R,
-                inner_r=_RING_INNER_R,
-                fraction=frac,
-            )
-            _restore_masked_region(bgra, under, mask, x=ring_x, y=ring_y)
+    if frac > 1e-6:
         _draw_progress_ring(
             bgra,
             cx=cx,
@@ -971,34 +1486,26 @@ def _draw_circle_pair(
             outer_r=_RING_OUTER_R,
             inner_r=_RING_INNER_R,
             fraction=frac,
-            fill_opacity=_ACCENT_OPACITY,
-            stroke_opacity=_ACCENT_STROKE_OPACITY,
-            stroke_backdrop=under,
-            stroke_backdrop_x=ring_x,
-            stroke_backdrop_y=ring_y,
+            fill_bgr=_COLOR_ACCENT_BGR,
+            fill_opacity=1.0,
+            stroke=0,
         )
     _draw_filled_circle_bgra(
         bgra,
         cx=cx,
         cy=cy,
         r=_RING_INNER_R,
-        fill_bgr=_COLOR_BUTTON_BGR,
-        fill_opacity=_BUTTON_FILL_OPACITY,
+        fill_bgr=(0, 0, 0),
+        fill_opacity=1.0,
     )
 
 
-def _clock_hhmm_ampm(now: datetime | None = None) -> str:
+def _clock_hhmm(now: datetime | None = None) -> str:
     dt = now if now is not None else datetime.now()
     h12 = dt.hour % 12
     if h12 == 0:
         h12 = 12
-    ampm = "AM" if dt.hour < 12 else "PM"
-    return f"{h12}:{dt.minute:02d} {ampm}"
-
-
-def _date_mmddyy(now: datetime | None = None) -> str:
-    dt = now if now is not None else datetime.now()
-    return f"{dt.month}/{dt.day}/{dt.strftime('%y')}"
+    return f"{h12}:{dt.minute:02d}"
 
 
 def _fallback_base_bgra() -> np.ndarray:
@@ -1008,7 +1515,7 @@ def _fallback_base_bgra() -> np.ndarray:
 
 
 class ViewCirclesWidget:
-    """Circles now-playing layout for DisplayView.ONE."""
+    """Zoned now-playing layout for DisplayView.ONE (circles skin)."""
 
     def __init__(self, *, assets_dir: Path) -> None:
         self._assets_dir = Path(assets_dir)
@@ -1016,15 +1523,16 @@ class ViewCirclesWidget:
         self._poster_bgra: np.ndarray | None = None
         self._cached_bgra: np.ndarray | None = None
         self._cached_sig: tuple[object, ...] | None = None
-        # Dual chrome caches keyed by content_mode ("video" | "music").
-        self._svg_chrome_by_mode: dict[str, np.ndarray] = {}
-        self._svg_chrome_sig_by_mode: dict[str, tuple[object, ...]] = {}
-        # Cached artwork blur backdrop (keyed by id of ``_poster_bgra``).
+        self._svg_chrome_by_key: dict[tuple[object, ...], np.ndarray] = {}
         self._artwork_blur_bgra: np.ndarray | None = None
         self._artwork_blur_poster_id: int | None = None
         self._search_frames: tuple[np.ndarray, ...] | None = None
         self._search_frames_tried = False
         self._last_tick_mono: float | None = None
+        self._spin_sec_phase = 0.0
+        self._spin_min_phase = 0.0
+        self._spin_hour_phase = 0.0
+        self._spin_vol_phase = 0.0
 
     @property
     def chrome_visible(self) -> bool:
@@ -1046,11 +1554,40 @@ class ViewCirclesWidget:
         self._artwork_blur_bgra = None
         self._artwork_blur_poster_id = None
 
+    def _reset_clock_spin_from_wall(self) -> None:
+        """Seed intro spin phases from the current wall clock + volume."""
+        n = datetime.now()
+        h12 = n.hour % 12
+        self._spin_hour_phase = float(h12)  # 0 = 12 o'clock face
+        self._spin_min_phase = float(n.minute)
+        self._spin_sec_phase = float(n.second)
+        self._spin_vol_phase = float(self._state.volume_fraction)
+
+    def _clock_now_for_display(self) -> datetime:
+        """Wall clock, or synthetic racing time while TMDb search is in flight."""
+        if not self._state.searching:
+            return datetime.now()
+        # Map phases → datetime fields consumed by tick / digital rendering.
+        hour_0_11 = int(self._spin_hour_phase) % 12
+        minute = int(self._spin_min_phase) % 60
+        second = int(self._spin_sec_phase) % 60
+        return datetime(2000, 1, 1, hour_0_11, minute, second)
+
+    def _volume_fraction_for_display(self) -> float:
+        if self._state.searching:
+            return float(self._spin_vol_phase % 1.0)
+        if self._state.volume_muted:
+            return 0.0
+        return float(self._state.volume_fraction)
+
     def set_now_playing_chrome_visible(self, visible: bool) -> bool:
         v = bool(visible)
         if v == self._state.chrome_visible:
             return False
         self._state.chrome_visible = v
+        if v and self._state.searching:
+            self._reset_clock_spin_from_wall()
+            self._last_tick_mono = None
         self.clear_cache()
         return True
 
@@ -1102,6 +1639,8 @@ class ViewCirclesWidget:
         song_title: str | None = None,
         album_title: str | None = None,
         artist_title: str | None = None,
+        paused: bool | None = None,
+        service_name: str | None = None,
     ) -> bool:
         changed = False
         if self.set_now_playing_chrome_visible(has_now_playing):
@@ -1147,6 +1686,16 @@ class ViewCirclesWidget:
         if cfg != self._state.config:
             self._state.config = cfg
             changed = True
+        if paused is not None:
+            want_paused = bool(paused)
+            if want_paused != self._state.paused:
+                self._state.paused = want_paused
+                changed = True
+        if service_name is not None:
+            svc = str(service_name or "").strip()
+            if svc != self._state.service_name:
+                self._state.service_name = svc
+                changed = True
         if is_music:
             if song_title is not None:
                 st = str(song_title or "")
@@ -1163,7 +1712,6 @@ class ViewCirclesWidget:
                 if ar != self._state.artist_title:
                     self._state.artist_title = ar
                     changed = True
-            # Music layout has no cast row.
             if self._state.cast:
                 self._state.cast = []
                 changed = True
@@ -1187,14 +1735,17 @@ class ViewCirclesWidget:
                 if want:
                     self._state.search_angle_deg = 0.0
                     self._last_tick_mono = None
+                    self._reset_clock_spin_from_wall()
                     self._ensure_search_frames()
+                else:
+                    # TMDb settled — next frame uses real wall clock / volume.
+                    self._last_tick_mono = None
                 changed = True
         if missing_art is not None:
             want_miss = bool(missing_art)
             if want_miss != self._state.missing_art:
                 self._state.missing_art = want_miss
                 changed = True
-        # While searching, keep the poster empty so the spinner is the only art.
         if self._state.searching:
             if self.set_poster_bgra(None):
                 changed = True
@@ -1205,7 +1756,6 @@ class ViewCirclesWidget:
         return changed
 
     def tick(self) -> None:
-        """Advance searching spinner angle when a TMDb fetch is in flight."""
         if not self._state.searching:
             self._last_tick_mono = None
             return
@@ -1215,10 +1765,25 @@ class ViewCirclesWidget:
             return
         dt = max(0.0, now - self._last_tick_mono)
         self._last_tick_mono = now
-        prev = self._state.search_angle_deg
-        self._state.search_angle_deg = advance_angle_deg(prev, dt)
-        # Quantize to spinner frame steps so we only invalidate when the blit changes.
-        if int(round(prev / 10.0)) != int(round(self._state.search_angle_deg / 10.0)):
+        prev_angle = self._state.search_angle_deg
+        self._state.search_angle_deg = advance_angle_deg(prev_angle, dt)
+        prev_sec = int(self._spin_sec_phase)
+        prev_min = int(self._spin_min_phase)
+        prev_hour = int(self._spin_hour_phase)
+        prev_vol = int(self._spin_vol_phase * 40.0)
+        self._spin_sec_phase += dt * _CLOCK_SPIN_SEC_RATE
+        self._spin_min_phase += dt * _CLOCK_SPIN_MIN_RATE
+        self._spin_hour_phase += dt * _CLOCK_SPIN_HOUR_RATE
+        self._spin_vol_phase += dt * _CLOCK_SPIN_VOL_RATE
+        spun = (
+            int(self._spin_sec_phase) != prev_sec
+            or int(self._spin_min_phase) != prev_min
+            or int(self._spin_hour_phase) != prev_hour
+            or int(self._spin_vol_phase * 40.0) != prev_vol
+            or int(round(prev_angle / 10.0))
+            != int(round(self._state.search_angle_deg / 10.0))
+        )
+        if spun:
             self.clear_cache()
 
     def _ensure_search_frames(self) -> tuple[np.ndarray, ...] | None:
@@ -1234,19 +1799,23 @@ class ViewCirclesWidget:
         st = self._state
         cast_sig = tuple(st.cast[:3])
         poster_id = id(self._poster_bgra) if self._poster_bgra is not None else None
-        now = datetime.now()
+        now = self._clock_now_for_display()
         search_frame = (
             int(round(st.search_angle_deg / 10.0)) % 36 if st.searching else -1
         )
+        h12 = now.hour % 12
+        if h12 == 0:
+            h12 = 12
+        vol_disp = self._volume_fraction_for_display()
         return (
-            15,  # cache schema version (missing-art "?" placeholder)
+            26,  # cache schema — zone0 date header
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
             st.remaining_text,
             st.volume,
-            round(st.volume_fraction, 5),
-            st.volume_muted,
+            round(vol_disp, 5),
+            st.volume_muted and not st.searching,
             st.incoming,
             st.config,
             st.chrome_visible,
@@ -1257,40 +1826,61 @@ class ViewCirclesWidget:
             poster_id,
             st.searching,
             st.missing_art,
+            st.paused,
+            st.service_name,
             search_frame,
-            int(now.strftime("%H%M")),
-            f"{now.month}/{now.day}/{now.strftime('%y')}",
+            h12,
+            int(now.minute),
+            int(now.second),
+            _format_zone0_date(datetime.now()),
         )
 
-    def _svg_chrome_cache_sig(self, content_mode: str) -> tuple[object, ...]:
-        mode = _normalize_content_mode(content_mode)
+    def _svg_chrome_cache_key(self, now: datetime) -> tuple[object, ...]:
+        mode = self.content_mode
         path = default_view_circles_svg_path(self._assets_dir, content_mode=mode)
         try:
             mtime = path.stat().st_mtime_ns
         except OSError:
             mtime = -1
-        # Bump when strip/redraw pipeline changes so cached chrome is not reused.
-        return (str(path), mtime, mode, 7)
+        h12 = now.hour % 12
+        if h12 == 0:
+            h12 = 12
+        # Reuse rasters across hours/days — ticks only depend on h/m/s + mode/pause.
+        return (
+            str(path),
+            mtime,
+            mode,
+            bool(self._state.paused),
+            h12,
+            int(now.minute),
+            int(now.second),
+            7,  # chrome pipeline — zone0 date (demo text stripped)
+        )
 
-    def _render_svg_base(self) -> np.ndarray:
-        mode = self.content_mode
-        sig = self._svg_chrome_cache_sig(mode)
-        cached = self._svg_chrome_by_mode.get(mode)
-        if cached is not None and self._svg_chrome_sig_by_mode.get(mode) == sig:
+    def _render_svg_base(self, now: datetime) -> np.ndarray:
+        key = self._svg_chrome_cache_key(now)
+        cached = self._svg_chrome_by_key.get(key)
+        if cached is not None:
             return cached
         try:
             base = render_view_circles_svg_base_bgra(
                 assets_dir=self._assets_dir,
-                content_mode=mode,
+                content_mode=self.content_mode,
+                paused=bool(self._state.paused),
+                now=now,
             )
         except Exception:
             base = _fallback_base_bgra()
-        self._svg_chrome_by_mode[mode] = base
-        self._svg_chrome_sig_by_mode[mode] = sig
+        # Keep a full minute of second-states (and a bit more) so the Pi doesn't
+        # re-rasterize every tick — slow rasters were causing the second hand to skip.
+        if len(self._svg_chrome_by_key) > 96:
+            self._svg_chrome_by_key.clear()
+        self._svg_chrome_by_key[key] = base
         return base
 
-    def _draw_missing_art_placeholder(self, out: np.ndarray, px: int, py: int, pw: int, ph: int, prx: int) -> None:
-        """Draw a soft dark plate with a centered "?" in the 2×3 poster slot."""
+    def _draw_missing_art_placeholder(
+        self, out: np.ndarray, px: int, py: int, pw: int, ph: int, prx: int
+    ) -> None:
         mask = _rounded_rect_mask(pw, ph, prx)
         plate = np.zeros((ph, pw, 4), dtype=np.uint8)
         plate[:, :, 0] = 28
@@ -1298,7 +1888,6 @@ class ViewCirclesWidget:
         plate[:, :, 2] = 28
         plate[:, :, 3] = np.minimum(np.uint8(210), mask)
         _paste_patch_bgra(out, plate, px, py)
-        # Prefer Sharp Sans when available; fall back to Hershey for headless/dev.
         try:
             from pigeon.font_paths import resolve_ui_font_extrabold
 
@@ -1309,8 +1898,6 @@ class ViewCirclesWidget:
         cy = int(round(py + ph / 2.0))
         if font_path is not None:
             try:
-                from PIL import Image, ImageDraw, ImageFont
-
                 font = ImageFont.truetype(str(font_path), size=max(48, int(round(ph * 0.42))))
                 img = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
                 draw = ImageDraw.Draw(img)
@@ -1327,7 +1914,6 @@ class ViewCirclesWidget:
                 return
             except Exception:
                 pass
-        # OpenCV fallback (no custom font).
         scale = max(1.5, ph / 140.0)
         thickness = max(2, int(round(scale * 2.2)))
         (tw, th), _ = cv2.getTextSize("?", cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
@@ -1346,11 +1932,11 @@ class ViewCirclesWidget:
 
     def _draw_poster(self, out: np.ndarray) -> None:
         px, py, pw, ph, prx = _poster_geometry(self.content_mode)
+        dim = _POSTER_PAUSED_DIM if self._state.paused else 1.0
         src = self._poster_bgra
         if src is not None and src.size > 0 and not self._state.searching:
             if src.ndim == 3 and src.shape[2] == 3:
                 src = cv2.cvtColor(src, cv2.COLOR_BGR2BGRA)
-            # Cover-fit into poster rect.
             sh, sw = src.shape[:2]
             if sh >= 1 and sw >= 1:
                 scale = max(pw / float(sw), ph / float(sh))
@@ -1371,6 +1957,14 @@ class ViewCirclesWidget:
                 if patch.shape[2] == 3:
                     patch = cv2.cvtColor(patch, cv2.COLOR_BGR2BGRA)
                 patch[:, :, 3] = np.minimum(patch[:, :, 3], mask)
+                if dim < 0.999:
+                    patch = patch.copy()
+                    patch[:, :, :3] = np.clip(
+                        patch[:, :, :3].astype(np.float32) * dim, 0, 255
+                    ).astype(np.uint8)
+                    patch[:, :, 3] = np.clip(
+                        patch[:, :, 3].astype(np.float32) * max(dim, 0.5), 0, 255
+                    ).astype(np.uint8)
                 _paste_patch_bgra(out, patch, px, py)
         elif (
             self._state.missing_art
@@ -1385,19 +1979,16 @@ class ViewCirclesWidget:
                 cy = int(round(py + ph / 2.0))
                 patch = rotated_patch_for_angle(frames, self._state.search_angle_deg)
                 blit_spinner_patch(out, patch, cx=cx, cy=cy)
-        # Gray stroke is provided by SVG poster accent chrome.
 
     def _draw_status_bar(self, out: np.ndarray) -> None:
         st = self._state
         pf = max(0.0, min(1.0, float(st.progress)))
-        # Elapsed grows from left; own full perimeter stroke (including leading edge).
         elapsed_w = max(_MIN_ELAPSED_W, int(round(pf * float(_BAR_W))))
         if pf <= 0.0:
             elapsed_w = _MIN_ELAPSED_W if st.elapsed_text else 0
         elapsed_w = min(elapsed_w, _BAR_W) if elapsed_w > 0 else 0
-        # Snapshot underlayer so translucent red sits over artwork, not solid grey.
         under = None
-        bar_pad = 3  # matches stroke pad in _draw_rounded_bar_bgra (stroke=2)
+        bar_pad = 3
         bar_x = _BAR_L - bar_pad
         bar_y = _BAR_T - bar_pad
         if elapsed_w > 0:
@@ -1409,7 +2000,6 @@ class ViewCirclesWidget:
             if x0 < x1 and y0 < y1:
                 under = np.zeros((eh, ew, out.shape[2]), dtype=out.dtype)
                 under[y0 - bar_y : y1 - bar_y, x0 - bar_x : x1 - bar_x] = out[y0:y1, x0:x1]
-        # Fixed remaining (full bar, grey) with faint perimeter stroke over blur.
         _draw_rounded_bar_bgra(
             out,
             x=_BAR_L,
@@ -1447,7 +2037,6 @@ class ViewCirclesWidget:
                 stroke_backdrop_x=bar_x,
                 stroke_backdrop_y=bar_y,
             )
-        # CTI: short vertical tick centered on the bar (does not reach elapsed text).
         cti_x = _BAR_L + min(elapsed_w, _BAR_W) - _CTI_W // 2
         cti_x = max(_BAR_L, min(_BAR_R - _CTI_W, cti_x))
         cti = np.zeros((_CTI_H, _CTI_W, 4), dtype=np.uint8)
@@ -1457,9 +2046,9 @@ class ViewCirclesWidget:
 
         et = str(st.elapsed_text or "").strip()
         rt = str(st.remaining_text or "").strip()
-        rt_patch = None
-        rt_w = rt_h = 0
         rt_x = _BAR_R
+        et_w = 0
+        et_x = 0
         if rt:
             rt_patch, rt_w, rt_h = _text_patch_digital7(rt, size_px=24)
             rt_x = _BAR_R - rt_w
@@ -1472,7 +2061,6 @@ class ViewCirclesWidget:
         if et:
             et_patch, et_w, et_h = _text_patch_digital7(et, size_px=24)
             et_x = int(round(cti_x + _CTI_W / 2.0 - et_w / 2.0))
-            # Drop elapsed label when it would collide with remaining.
             if et_x + et_w + _ELAPSED_REMAINING_GAP_PX < rt_x:
                 _paste_patch_bgra(
                     out,
@@ -1480,42 +2068,114 @@ class ViewCirclesWidget:
                     et_x,
                     _ELAPSED_TEXT_Y - et_h // 2,
                 )
-
-    def _draw_clock_group(self, out: np.ndarray) -> None:
-        st = self._state
-        now = datetime.now()
-        date_p, _, _ = _text_patch_digital7(_date_mmddyy(now), size_px=36)
-        _paste_centered(out, date_p, _DATE_CX, _DATE_CY)
-        time_p, _, _ = _text_patch_digital7(_clock_hhmm_ampm(now), size_px=48)
-        _paste_centered(out, time_p, _TIME_CX, _TIME_CY)
-        # Music layout has no remaining-time label under circle1.
-        if st.content_mode == _CONTENT_MODE_MUSIC:
-            return
-        rem = str(st.remaining_text or "").strip()
-        if rem:
-            # Prefer leading minus for remaining under circle (matches mock).
-            if rem.upper() != "LIVE" and not rem.startswith("-"):
-                rem_disp = f"-{rem}"
             else:
-                rem_disp = rem
-            rem_p, _, _ = _text_patch_digital7(rem_disp, size_px=48)
-            _paste_centered(out, rem_p, _REMAINING_TIME_CX, _REMAINING_TIME_CY)
+                et_w = 0
+
+        # Service label: hidden near start; fade in when progress leaves room.
+        svc = str(st.service_name or "").strip()
+        if svc:
+            show_svc = pf >= _SERVICE_FADE_PROGRESS
+            if et_w > 0 and et_x < _SERVICE_TEXT_X + 80:
+                show_svc = False
+            if show_svc:
+                fade = max(0.0, min(1.0, (pf - _SERVICE_FADE_PROGRESS) / 0.08))
+                svc_patch, sw, sh = _text_patch_digital7(svc.lower(), size_px=24)
+                if fade < 0.999:
+                    svc_patch = svc_patch.copy()
+                    svc_patch[:, :, 3] = np.clip(
+                        svc_patch[:, :, 3].astype(np.float32) * fade, 0, 255
+                    ).astype(np.uint8)
+                _paste_patch_bgra(
+                    out,
+                    svc_patch,
+                    _SERVICE_TEXT_X,
+                    _SERVICE_TEXT_Y - sh // 2,
+                )
+
+        if st.paused:
+            font = _load_sharp_italic(28)
+            paused_patch, _, _ = _text_patch_font("paused", font=font)
+            _paste_centered(out, paused_patch, _PAUSED_TEXT_CX, _PAUSED_TEXT_CY)
+
+    def _draw_clock_digital(self, out: np.ndarray, now: datetime) -> None:
+        time_p, _, _ = _text_patch_digital7(_clock_hhmm(now), size_px=_CLOCK_DIGITAL_SIZE)
+        _paste_centered(out, time_p, _ZONE1_CX, _ZONE1_CY)
+
+    def _draw_zone0_date(
+        self,
+        out: np.ndarray,
+        now: datetime,
+        *,
+        align: str = _ZONE0_DATE_ALIGN_DEFAULT,
+    ) -> None:
+        """Live date in zone0; default alignment is left (SVG ``zone0_date_left_text``)."""
+        key = str(align or _ZONE0_DATE_ALIGN_DEFAULT).strip().lower()
+        if key not in _ZONE0_DATE_BASELINE:
+            key = _ZONE0_DATE_ALIGN_DEFAULT
+        x_base, y_base = _ZONE0_DATE_BASELINE[key]
+        label = _format_zone0_date(now)
+        font = _load_sharp_light_italic(_ZONE0_DATE_SIZE_PX)
+        # Measure for baseline-aligned paste (SVG text origin = left baseline).
+        pad = 2
+        probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(probe)
+        _l, t, _r, _b = draw.textbbox((0, 0), label, font=font)
+        patch, _pw, _ph = _text_patch_font(
+            label,
+            font=font,
+            fill_rgb=(255, 255, 255),
+        )
+        # Patch left edge is at ``pad``; baseline in patch is ``pad - t``.
+        paste_x = int(round(x_base - pad))
+        paste_y = int(round(y_base - (pad - t)))
+        _paste_patch_bgra(out, patch, paste_x, paste_y)
+
+    def _draw_audio_sep_line(self, out: np.ndarray) -> None:
+        """Short chrome rule at digital-clock Y, centered in the volume zone."""
+        cy = int(round(_AUDIO_SEP_CY))
+        cx = int(round(_ZONE3_CX))
+        x0 = cx - _AUDIO_SEP_HALF_W
+        x1 = cx + _AUDIO_SEP_HALF_W
+        y0 = cy - max(0, _AUDIO_SEP_THICKNESS // 2)
+        y1 = y0 + max(1, _AUDIO_SEP_THICKNESS)
+        h, w = out.shape[:2]
+        x0 = max(0, min(w, x0))
+        x1 = max(0, min(w, x1))
+        y0 = max(0, min(h, y0))
+        y1 = max(0, min(h, y1))
+        if x1 <= x0 or y1 <= y0:
+            return
+        b, g, r = _COLOR_CHROME_BGR
+        out[y0:y1, x0:x1, 0] = b
+        out[y0:y1, x0:x1, 1] = g
+        out[y0:y1, x0:x1, 2] = r
+        if out.shape[2] >= 4:
+            out[y0:y1, x0:x1, 3] = 255
 
     def _draw_audio_group(self, out: np.ndarray) -> None:
         st = self._state
         vol = _receiver_volume_display_line(st.volume)
-        if vol and vol.strip().lower() not in ("mute", "muted"):
-            # No max_width: short levels (e.g. "45", "-20.5 dB") must never ellipsize.
-            vol_p, _, _ = _text_patch_digital7(vol, size_px=72)
-            _paste_centered(out, vol_p, _VOLUME_CX, _VOLUME_CY)
+        show_vol = bool(vol) and vol.strip().lower() not in ("mute", "muted")
         cfg = receiver_audio_config_display_line(st.incoming, st.config)
+        sep = float(_AUDIO_SEP_CY)
+        half_t = max(1, _AUDIO_SEP_THICKNESS) / 2.0
+        gap = float(_AUDIO_STACK_GAP)
+        vol_p = cfg_p = None
+        if show_vol:
+            # Smaller than before so it can sit higher with even stack spacing.
+            vol_p, _, vh = _text_patch_digital7(vol, size_px=_VOLUME_SIZE_PX)
+            vol_cy = sep - half_t - gap - (vh / 2.0)
+            _paste_centered(out, vol_p, _VOLUME_CX, vol_cy)
         if cfg:
-            cfg_p, _, _ = _text_patch_digital7(
+            cfg_p, _, ch = _text_patch_digital7(
                 cfg.upper(),
-                size_px=21,
+                size_px=_AUDIO_CFG_SIZE_PX,
                 max_width_px=200,
             )
-            _paste_centered(out, cfg_p, _AUDIO_CFG_CX, _AUDIO_CFG_CY)
+            cfg_cy = sep + half_t + gap + (ch / 2.0)
+            _paste_centered(out, cfg_p, _AUDIO_CFG_CX, cfg_cy)
+        if show_vol and cfg:
+            self._draw_audio_sep_line(out)
 
     def _draw_cast(self, out: np.ndarray) -> None:
         cast = list(self._state.cast or [])
@@ -1556,8 +2216,8 @@ class ViewCirclesWidget:
             _paste_centered(out, patch, _TRACK_CX, cy)
 
     def _render_static_bgra(self) -> np.ndarray:
+        now = self._clock_now_for_display()
         out = _fallback_base_bgra()
-        # Blurred cover-fit artwork under chrome (music album art / video poster).
         if (
             self._poster_bgra is not None
             and self._poster_bgra.size > 0
@@ -1566,26 +2226,27 @@ class ViewCirclesWidget:
             blur = self._ensure_artwork_blur_bgra()
             if blur is not None:
                 _paste_patch_bgra(out, blur, 0, 0)
-        _paste_patch_bgra(out, self._render_svg_base(), 0, 0)
-        self._draw_poster(out)
-        # Identical pie-ring pipeline for playback (circle1) and volume (circle2).
-        _draw_circle_pair(
+        # Soft white halos behind active circular widgets (under poster + SVG chrome).
+        _draw_zone_halos(
             out,
-            cx=_CIRCLE1_CX,
-            cy=_CIRCLE1_CY,
-            fraction=self._state.progress,
-            show_accent=True,
+            content_mode=self.content_mode,
+            paused=bool(self._state.paused),
         )
-        vol_show = (not self._state.volume_muted) and self._state.volume_fraction > 1e-6
+        # Poster/album under SVG chrome so zone2 play button + accents sit on top.
+        self._draw_poster(out)
+        _paste_patch_bgra(out, self._render_svg_base(now), 0, 0)
+        # Zone3 volume annular pie (zone1 clock ticks come from SVG).
+        vol_frac = self._volume_fraction_for_display()
         _draw_circle_pair(
             out,
-            cx=_CIRCLE2_CX,
-            cy=_CIRCLE2_CY,
-            fraction=self._state.volume_fraction,
-            show_accent=vol_show,
+            cx=_ZONE3_CX,
+            cy=_ZONE3_CY,
+            fraction=vol_frac,
+            show_accent=vol_frac > 1e-6,
         )
         self._draw_status_bar(out)
-        self._draw_clock_group(out)
+        self._draw_zone0_date(out, datetime.now())
+        self._draw_clock_digital(out, now)
         self._draw_audio_group(out)
         if self.content_mode == _CONTENT_MODE_MUSIC:
             self._draw_track_titles(out)

@@ -300,9 +300,11 @@ def _layout_up_to_date(root: ET.Element, state: MainSettingsState) -> None:
         now_group.set("transform", f"translate({dx:.3f} 0)")
     now_text = _find_by_logical_id(root, ID_NOW_TEXT)
     _set_text_content(now_text, "OK")
+    # Pillow text overlay ignores parent ``<g transform>`` — use the absolute
+    # centered-button midpoint, not the pre-nudge NOW label x.
     _set_text_translate(
         now_text,
-        x=_NOW_DEFAULT_X,
+        x=cx + _nw / 2.0,
         y=_NOW_TEXT_Y,
     )
 

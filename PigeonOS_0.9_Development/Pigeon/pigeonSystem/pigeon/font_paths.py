@@ -184,6 +184,94 @@ def resolve_ui_font_extrabold() -> str | None:
     return None
 
 
+def resolve_ui_font_light_italic() -> str | None:
+    """
+    Sharp Sans Light Italic for very light UI labels (e.g. zone0 date).
+
+    Set ``PIGEON_FONT_LIGHT_ITALIC`` to override. Falls back to Medium Italic,
+    then Book Italic / Medium.
+    """
+    env = os.environ.get("PIGEON_FONT_LIGHT_ITALIC")
+    if env and Path(env).is_file():
+        return env
+
+    bundled_names = (
+        "Sharp Sans Light Italic.otf",
+        "SharpSansLightItalic.otf",
+        "SharpSans-LightItalic.otf",
+    )
+    bundled = _first_bundled_font(bundled_names)
+    if bundled:
+        return bundled
+
+    roots = _font_search_roots()
+    globs = (
+        "*Sharp*Sans*Light*Italic*.otf",
+        "*Sharp*Sans*Light*Italic*.ttf",
+        "*SharpSans*Light*Italic*.otf",
+        "*SharpSans*Light*Italic*.ttf",
+    )
+    for root in roots:
+        for pattern in globs:
+            for p in sorted(root.glob(pattern)):
+                if p.is_file():
+                    return str(p)
+
+    return resolve_ui_font_medium_italic()
+
+
+def resolve_ui_font_medium_italic() -> str | None:
+    """
+    Sharp Sans Medium Italic for lighter UI labels (e.g. zone0 date).
+
+    Set ``PIGEON_FONT_MEDIUM_ITALIC`` to override. Falls back to Medium (roman),
+    then Book Italic / Book when the italic cut is missing.
+    """
+    env = os.environ.get("PIGEON_FONT_MEDIUM_ITALIC")
+    if env and Path(env).is_file():
+        return env
+
+    bundled_names = (
+        "Sharp Sans Medium Italic.otf",
+        "SharpSansMediumItalic.otf",
+        "SharpSans-MediumItalic.otf",
+    )
+    bundled = _first_bundled_font(bundled_names)
+    if bundled:
+        return bundled
+
+    roots = _font_search_roots()
+    globs = (
+        "*Sharp*Sans*Medium*Italic*.otf",
+        "*Sharp*Sans*Medium*Italic*.ttf",
+        "*SharpSans*Medium*Italic*.otf",
+        "*SharpSans*Medium*Italic*.ttf",
+    )
+    for root in roots:
+        for pattern in globs:
+            for p in sorted(root.glob(pattern)):
+                if p.is_file():
+                    return str(p)
+
+    # Book / regular italic as a lighter alternative.
+    for root in roots:
+        for pattern in (
+            "*Sharp*Sans*Italic*.otf",
+            "*SharpSans*Italic*.otf",
+            "Sharp Sans Italic.otf",
+        ):
+            for p in sorted(root.glob(pattern)):
+                name = p.name.lower()
+                if not p.is_file():
+                    continue
+                if any(w in name for w in ("bold", "black", "heavy", "light", "thin", "semi")):
+                    continue
+                if "italic" in name or "oblique" in name:
+                    return str(p)
+
+    return resolve_ui_font_medium() or resolve_ui_font_book()
+
+
 def resolve_ui_font_extrabold_italic() -> str | None:
     """
     Sharp Sans ExtraBold Italic for update-popup ``PigeonOS`` wordmark.
