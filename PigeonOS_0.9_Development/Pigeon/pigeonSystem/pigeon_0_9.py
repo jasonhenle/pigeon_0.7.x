@@ -193,6 +193,7 @@ _blend_mic_visualizer = None  # type: ignore[misc, assignment]
 # Splash symbols stay importable when splash group fails (call sites check paths).
 FALLBACK_SPLASH_FRAME_COUNT = 0
 SPLASH_FADE_OUT_FRAMES = 0
+SPLASH_CLOCK_REVEAL_FRAME = 90
 SPLASH_FPS = 30
 SPLASH_MAX_DURATION_S = 0.0
 apply_splash_global_alpha = None  # type: ignore[misc, assignment]
@@ -206,6 +207,7 @@ load_splash_bgra = None  # type: ignore[misc, assignment]
 resolve_splash_media = None  # type: ignore[misc, assignment]
 resize_bgra_if_needed = None  # type: ignore[misc, assignment]
 splash_end_fade_factor = None  # type: ignore[misc, assignment]
+splash_effective_frame_count = None  # type: ignore[misc, assignment]
 
 try:
     from pigeon.compositing import (
@@ -302,6 +304,7 @@ except ImportError as _exc:
 try:
     from pigeon.splash_sequence import (
         FALLBACK_SPLASH_FRAME_COUNT,
+        SPLASH_CLOCK_REVEAL_FRAME,
         SPLASH_FADE_OUT_FRAMES,
         SPLASH_FPS,
         SPLASH_MAX_DURATION_S,
@@ -315,6 +318,7 @@ try:
         load_splash_bgra,
         resolve_splash_media,
         resize_bgra_if_needed,
+        splash_effective_frame_count,
         splash_end_fade_factor,
     )
 except ImportError as _exc:
@@ -503,8 +507,8 @@ LANDING_DIM_BRIGHTNESS = 0.78  # Space-bar pulse “off” — still readable vs
 STARTUP_PIGEON_WORDMARK_MAX_S = 5.0
 # After splash: optional startup transition timing (no mic EQ).
 SKIP_POST_SPLASH_STARTUP_TRANSITION = True
-# After splash lifts: clock digits ease up from black before now-playing chrome.
-CLOCK_STARTUP_FADE_S = 1.4
+# After splash lifts: optional clock ease-up from black (0 = full-on; PNG splash reveals saver).
+CLOCK_STARTUP_FADE_S = 0.0
 # If True and a saved TMDb backdrop exists, switch to it when this timer elapses.
 STARTUP_AUTO_RESTORE_SAVED_BACKDROP = os.environ.get("PIGEON_STARTUP_RESTORE_BACKDROP", "").strip().lower() in (
     "1",
@@ -891,9 +895,16 @@ def main() -> int:
 
     shell = tk.Frame(root, bg="#111")
     shell.pack(fill=tk.BOTH, expand=True)
-    # Main UI is built here; optional full-window splash overlay sits above until bootstrap + animation finish.
+    # Main UI is built here; splash overlay sits above until the splash sequence finishes.
     content_host = tk.Frame(shell, bg="#111")
     content_host.pack(fill=tk.BOTH, expand=True)
+    # Bridge host so the clock saver is visible the instant splash lifts — even if full
+    # bootstrap has not created the real video ``Label`` yet. Bootstrap destroys this.
+    _boot_clock_host = tk.Frame(content_host, bg="#000")
+    _boot_clock_host.pack(fill=tk.BOTH, expand=True)
+    _boot_clock_label = tk.Label(_boot_clock_host, bd=0, highlightthickness=0, bg="#000")
+    _boot_clock_label.pack(fill=tk.BOTH, expand=True)
+    _boot_clock_photo: list[ImageTk.PhotoImage | None] = [None]
 
     # Full-window splash: PNG sequence in ``pigeonSplash/`` if present, else H.264/HEVC
     # video (hardware-decoded on macOS), else built-in wordmark.
@@ -910,38 +921,121 @@ def main() -> int:
 
     bootstrap_done: list[bool] = [False]
     splash_anim_done: list[bool] = [False]
-    # Window-sized BGR of the UI under the splash (fade unveil composites over this).
+    # Live underlay composited under splash PNG alpha. Stays black until frame 90.
     _splash_underlay_bgr: list[np.ndarray | None] = [None]
+    # Pre-rasterized clock (background thread); swapped into underlay only at frame 90.
+    _splash_clock_ready_bgr: list[np.ndarray | None] = [None]
+    # True once splash reaches ``SPLASH_CLOCK_REVEAL_FRAME``.
+    _splash_reveal_clock: list[bool] = [False]
+    # Registered from bootstrap: keep the real video label in sync after reveal.
+    _splash_on_reveal_paint: list[object] = [None]
+    _splash_underlay_paint_mono: list[float] = [0.0]
+    _splash_post_hook_ran: list[bool] = [False]
     # Post-splash UI timing (splash lift); mic visualizer removed.
     post_splash_mono: list[float | None] = [None]
     _post_splash_startup_hook: list[object] = [None]
 
+    def _rasterize_clock_saver_window_bgr() -> np.ndarray | None:
+        """Full-window BGR clock saver, or None."""
+        if clock_saver_composite_bgra is None or alpha_blend_bgra_over_bgr is None:
+            return None
+        try:
+            dw = int(DESIGN_W) if int(DESIGN_W) > 0 else int(UI_TARGET_W)
+            dh = int(DESIGN_H) if int(DESIGN_H) > 0 else int(UI_TARGET_H)
+            canvas = np.zeros((dh, dw, 3), dtype=np.uint8)
+            (time_bgra, t_rect), (date_bgra, d_rect) = clock_saver_composite_bgra(
+                shadow_bgr=None,
+                layer_opacity=1.0,
+                time_layer_opacity=1.0,
+                date_layer_opacity=1.0,
+            )
+            for cs_bgra, (sx, sy, sw, sh) in (
+                (date_bgra, d_rect),
+                (time_bgra, t_rect),
+            ):
+                x0 = max(0, int(sx))
+                y0 = max(0, int(sy))
+                x1 = min(dw, x0 + int(sw))
+                y1 = min(dh, y0 + int(sh))
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                roi = canvas[y0:y1, x0:x1]
+                patch = cs_bgra[0 : y1 - y0, 0 : x1 - x0]
+                if patch.shape[0] != roi.shape[0] or patch.shape[1] != roi.shape[1]:
+                    continue
+                roi[:] = alpha_blend_bgra_over_bgr(roi, patch)
+            return np.ascontiguousarray(_present_frame_to_display(canvas, WINDOW_W, WINDOW_H))
+        except Exception:
+            return None
+
+    def _apply_clock_to_bridge_label(shown: np.ndarray) -> None:
+        """Push clock pixels onto the content_host bridge (under the splash overlay)."""
+        try:
+            _boot_clock_photo[0] = _bgr_to_tk_image(shown)
+            if _boot_clock_label.winfo_exists():
+                _boot_clock_label.configure(image=_boot_clock_photo[0])
+                _boot_clock_label.image = _boot_clock_photo[0]  # type: ignore[attr-defined]
+        except tk.TclError:
+            pass
+
+    def _reveal_clock_under_splash(*, refresh: bool = False) -> bool:
+        """From frame 90: put clock into underlay + bridge beneath the splash overlay."""
+        if _splash_reveal_clock[0] and _splash_underlay_bgr[0] is not None and not refresh:
+            return True
+        shown = _splash_clock_ready_bgr[0]
+        # Re-rasterize only when we have no buffer yet, or a once-per-second digit refresh.
+        if shown is None or refresh:
+            shown = _rasterize_clock_saver_window_bgr()
+            if shown is not None:
+                _splash_clock_ready_bgr[0] = shown
+        if shown is None:
+            return False
+        _splash_underlay_bgr[0] = shown
+        _apply_clock_to_bridge_label(shown)
+        _splash_underlay_paint_mono[0] = time.monotonic()
+        _splash_reveal_clock[0] = True
+        paint = _splash_on_reveal_paint[0]
+        if callable(paint):
+            try:
+                paint()
+            except Exception:
+                pass
+        return True
+
     def _finish_post_splash_startup_transition() -> None:
         """Post-splash hook (registered from ``bootstrap``)."""
+        if _splash_post_hook_ran[0]:
+            return
         hook = _post_splash_startup_hook[0]
         if callable(hook):
+            _splash_post_hook_ran[0] = True
             hook()
 
     def _try_remove_splash_overlay() -> None:
+        """Destroy splash the instant the sequence ends (no bootstrap wait)."""
         if not _PIGEON_EXT:
             return
-        if not (bootstrap_done[0] and splash_anim_done[0]):
+        if not splash_anim_done[0]:
             return
         w = startup_ph[0]
         if w is None:
             return
-        # Paint View 1 under the splash before lifting it (avoids a one-frame white/unpainted flash).
-        _finish_post_splash_startup_transition()
-        try:
-            root.update_idletasks()
-            root.update()
-        except tk.TclError:
-            pass
+        # Clock must already be on the bridge underlay before the overlay disappears.
+        _reveal_clock_under_splash(refresh=False)
+        if bootstrap_done[0]:
+            _finish_post_splash_startup_transition()
         try:
             w.destroy()
         except tk.TclError:
             pass
         startup_ph[0] = None
+        try:
+            sys.stderr.write(
+                f"pigeon: splash overlay lifted +{time.monotonic() - _app_startup_mono:.3f}s\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
         # Splash frames can hold tens of MB (full-window RGB/BGRA per frame);
         # release them now that the overlay is gone. NameError guard: the caches
         # only exist when the ext splash path ran.
@@ -1001,13 +1095,38 @@ def main() -> int:
             except tk.TclError:
                 pass
         startup_ph[0] = splash_overlay
-        # Empty label bg so PhotoImage alpha can punch through to content_host during the fade unveil.
+        # Opaque black label: splash frames are always composited to RGB (never Tk alpha punch-through).
         splash_label = tk.Label(splash_overlay, bg="#000", bd=0)
         splash_label.pack(expand=True, fill="both")
         splash_photo: list[ImageTk.PhotoImage | None] = [None]
         splash_idx = [0]
-        splash_t0 = [time.monotonic()]
+        # Set on the first ``splash_tick`` so setup/prebake time doesn't skip early frames.
+        splash_t0: list[float | None] = [None]
         _splash_bg_bgr = (0, 0, 0)
+        # Black underlay until frame 90 — early PNG frames are transparent and must not reveal the clock.
+        _splash_underlay_bgr[0] = np.zeros((WINDOW_H, WINDOW_W, 3), dtype=np.uint8)
+        try:
+            _boot_clock_photo[0] = _bgr_to_tk_image(_splash_underlay_bgr[0])
+            _boot_clock_label.configure(image=_boot_clock_photo[0])
+            _boot_clock_label.image = _boot_clock_photo[0]  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        # Pre-rasterize clock off the UI thread so frame 90 can swap it in instantly.
+        def _prewarm_splash_clock_worker() -> None:
+            shown = _rasterize_clock_saver_window_bgr()
+            if shown is not None:
+                _splash_clock_ready_bgr[0] = shown
+
+        try:
+            import threading
+
+            threading.Thread(
+                target=_prewarm_splash_clock_worker,
+                name="pigeon-splash-clock-prewarm",
+                daemon=True,
+            ).start()
+        except Exception:
+            _prewarm_splash_clock_worker()
 
         # Resolve total frame count AND native fps up front. The PNG / built-in paths lock to
         # SPLASH_FPS, but a video drives its own cadence (e.g. 59.94) so the splash plays at
@@ -1028,6 +1147,23 @@ def main() -> int:
                 _splash_fps_effective = _vc_fps
         elif splash_png_paths:
             splash_total_frames = len(splash_png_paths)
+            # Drop trailing empty PNG frames (often 1s+ of held "last frame" after the art is gone).
+            if callable(splash_effective_frame_count):
+                try:
+                    _trimmed = int(
+                        splash_effective_frame_count(
+                            splash_png_paths, reveal_frame=int(SPLASH_CLOCK_REVEAL_FRAME)
+                        )
+                    )
+                    if 1 <= _trimmed < splash_total_frames:
+                        sys.stderr.write(
+                            f"pigeon: splash trim frames {splash_total_frames} → {_trimmed} "
+                            f"(trailing transparent)\n"
+                        )
+                        sys.stderr.flush()
+                        splash_total_frames = _trimmed
+                except Exception:
+                    pass
         else:
             splash_total_frames = FALLBACK_SPLASH_FRAME_COUNT
 
@@ -1039,20 +1175,20 @@ def main() -> int:
         if _max_frames_for_duration > 0:
             splash_total_frames = min(splash_total_frames, _max_frames_for_duration)
 
-        # Keep the reveal fade-out ~0.7 s regardless of source fps (21 frames @ 30 fps ≈ 0.7 s).
-        _splash_fade_frames = max(
-            1,
-            int(round(float(SPLASH_FADE_OUT_FRAMES) * _splash_fps_effective / float(max(1, SPLASH_FPS)))),
+        # Optional software fade-out (0 = none). Scale with source fps when configured.
+        _splash_fade_frames = int(
+            round(float(SPLASH_FADE_OUT_FRAMES) * _splash_fps_effective / float(max(1, SPLASH_FPS)))
         )
+        if _splash_fade_frames < 0:
+            _splash_fade_frames = 0
         _splash_fade_zone_start = max(
             0, splash_total_frames - min(_splash_fade_frames, splash_total_frames)
         )
+        _splash_reveal_i = int(SPLASH_CLOCK_REVEAL_FRAME)
 
         # Two parallel caches keyed by frame index:
-        #   * _splash_rgb_cache: pre-flattened opaque RGB uint8 (WINDOW_H,WINDOW_W,3) for the
-        #     non-fade body. Feeds PIL ``"RGB"`` which uses Tk's fast opaque blit path.
-        #   * _splash_bgra_cache: BGRA uint8 (WINDOW_H,WINDOW_W,4) for the fade tail only, so
-        #     per-tick we just multiply alpha and hand Tk a small, bounded number of RGBA frames.
+        #   * _splash_rgb_cache: opaque RGB ready for Tk (preferred — no per-tick composite).
+        #   * _splash_bgra_cache: BGRA fallback for live composite over clock when RGB not ready.
         _splash_rgb_cache: dict[int, np.ndarray] = {}
         _splash_bgra_cache: dict[int, np.ndarray] = {}
         _splash_prebake_done = [False]
@@ -1068,20 +1204,66 @@ def main() -> int:
                 ii, splash_total_frames, width=UI_TARGET_W, height=UI_TARGET_H
             )
 
+        def _splash_bgra_over_bgr_to_rgb(bgra: np.ndarray, under_bgr: np.ndarray) -> np.ndarray:
+            a = bgra[:, :, 3:4].astype(np.float32) / 255.0
+            blended = (
+                bgra[:, :, :3].astype(np.float32) * a
+                + under_bgr.astype(np.float32) * (1.0 - a)
+            )
+            rgb = cv2.cvtColor(
+                np.clip(blended, 0, 255).astype(np.uint8),
+                cv2.COLOR_BGR2RGB,
+            )
+            return np.ascontiguousarray(rgb)
+
         def _splash_store_prebaked(ii: int, bgra_window: np.ndarray) -> None:
-            """Store a window-sized BGRA frame in the appropriate fast-path cache."""
-            if ii < _splash_fade_zone_start:
-                try:
-                    rgb = flatten_bgra_over_bg_to_rgb(bgra_window, _splash_bg_bgr)
-                except Exception:
-                    _splash_bgra_cache[ii] = bgra_window
-                    return
-                _splash_rgb_cache[ii] = rgb
-            else:
+            """Store a window-sized frame. Pre-90 → RGB over black; 90+ → RGB over clock when ready."""
+            if splash_png_paths and ii >= _splash_reveal_i:
+                clock = _splash_clock_ready_bgr[0]
+                if (
+                    clock is not None
+                    and clock.ndim == 3
+                    and clock.shape[:2] == bgra_window.shape[:2]
+                ):
+                    try:
+                        _splash_rgb_cache[ii] = _splash_bgra_over_bgr_to_rgb(bgra_window, clock)
+                        return
+                    except Exception:
+                        pass
+                _splash_bgra_cache[ii] = bgra_window
+                return
+            if ii >= _splash_fade_zone_start and _splash_fade_frames > 0:
+                _splash_bgra_cache[ii] = bgra_window
+                return
+            try:
+                _splash_rgb_cache[ii] = flatten_bgra_over_bg_to_rgb(bgra_window, _splash_bg_bgr)
+            except Exception:
                 _splash_bgra_cache[ii] = bgra_window
 
+        def _splash_prebake_reveal_over_clock() -> None:
+            """Once the clock buffer exists, bake frames 90+ to RGB over it (off UI thread)."""
+            clock = _splash_clock_ready_bgr[0]
+            if clock is None:
+                return
+            try:
+                for ii in range(_splash_reveal_i, splash_total_frames):
+                    if ii in _splash_rgb_cache:
+                        continue
+                    bgra = _splash_bgra_cache.get(ii)
+                    if bgra is None:
+                        fr = _splash_raw_bgra(ii)
+                        if fr is None:
+                            continue
+                        bgra = _bgra_to_display_window(fr)
+                        _splash_bgra_cache[ii] = bgra
+                    if clock.shape[:2] != bgra.shape[:2]:
+                        continue
+                    _splash_rgb_cache[ii] = _splash_bgra_over_bgr_to_rgb(bgra, clock)
+            except Exception:
+                pass
+
         def _splash_prebake_worker_pngs() -> None:
-            """Decode + resize + flatten every PNG frame off the UI thread."""
+            """Decode PNGs off the UI thread; flatten early frames over black for a fast blit path."""
             try:
                 for ii in range(splash_total_frames):
                     if ii in _splash_rgb_cache or ii in _splash_bgra_cache:
@@ -1091,6 +1273,9 @@ def main() -> int:
                         continue
                     fr = _bgra_to_display_window(fr)
                     _splash_store_prebaked(ii, fr)
+                # If clock prewarm finished first, bake the reveal tail now.
+                if _splash_clock_ready_bgr[0] is not None:
+                    _splash_prebake_reveal_over_clock()
             except Exception:
                 pass
             finally:
@@ -1171,6 +1356,33 @@ def main() -> int:
             _splash_store_prebaked(ii, fr)
             return fr
 
+        def _splash_composite_bgra_to_photo(bgra_hit: np.ndarray, fade_mul: float) -> None:
+            """Composite splash BGRA over underlay into an opaque RGB ``splash_photo``.
+
+            Before frame 90 the underlay is black; from frame 90 it is the clock saver.
+            Always bake to RGB so the splash layer fully covers content_host.
+            """
+            bgra_out = (
+                apply_splash_global_alpha(bgra_hit, fade_mul)
+                if fade_mul < 0.999 and apply_splash_global_alpha is not None
+                else bgra_hit
+            )
+            under = _splash_underlay_bgr[0]
+            if under is None or under.ndim != 3 or under.shape[:2] != bgra_out.shape[:2]:
+                rgb = flatten_bgra_over_bg_to_rgb(bgra_out, _splash_bg_bgr)
+            else:
+                a = bgra_out[:, :, 3:4].astype(np.float32) / 255.0
+                blended = (
+                    bgra_out[:, :, :3].astype(np.float32) * a
+                    + under.astype(np.float32) * (1.0 - a)
+                )
+                rgb = cv2.cvtColor(
+                    np.clip(blended, 0, 255).astype(np.uint8),
+                    cv2.COLOR_BGR2RGB,
+                )
+                rgb = np.ascontiguousarray(rgb)
+            splash_photo[0] = ImageTk.PhotoImage(image=Image.fromarray(rgb, "RGB"))
+
         def splash_tick() -> None:
             try:
                 if not splash_label.winfo_exists():
@@ -1180,15 +1392,34 @@ def main() -> int:
             ov_top = startup_ph[0]
             if ov_top is not None:
                 try:
-                    ov_top.lift()
+                    # Keep splash strictly above content_host (clock lives underneath).
+                    ov_top.lift(content_host)
                 except tk.TclError:
-                    pass
+                    try:
+                        ov_top.lift()
+                    except tk.TclError:
+                        pass
             ntot = splash_total_frames
-            if time.monotonic() - splash_t0[0] > float(SPLASH_MAX_DURATION_S):
+            now = time.monotonic()
+            if splash_t0[0] is None:
+                splash_t0[0] = now
+            t0 = float(splash_t0[0])
+            if now - t0 > float(SPLASH_MAX_DURATION_S):
                 splash_idx[0] = ntot
-            i = splash_idx[0]
+            # Wall-clock frame index — skip frames when the UI thread is behind so the
+            # sequence ends on time instead of stretching the last frames.
+            wall_i = int((now - t0) / frame_dt)
+            i = max(int(splash_idx[0]), min(wall_i, ntot))
             if i >= ntot:
                 splash_anim_done[0] = True
+                try:
+                    sys.stderr.write(
+                        f"pigeon: splash sequence done +{time.monotonic() - _app_startup_mono:.3f}s "
+                        f"frames={ntot}\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
                 _try_remove_splash_overlay()
                 return
 
@@ -1199,14 +1430,41 @@ def main() -> int:
             if rgb_hit is None and bgra_hit is None:
                 bgra_fb = _splash_fallback_frame_sync(i)
                 if bgra_fb is not None:
-                    if i < _splash_fade_zone_start:
-                        rgb_hit = _splash_rgb_cache.get(i)
-                    else:
-                        bgra_hit = _splash_bgra_cache.get(i)
+                    rgb_hit = _splash_rgb_cache.get(i)
+                    bgra_hit = _splash_bgra_cache.get(i) if rgb_hit is None else None
                 if rgb_hit is None and bgra_hit is None:
-                    # Keep ``splash_idx`` parked and re-enter shortly; absolute scheduler catches up.
+                    # Don't stall the wall clock on a missing frame — skip ahead if later
+                    # frames are already baked, else retry briefly.
+                    for j in range(i + 1, min(i + 8, ntot)):
+                        if j in _splash_rgb_cache or j in _splash_bgra_cache:
+                            splash_idx[0] = j
+                            break
                     root.after(2, splash_tick)
                     return
+
+            # Frame 90+: swap clock under the splash (prewarmed). Before that: black only.
+            if i >= _splash_reveal_i:
+                first_reveal = not _splash_reveal_clock[0]
+                _reveal_clock_under_splash(refresh=False)
+                if first_reveal:
+                    try:
+                        import threading
+
+                        threading.Thread(
+                            target=_splash_prebake_reveal_over_clock,
+                            name="pigeon-splash-reveal-bake",
+                            daemon=True,
+                        ).start()
+                    except Exception:
+                        _splash_prebake_reveal_over_clock()
+                    try:
+                        sys.stderr.write(
+                            f"pigeon: splash clock reveal frame={i} "
+                            f"+{time.monotonic() - _app_startup_mono:.3f}s\n"
+                        )
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
 
             splash_idx[0] = i + 1
 
@@ -1215,33 +1473,12 @@ def main() -> int:
                     # Fast path: opaque RGB → Tk's direct blit (no per-pixel alpha work).
                     splash_photo[0] = ImageTk.PhotoImage(image=Image.fromarray(rgb_hit, "RGB"))
                 else:
-                    # Fade-tail: composite faded splash over the already-painted UI underlay.
-                    fade_mul = splash_end_fade_factor(
-                        i, ntot, min(_splash_fade_frames, ntot)
+                    fade_mul = (
+                        splash_end_fade_factor(i, ntot, min(_splash_fade_frames, ntot))
+                        if _splash_fade_frames > 0 and splash_end_fade_factor is not None
+                        else 1.0
                     )
-                    bgra_out = apply_splash_global_alpha(bgra_hit, fade_mul)
-                    under = _splash_underlay_bgr[0]
-                    if (
-                        under is not None
-                        and under.ndim == 3
-                        and under.shape[:2] == bgra_out.shape[:2]
-                    ):
-                        a = bgra_out[:, :, 3:4].astype(np.float32) / 255.0
-                        blended = (
-                            bgra_out[:, :, :3].astype(np.float32) * a
-                            + under.astype(np.float32) * (1.0 - a)
-                        )
-                        rgb = cv2.cvtColor(
-                            np.clip(blended, 0, 255).astype(np.uint8),
-                            cv2.COLOR_BGR2RGB,
-                        )
-                        splash_photo[0] = ImageTk.PhotoImage(
-                            image=Image.fromarray(np.ascontiguousarray(rgb), "RGB")
-                        )
-                    else:
-                        splash_photo[0] = ImageTk.PhotoImage(
-                            image=bgra_to_pil_rgba(bgra_out)
-                        )
+                    _splash_composite_bgra_to_photo(bgra_hit, float(fade_mul))
             except Exception:
                 # Best-effort RGB fallback so a single bad frame doesn't abort the splash.
                 try:
@@ -1254,11 +1491,11 @@ def main() -> int:
                     pass
             splash_label.configure(image=splash_photo[0])
 
-            # Absolute frame scheduling: target ``splash_t0 + (i+1) * frame_dt`` so slow ticks
-            # don't accumulate drift — we drop back to 1 ms if we're already behind.
-            now = time.monotonic()
-            target = splash_t0[0] + float(i + 1) * frame_dt
-            delay_ms = int(round((target - now) * 1000.0))
+            # Schedule the next wall-clock frame; if we're behind, run ASAP and skip.
+            now2 = time.monotonic()
+            next_i = int(splash_idx[0])
+            target = t0 + float(next_i) * frame_dt
+            delay_ms = int(round((target - now2) * 1000.0))
             if delay_ms < 1:
                 delay_ms = 1
             elif delay_ms > frame_ms * 3:
@@ -1326,20 +1563,71 @@ def main() -> int:
             sys.stderr.flush()
 
         # Full-size video area (always WINDOW_H) so scene scale matches non-overlay mode.
+        # Paint the clock onto the new label BEFORE destroying the splash bridge — otherwise
+        # the screen flashes black between bridge teardown and the first composite.
         video_area = tk.Frame(content_host, bg="#000")
-        video_area.pack(fill=tk.BOTH, expand=True)
-
         label = tk.Label(video_area, bd=0, highlightthickness=0, takefocus=True, bg="#000")
-        label.pack(fill=tk.BOTH, expand=True)
-        # Black PhotoImage before first composite so lifting the splash never reveals an empty label.
         _startup_label_black_photo: list[ImageTk.PhotoImage | None] = [None]
+        _early_clock_underlay_photo: list[ImageTk.PhotoImage | None] = [None]
+        _handoff_clock = _boot_clock_photo[0]
+        if _handoff_clock is None and _splash_underlay_bgr[0] is not None:
+            try:
+                _handoff_clock = _bgr_to_tk_image(_splash_underlay_bgr[0])
+                _boot_clock_photo[0] = _handoff_clock
+            except Exception:
+                _handoff_clock = None
+        if _handoff_clock is not None:
+            try:
+                label.configure(image=_handoff_clock)
+                label.image = _handoff_clock
+                _early_clock_underlay_photo[0] = _handoff_clock
+            except Exception:
+                _handoff_clock = None
+        if _handoff_clock is None:
+            try:
+                _bb = np.zeros((WINDOW_H, WINDOW_W, 3), dtype=np.uint8)
+                _startup_label_black_photo[0] = _bgr_to_tk_image(_bb)
+                label.configure(image=_startup_label_black_photo[0])
+                label.image = _startup_label_black_photo[0]
+            except Exception:
+                pass
+        video_area.pack(fill=tk.BOTH, expand=True)
+        label.pack(fill=tk.BOTH, expand=True)
         try:
-            _bb = np.zeros((WINDOW_H, WINDOW_W, 3), dtype=np.uint8)
-            _startup_label_black_photo[0] = _bgr_to_tk_image(_bb)
-            label.configure(image=_startup_label_black_photo[0])
-            label.image = _startup_label_black_photo[0]
-        except Exception:
+            root.update_idletasks()
+        except tk.TclError:
             pass
+        # Bridge can go away only after the real label already shows the clock.
+        try:
+            if _boot_clock_host.winfo_exists():
+                _boot_clock_host.destroy()
+        except tk.TclError:
+            pass
+
+        def _early_splash_clock_underlay() -> None:
+            """Copy clock underlay onto the real video label (under splash / after lift)."""
+            if not _splash_reveal_clock[0]:
+                return
+                under = _splash_underlay_bgr[0]
+            if under is None:
+                _reveal_clock_under_splash(refresh=False)
+                under = _splash_underlay_bgr[0]
+            if under is None:
+                return
+            try:
+                _early_clock_underlay_photo[0] = _bgr_to_tk_image(under)
+                label.configure(image=_early_clock_underlay_photo[0])
+                label.image = _early_clock_underlay_photo[0]
+            except Exception:
+                pass
+
+        # Keep label in sync once splash has reached the reveal frame.
+        _splash_on_reveal_paint[0] = _early_splash_clock_underlay
+        if _splash_reveal_clock[0]:
+            try:
+                _early_splash_clock_underlay()
+            except Exception:
+                pass
 
         settings_frame = tk.Frame(video_area, bg="#111")
         settings_scroll_outer = tk.Frame(settings_frame, bg="#111")
@@ -2501,7 +2789,7 @@ def main() -> int:
                 if _something_playing_now():
                     _boot_clock_saver_until_playback[0] = False
                     _note_metadata_activity(now)
-                elif startup_ph[0] is None:
+                elif startup_ph[0] is None or _splash_reveal_clock[0]:
                     return True
             # Content metadata unchanged for 2 min → saver until content changes **or**
             # any local Pigeon control is used (``_bump_pigeon_user_activity`` refreshes
@@ -2562,6 +2850,9 @@ def main() -> int:
             # View 3: dedicated clock layout — saver text stays at full opacity (not idle-dimmed).
             if _effective_display_view() == DisplayView.THREE:
                 return 1.0
+            # Boot / splash-reveal: full-on clock (no ease from black, no idle dim).
+            if _boot_clock_saver_until_playback[0] or _splash_reveal_clock[0]:
+                return 1.0
             return CLOCK_SAVER_DIM_OPACITY
 
         def _backdrop_active_for_view() -> bool:
@@ -2591,9 +2882,9 @@ def main() -> int:
                 return True
             if dev_phase != DevPhase.OFF:
                 return False
-            # Splash overlay — never draw the legacy full-screen saver clock.
+            # Splash overlay: keep underlay black until reveal frame, then paint clock under PNG alpha.
             if startup_ph[0] is not None:
-                return False
+                return bool(_splash_reveal_clock[0])
             ev = _effective_display_view()
             if ev == DisplayView.FOUR:
                 return False
@@ -4126,8 +4417,8 @@ def main() -> int:
                 now_cs = time.monotonic()
                 intro_op = _clock_startup_intro_opacity(now_cs)
                 cs_v1 = _clock_saver_for_compose(now_cs)
-                # Splash unveil stays black; after splash the clock fades up before chrome.
-                if startup_ph[0] is not None:
+                # Pre-reveal splash: black underlay. From frame 90: full clock under PNG alpha.
+                if startup_ph[0] is not None and not _splash_reveal_clock[0]:
                     pass
                 elif intro_op is not None and clock_saver_composite_bgra is not None and alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
@@ -4623,8 +4914,8 @@ def main() -> int:
                 _blend_top_gradient_design(canvas)
             if not cs and _view_one_uses_now_playing_screen():
                 canvas[:] = (0, 0, 0)
-                if startup_ph[0] is not None:
-                    # Stay black under the splash so unveil is black → clock fade-up.
+                if startup_ph[0] is not None and not _splash_reveal_clock[0]:
+                    # Pre-reveal splash underlay stays black.
                     pass
                 elif dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
                     main_settings_widget.render(canvas)
@@ -12418,14 +12709,13 @@ def main() -> int:
                 pass
 
         def _splash_paint_view_one_under_overlay() -> None:
-            """Composite View 1 under the splash while bootstrap finishes (helpers now exist)."""
+            """First full View 1 paint after splash (helpers now exist)."""
             if not _PIGEON_EXT:
                 return
             _warm_view_one_under_splash()
             nonlocal skip_cache
             skip_cache = None
             render_once()
-            # Keep the scene painted under the splash so the fade unveil has something to reveal.
             try:
                 root.update_idletasks()
             except tk.TclError:
@@ -12440,12 +12730,6 @@ def main() -> int:
         skip_cache = None
         t_render0 = time.monotonic()
         render_once()
-        # Second paint once bootstrap is effectively complete — still under splash if animating.
-        if _PIGEON_EXT and startup_ph[0] is not None:
-            try:
-                render_once()
-            except Exception:
-                pass
         _log_view_one_startup_phase(f"first-render ({(time.monotonic() - t_render0) * 1000.0:.0f} ms)")
         root.after(600, _receiver_poll_tick)
 
@@ -12459,14 +12743,31 @@ def main() -> int:
                 pass
         bootstrap_done[0] = True
         _log_view_one_startup_phase("bootstrap-done")
-        # Removes overlay only when splash animation has also finished; otherwise the
-        # fade-tail continues unveiling the UI already painted into ``content_host``.
-        _try_remove_splash_overlay()
+        # Splash already finished before bootstrap started; run the deferred post-splash hook.
+        if startup_ph[0] is None:
+            _finish_post_splash_startup_transition()
+        else:
+            _try_remove_splash_overlay()
 
     if _PIGEON_EXT:
-        # Paint at least one splash frame before heavy bootstrap (pack/grid pump interleaves updates).
+        # Play the splash at full rate on a free UI thread. Heavy bootstrap used to run in
+        # parallel and starve ``after()``, freezing the last splash frame for many seconds.
+        def _bootstrap_after_splash() -> None:
+            if not splash_anim_done[0]:
+                root.after(16, _bootstrap_after_splash)
+                return
+            try:
+                sys.stderr.write(
+                    f"pigeon: starting bootstrap after splash "
+                    f"+{time.monotonic() - _app_startup_mono:.3f}s\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            bootstrap()
+
         root.after_idle(splash_tick)
-        root.after(1, bootstrap)
+        root.after_idle(_bootstrap_after_splash)
     else:
         root.after(1, bootstrap)
     try:

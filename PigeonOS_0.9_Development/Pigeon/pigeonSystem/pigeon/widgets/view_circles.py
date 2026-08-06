@@ -229,11 +229,11 @@ _STRIP_OR_HIDE_NAMES: tuple[str, ...] = (
 
 # Zone0 date header (SVG left/center/right; default = left).
 _ZONE0_DATE_ALIGN_DEFAULT = "left"
-_ZONE0_DATE_SIZE_PX = 16
+_ZONE0_DATE_SIZE_PX = 14
 _ZONE0_DATE_BASELINE: dict[str, tuple[float, float]] = {
-    "left": (35.22, 39.94),
-    "center": (282.27, 39.94),
-    "right": (522.95, 39.94),
+    "left": (35.22, 19.94),
+    "center": (282.27, 19.94),
+    "right": (522.95, 19.94),
 }
 
 
