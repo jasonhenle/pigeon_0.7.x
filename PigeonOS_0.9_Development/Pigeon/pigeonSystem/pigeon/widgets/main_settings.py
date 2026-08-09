@@ -85,7 +85,7 @@ _WIFI_SEARCH_GLYPH_BGR = (255, 255, 255)
 
 _ARTBOARD_H = 480.0
 _WIFI_RADII_SVG: tuple[float, float, float] = (18.668, 29.008, 39.145)
-_WIFI_STROKE_SVG = 6.5
+_WIFI_STROKE_SVG = 5.0
 _WIFI_FAIL_SIZE_SVG = 42.0
 _COLOR_GRAY_BGR = (128, 128, 128)
 _COLOR_GRAY_RGBA = (128, 128, 128, 255)
@@ -1298,6 +1298,80 @@ def keyboard_svg_path(
     """Resolve a keyboard SVG under ``settings_0.8/`` (stub helper)."""
     base = Path(assets_dir) if assets_dir is not None else Path(__file__).resolve().parents[3] / "pigeonAssets"
     return Path(base) / "settings_0.8" / name
+
+
+# Full-frame registration PNG for the box1 pigeon mark (replaces the SVG wing polygon).
+_BOX1_PIGEON_LOGO_PNG = "settings_main_box1_pigeon_logo.png"
+_BOX1_PIGEON_LOGO_CACHE: dict[tuple[str, float, int, int], np.ndarray] = {}
+
+
+def box1_pigeon_logo_png_path(*, assets_dir: Path | str | None = None) -> Path:
+    """Resolve the full-screen box1 pigeon logo under ``settings_0.8/``."""
+    base = Path(assets_dir) if assets_dir is not None else Path(__file__).resolve().parents[3] / "pigeonAssets"
+    return Path(base) / "settings_0.8" / _BOX1_PIGEON_LOGO_PNG
+
+
+def _hide_box1_wing_logo_polygon(root: ET.Element) -> None:
+    """Drop the Illustrator wing polygon; left/right rules stay for chrome."""
+    icon = _find_by_logical_id(root, "main_box1_pigeon_logo_icon")
+    if icon is None:
+        return
+    for el in icon.iter():
+        if el.tag.endswith("polygon"):
+            _set_visible(el, False)
+
+
+def _load_box1_pigeon_logo_overlay_bgra(
+    *,
+    assets_dir: Path | str | None = None,
+) -> np.ndarray | None:
+    """Load + scale the registration PNG to the design canvas (BGRA)."""
+    path = box1_pigeon_logo_png_path(assets_dir=assets_dir)
+    if not path.is_file():
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    key = (str(path.resolve()), float(mtime), int(DESIGN_W), int(DESIGN_H))
+    hit = _BOX1_PIGEON_LOGO_CACHE.get(key)
+    if hit is not None:
+        return hit
+    src = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if src is None or src.size == 0:
+        return None
+    if src.ndim == 2:
+        src = cv2.cvtColor(src, cv2.COLOR_GRAY2BGRA)
+    elif src.shape[2] == 3:
+        src = cv2.cvtColor(src, cv2.COLOR_BGR2BGRA)
+    elif src.shape[2] != 4:
+        return None
+    if src.shape[0] != DESIGN_H or src.shape[1] != DESIGN_W:
+        src = cv2.resize(src, (DESIGN_W, DESIGN_H), interpolation=cv2.INTER_AREA)
+    _BOX1_PIGEON_LOGO_CACHE.clear()
+    _BOX1_PIGEON_LOGO_CACHE[key] = src
+    return src
+
+
+def _draw_box1_pigeon_logo_overlay(
+    bgra: np.ndarray,
+    *,
+    assets_dir: Path | str | None = None,
+    ui_hex: str = COLOR_UI_DEFAULT,
+) -> None:
+    """Composite the full-frame box1 pigeon mark, tinted brand red like the SVG icons."""
+    overlay = _load_box1_pigeon_logo_overlay_bgra(assets_dir=assets_dir)
+    if overlay is None or overlay.shape[:2] != bgra.shape[:2]:
+        return
+    if not np.any(overlay[:, :, 3]):
+        return
+    tinted = overlay.copy()
+    b, g, r = _hex_to_bgr(ui_hex or COLOR_UI_DEFAULT)
+    tinted[:, :, 0] = b
+    tinted[:, :, 1] = g
+    tinted[:, :, 2] = r
+    blended = _composite_bgra_over_bgra(bgra, tinted)
+    bgra[:] = blended
 
 
 def _parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
@@ -5367,6 +5441,12 @@ def render_main_settings_bgra(
     box_search_arc_overlays = _collect_box_search_arc_overlays(
         root, st, focused_logical=focused_logical
     )
+    parents = _parent_map(root)
+    box1_logo_el = _find_by_logical_id(root, "main_box1_pigeon_logo_icon")
+    draw_box1_pigeon_logo = (
+        box1_logo_el is not None and not _is_subtree_hidden(box1_logo_el, parents)
+    )
+    _hide_box1_wing_logo_polygon(root)
     _hide_svg_wifi_icons(root)
     _hide_star_masked_svg_circles(root, star_specs)
     _hide_box_column_search_svg_circles(root)
@@ -5375,12 +5455,17 @@ def render_main_settings_bgra(
     bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     bg_bgra[:, :, :3] = 0
     bg_bgra[:, :, 3] = 255
+    assets_root = assets_dir if assets_dir is not None else path.parent.parent
     _draw_container_background_bgra(
         bg_bgra,
         ui_hex=st.theme.ui,
-        assets_dir=assets_dir if assets_dir is not None else path.parent.parent,
+        assets_dir=assets_root,
     )
     bgra = _composite_bgra_over_bgra(bg_bgra, ui_bgra)
+    if draw_box1_pigeon_logo:
+        _draw_box1_pigeon_logo_overlay(
+            bgra, assets_dir=assets_root, ui_hex=st.theme.ui
+        )
     _draw_wifi_overlays(bgra, st, wifi_layouts, focused_logical=focused_logical)
     _draw_star_masked_circle_overlays(bgra, st, star_specs, focused_logical=focused_logical)
     _draw_box_search_arc_overlays(bgra, box_search_arc_overlays)

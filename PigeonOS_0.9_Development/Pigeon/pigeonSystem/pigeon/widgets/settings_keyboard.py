@@ -101,7 +101,6 @@ _BOTTOM_ROW_Y = 378
 
 # Self-contained PIN pad (compact crop). IP uses full 800×480 artboard placement.
 _INTEGRATED_PAD_TOP_Y = 225
-_INTEGRATED_PAD_CONTENT_W = 320
 
 # Linear focus order — mode keys differ for uppercase-only fields (Digital-7).
 _BOTTOM_ROW_TAIL: tuple[KeySpec, ...] = (
@@ -1022,11 +1021,8 @@ def _rasterize_keyboard_chars(
     if pad_mode:
         _center_integrated_pad_labels(root)
         vb = viewbox_from_root(root)
-        content_w = (
-            _INTEGRATED_PAD_CONTENT_W
-            if state.mode == KeyboardMode.NUMERIC_PIN
-            else max(1, int(round(vb[2] * (DESIGN_W / 800.0))))
-        )
+        # Design scale (same as IP / numeric / yes-no) — do not upscale the compact PIN crop.
+        content_w = max(1, int(round(vb[2] * (DESIGN_W / 800.0))))
         layout = _integrated_pad_layout(vb, content_w=content_w)
         root.set("overflow", "visible")
         pad = rasterize_settings_svg_bgra(

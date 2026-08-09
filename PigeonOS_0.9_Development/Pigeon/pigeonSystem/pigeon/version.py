@@ -4,7 +4,7 @@ from __future__ import annotations
 
 MAJOR = 0
 MINOR = 9
-PATCH = 51
+PATCH = 55
 
 
 def version_tuple() -> tuple[int, int, int]:

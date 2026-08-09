@@ -1463,10 +1463,15 @@ def _draw_circle_pair(
     fraction: float,
     show_accent: bool,
 ) -> None:
-    """Volume ring: black annulus for empty, red for level; black center disc."""
-    del show_accent  # always paint black track; red overlay follows fraction
+    """Volume ring: visible grey empty track, red level, dark center for readout.
+
+    Pure-black track on the black stage reads as a "blacked out" zone once the
+    TMDb intro spin stops (especially at low / zero volume). Chrome-grey empty
+    track + edge strokes keep the widget present; red still shows level.
+    """
+    del show_accent  # track always drawn; red overlay follows fraction
     frac = max(0.0, min(1.0, float(fraction)))
-    # Full track = black (empty space).
+    # Empty headroom — opaque enough to read on black / blurred artwork.
     _draw_progress_ring(
         bgra,
         cx=cx,
@@ -1474,8 +1479,8 @@ def _draw_circle_pair(
         outer_r=_RING_OUTER_R,
         inner_r=_RING_INNER_R,
         fraction=1.0,
-        fill_bgr=(0, 0, 0),
-        fill_opacity=1.0,
+        fill_bgr=_COLOR_CHROME_BGR,
+        fill_opacity=0.42,
         stroke=0,
     )
     if frac > 1e-6:
@@ -1490,6 +1495,20 @@ def _draw_circle_pair(
             fill_opacity=1.0,
             stroke=0,
         )
+    # Outer / inner rim so the annulus stays defined even at 0% volume.
+    _draw_progress_ring(
+        bgra,
+        cx=cx,
+        cy=cy,
+        outer_r=_RING_OUTER_R,
+        inner_r=_RING_INNER_R,
+        fraction=1.0,
+        fill_bgr=_COLOR_CHROME_BGR,
+        fill_opacity=0.0,
+        stroke=2,
+        stroke_bgr=_COLOR_CHROME_BGR,
+        stroke_opacity=0.85,
+    )
     _draw_filled_circle_bgra(
         bgra,
         cx=cx,
