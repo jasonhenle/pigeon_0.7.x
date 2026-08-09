@@ -36,18 +36,8 @@ pick_python_with_tk() {
 }
 
 MAIN_PY="${SYSTEM_DIR}/pigeon_0_9.py"
-WAVES_PY="${SYSTEM_DIR}/pigeon/audio_waves.py"
-LEGACY_VIZ="${SYSTEM_DIR}/pigeon/mic_wave_visualizer.py"
 if [[ ! -f "${MAIN_PY}" ]]; then
   echo "pigeon: missing pigeonSystem/pigeon_0_9.py — copy or pull the latest Pigeon build." >&2
-  exit 1
-fi
-if [[ -f "${MAIN_PY}" ]] && grep -q 'pigeon\.mic_wave_visualizer' "${MAIN_PY}" 2>/dev/null; then
-  sed -i 's/from pigeon\.mic_wave_visualizer import blend_mic_visualizer/from pigeon.audio_waves import blend_mic_visualizer/g' "${MAIN_PY}" || true
-fi
-[[ ! -f "${LEGACY_VIZ}" ]] || rm -f "${LEGACY_VIZ}"
-if [[ ! -f "${WAVES_PY}" ]]; then
-  echo "pigeon: missing pigeon/audio_waves.py — copy or pull the latest Pigeon build." >&2
   exit 1
 fi
 

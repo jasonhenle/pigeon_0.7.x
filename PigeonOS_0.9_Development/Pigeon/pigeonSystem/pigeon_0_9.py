@@ -179,7 +179,6 @@ compose_playback_volume_widget_line = None  # type: ignore[misc, assignment]
 PATCH_LAYER_RECEIVER_AUDIO = "receiver_audio"  # type: ignore[misc, assignment]
 PATCH_LAYER_STREAMING_BADGE = "streaming_badge"  # type: ignore[misc, assignment]
 pigeon_wordmark_design_patch = None  # type: ignore[misc, assignment]
-NowPlayingScreenWidget = None  # type: ignore[misc, assignment]
 ViewCirclesWidget = None  # type: ignore[misc, assignment]
 MainSettingsWidget = None  # type: ignore[misc, assignment]
 build_info_cluster_design_patches = None  # type: ignore[misc, assignment]
@@ -188,7 +187,6 @@ INFO_CLUSTER_CLOCK_ROW_1BASED = 1.0  # type: ignore[misc, assignment]
 prepare_default_poster_at_startup = None  # type: ignore[misc, assignment]
 metadata_has_playback_title = None  # type: ignore[misc, assignment]
 resolve_metadata_tmdb_query = None  # type: ignore[misc, assignment]
-_blend_mic_visualizer = None  # type: ignore[misc, assignment]
 
 # Splash symbols stay importable when splash group fails (call sites check paths).
 FALLBACK_SPLASH_FRAME_COUNT = 0
@@ -274,7 +272,6 @@ try:
         compose_playback_volume_widget_line,
         pigeon_wordmark_design_patch,
     )
-    from pigeon.widgets.now_playing_screen import NowPlayingScreenWidget
 except ImportError as _exc:
     _log_optional_import_failure("playback_widgets", _exc)
 
@@ -323,8 +320,6 @@ try:
     )
 except ImportError as _exc:
     _log_optional_import_failure("splash_sequence", _exc)
-
-_blend_mic_visualizer = None  # microphone visualizer disabled
 
 
 def _env_int(name: str, default: int) -> int:
@@ -441,7 +436,7 @@ class DevPhase(IntEnum):
 
 
 class DisplayView(IntEnum):
-    """User-selectable display layout (keys 1–6)."""
+    """User-selectable display layout (keys 1, 4, 5). Unused values kept for stable ints."""
 
     ONE = 1
     TWO = 2
@@ -488,9 +483,6 @@ class ViewOneLayout(IntEnum):
     * ``viewOne.clockSaver_a`` / ``viewOne.clockSaver_b`` — the idle clock
       saver composites over whichever base (black or pigeonTMDB_BD) the
       active videoContent variant produced.
-    * ``viewTwo.clock`` — the full-screen clock (``DisplayView.THREE`` under
-      the hood). Pressing [``2``] now routes here; the old visualizer-only
-      ``DisplayView.TWO`` path is deprecated.
     """
 
     PIGEON_FULL = 0
@@ -931,7 +923,7 @@ def main() -> int:
     _splash_on_reveal_paint: list[object] = [None]
     _splash_underlay_paint_mono: list[float] = [0.0]
     _splash_post_hook_ran: list[bool] = [False]
-    # Post-splash UI timing (splash lift); mic visualizer removed.
+    # Post-splash UI timing (splash lift).
     post_splash_mono: list[float | None] = [None]
     _post_splash_startup_hook: list[object] = [None]
 
@@ -2847,9 +2839,6 @@ def main() -> int:
                 return float(intro)
             if now < clock_saver_peek_until_mono[0]:
                 return 1.0
-            # View 3: dedicated clock layout — saver text stays at full opacity (not idle-dimmed).
-            if _effective_display_view() == DisplayView.THREE:
-                return 1.0
             # Boot / splash-reveal: full-on clock (no ease from black, no idle dim).
             if _boot_clock_saver_until_playback[0] or _splash_reveal_clock[0]:
                 return 1.0
@@ -2875,7 +2864,7 @@ def main() -> int:
             return "legacy_grid"
 
         def _clock_saver_for_compose(now: float) -> bool:
-            """True when the large saver time/date patches should be drawn (idle on most views; always on view 3)."""
+            """True when the large saver time/date patches should be drawn (idle path)."""
             if clock_saver_composite_bgra is None:
                 return False
             if _clock_startup_intro_opacity(now) is not None:
@@ -2888,8 +2877,6 @@ def main() -> int:
             ev = _effective_display_view()
             if ev == DisplayView.FOUR:
                 return False
-            if ev == DisplayView.THREE:
-                return True
             # View ONE now-playing may run with scene off; still allow the idle saver.
             if (not scene_enabled) and ev != DisplayView.ONE:
                 return False
@@ -2899,21 +2886,10 @@ def main() -> int:
             """Dim, row-2–top app logo layout when there is no TMDb still (letterbox master) in saver contexts."""
             if not backdrop_app_logo_letterbox_fit:
                 return False
-            return _effective_display_view() == DisplayView.THREE or _clock_saver_for_compose(
-                time.monotonic()
-            )
-
-        def _backdrop_bgr_for_view_two() -> np.ndarray | None:
-            if use_backdrop_scene and backdrop_master_bgr is not None:
-                return backdrop_master_bgr
-            if saved_backdrop_master_bgr is not None:
-                return saved_backdrop_master_bgr
-            return None
+            return _clock_saver_for_compose(time.monotonic())
 
         def _clock_saver_backdrop_brightness(now: float) -> float:
             """1 = full brightness; idle clock-saver on backdrop uses ``CLOCK_SAVER_BACKDROP_DIM``."""
-            if _effective_display_view() == DisplayView.THREE:
-                return 1.0
             if not _backdrop_active_for_view() or backdrop_master_bgr is None:
                 return 1.0
             if not _clock_saver_for_compose(now):
@@ -3107,25 +3083,7 @@ def main() -> int:
                 volume_top_right_col_1based=float(VIEW_ONE_CLOCK_COL_RIGHT),
             )
 
-        # Now-playing screen (070326): classic View 1 chrome.
-        # view_circles is the default skin; key [1] toggles circles ↔ classic.
-        audio_levels_sim_holder: list[bool] = [False]
-        view_one_np_skin_holder: list[str] = ["circles"]  # "circles" | "classic"
-        view_one_np_layout_force_holder: list[str | None] = [None]
-
-        def _audio_sim_active() -> bool:
-            """Placeholder meter animation: key-6 toggle or a forced 'full' layout."""
-            return (
-                bool(audio_levels_sim_holder[0])
-                or view_one_np_layout_force_holder[0] == "full"
-            )
-        # [filename, decoded BGRA] — avoids re-reading the badge PNG on every composite.
-        _np_badge_bgra_cache: list = ["", None]
-        now_playing_screen_widget = None
-        if _PIGEON_EXT and NowPlayingScreenWidget is not None:
-            now_playing_screen_widget = NowPlayingScreenWidget(
-                assets_dir=Path(_PROJECT_DIR) / "pigeonAssets",
-            )
+        # Now-playing: five-zone circles skin only.
         view_circles_widget = None
         if _PIGEON_EXT and ViewCirclesWidget is not None:
             view_circles_widget = ViewCirclesWidget(
@@ -3142,20 +3100,15 @@ def main() -> int:
             except Exception:
                 pass
 
-        def _view_one_np_skin() -> str:
-            s = str(view_one_np_skin_holder[0] or "").strip().lower()
-            return s if s in ("circles", "classic") else "circles"
-
         def _view_one_uses_now_playing_screen() -> bool:
-            if _effective_display_view() != DisplayView.ONE:
-                return False
-            if _view_one_np_skin() == "circles":
-                return view_circles_widget is not None or now_playing_screen_widget is not None
-            return now_playing_screen_widget is not None
+            return (
+                _effective_display_view() == DisplayView.ONE
+                and view_circles_widget is not None
+            )
 
         def _sync_now_playing_screen_state() -> None:
             nonlocal skip_cache
-            if now_playing_screen_widget is None and view_circles_widget is None:
+            if view_circles_widget is None:
                 return
             prog = _playback_progress_fraction_for_bar()
             progress = float(prog) if prog is not None else 0.0
@@ -3170,180 +3123,115 @@ def main() -> int:
                 if pair is not None:
                     played_text = _format_hmmss(int(pair[0]))
                     remaining_text = _format_hmmss(int(pair[1]))
-            lm_np = apple_tv_auto_state.get("last_metadata")
-            atv_live = isinstance(lm_np, dict) and not _atv_metadata_is_content_idle(lm_np)
             inc, cfg, vol = _resolve_receiver_lines_for_now_playing()
-            badge_bgra = None
-            fn = str(streaming_badge_state.get("filename") or "").strip()
-            if fn:
-                if _np_badge_bgra_cache[0] != fn:
-                    from pigeon.image_ui_protocol import load_image_bgra
-
-                    assets_np = Path(_PROJECT_DIR) / "pigeonAssets"
-                    try:
-                        _np_badge_bgra_cache[1] = load_image_bgra(assets_np / fn)
-                    except Exception:
-                        _np_badge_bgra_cache[1] = None
-                    _np_badge_bgra_cache[0] = fn
-                badge_bgra = _np_badge_bgra_cache[1]
-            poster_bgra = _active_tmdb_poster_bgra()
             circles_poster_bgra = _circles_poster_bgra()
-            backdrop_bgr = None
-            if backdrop_master_bgr is not None:
-                backdrop_bgr = np.asarray(backdrop_master_bgr, dtype=np.uint8)
-            elif saved_backdrop_master_bgr is not None:
-                backdrop_bgr = np.asarray(saved_backdrop_master_bgr, dtype=np.uint8)
-            elif poster_bgra is not None and poster_bgra.size > 0:
-                backdrop_bgr = cv2.cvtColor(poster_bgra, cv2.COLOR_BGRA2BGR)
-            tt_bgra = tmdb_logo_patch_bgra.copy() if tmdb_logo_patch_bgra is not None else None
             has_np = _effective_display_view() == DisplayView.ONE
-            has_rx = bool(inc or cfg or vol)
-            has_tmdb = tt_bgra is not None or backdrop_bgr is not None
             sb = streaming_badge_state
             badge_label = str(sb.get("label") or "").strip()
-            sim_on = _audio_sim_active()
-            forced_mode = view_one_np_layout_force_holder[0]
-            # Classic layout adapts to what is connected. HDMI audio extraction is not
-            # wired up yet, so "full" (meters) only appears via the sim/placeholder.
-            if forced_mode is not None:
-                layout_mode = forced_mode
-            elif sim_on:
-                layout_mode = "full"
-            elif atv_live and has_rx:
-                layout_mode = "np_rv_ck"
-            elif atv_live:
-                layout_mode = "np_ck"
-            elif has_rx:
-                layout_mode = "rv_ck"
-            else:
-                layout_mode = "ck"
-            sim_render = sim_on and layout_mode == "full"
             changed = False
-            if now_playing_screen_widget is not None and now_playing_screen_widget.update_state(
-                progress=progress,
-                remaining_text=remaining_text,
-                played_text=played_text,
-                incoming_audio=inc,
-                playback_config=cfg,
-                volume_text=vol,
-                has_now_playing=has_np,
-                has_receiver=has_rx,
-                has_tmdb=has_tmdb,
-                audio_analysis=sim_render,
-                service_badge_bgra=badge_bgra,
-                tmdb_tt_bgra=tt_bgra,
-                tmdb_backdrop_bgr=backdrop_bgr,
-                show_paused=_show_paused_row_overlay(),
-                trt_substantive=_trt_substantive_for_status_bar(),
-                theater_dim_suppressed=(
-                    status_bar_widget.theater_dim_suppressed
-                    if status_bar_widget is not None
-                    else False
-                ),
-                badge_show=bool(fn or badge_label),
-                badge_filename=fn,
-                badge_label=badge_label,
-                audio_levels_sim=sim_render,
-                layout_mode=layout_mode,
-                indicator_now_playing=atv_live,
-            ):
-                changed = True
-            if view_circles_widget is not None:
+            vol_frac = 0.0
+            try:
+                from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
+
+                vol_frac = float(volume_fraction_from_display_line(vol))
+            except Exception:
                 vol_frac = 0.0
+            try:
+                from pigeon.runtime_state import update_receiver_runtime
+
+                update_receiver_runtime(
+                    incoming=inc,
+                    config=cfg,
+                    volume=vol,
+                    volume_fraction=vol_frac,
+                    muted=vol.strip().lower() in ("mute", "muted", "off"),
+                )
+            except Exception:
+                pass
+            circles_paused = bool(_show_paused_row_overlay())
+            circles_service = badge_label
+            if not circles_service:
+                lm_svc = apple_tv_auto_state.get("last_metadata")
+                if isinstance(lm_svc, dict):
+                    circles_service = str(lm_svc.get("app_name") or "").strip()
+            if _vv_is_music():
+                lm_music = apple_tv_auto_state.get("last_metadata")
+                song_t = album_t = artist_t = ""
+                if isinstance(lm_music, dict):
+                    song_t = str(lm_music.get("title") or "").strip()
+                    album_t = str(lm_music.get("album") or "").strip()
+                    artist_t = str(lm_music.get("artist") or "").strip()
+                    # Match classic music text: promote album when title is empty.
+                    if not song_t and album_t:
+                        song_t, album_t = album_t, ""
+                if view_circles_widget.update_state(
+                    progress=progress,
+                    elapsed_text=played_text,
+                    remaining_text=remaining_text,
+                    volume_text=vol,
+                    volume_fraction=vol_frac,
+                    incoming_audio=inc,
+                    playback_config=cfg,
+                    cast=[],
+                    poster_bgra=circles_poster_bgra,
+                    has_now_playing=has_np,
+                    searching=False,
+                    missing_art=False,
+                    content_mode="music",
+                    song_title=song_t,
+                    album_title=album_t,
+                    artist_title=artist_t,
+                    paused=circles_paused,
+                    service_name=circles_service,
+                ):
+                    changed = True
+            else:
+                cast_rows: list[tuple[str, str]] = []
                 try:
-                    from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
+                    from pigeon.tmdb_poster import get_cached_tmdb_cast
 
-                    vol_frac = float(volume_fraction_from_display_line(vol))
+                    tk = str(active_tmdb_title_key or "").strip()
+                    if tk:
+                        cast_rows = get_cached_tmdb_cast(tk)
                 except Exception:
-                    vol_frac = 0.0
-                circles_paused = bool(_show_paused_row_overlay())
-                circles_service = badge_label
-                if not circles_service:
-                    lm_svc = apple_tv_auto_state.get("last_metadata")
-                    if isinstance(lm_svc, dict):
-                        circles_service = str(lm_svc.get("app_name") or "").strip()
-                if _vv_is_music():
-                    lm_music = apple_tv_auto_state.get("last_metadata")
-                    song_t = album_t = artist_t = ""
-                    if isinstance(lm_music, dict):
-                        song_t = str(lm_music.get("title") or "").strip()
-                        album_t = str(lm_music.get("album") or "").strip()
-                        artist_t = str(lm_music.get("artist") or "").strip()
-                        # Match classic music text: promote album when title is empty.
-                        if not song_t and album_t:
-                            song_t, album_t = album_t, ""
-                    if view_circles_widget.update_state(
-                        progress=progress,
-                        elapsed_text=played_text,
-                        remaining_text=remaining_text,
-                        volume_text=vol,
-                        volume_fraction=vol_frac,
-                        incoming_audio=inc,
-                        playback_config=cfg,
-                        cast=[],
-                        poster_bgra=circles_poster_bgra,
-                        has_now_playing=has_np,
-                        searching=False,
-                        missing_art=False,
-                        content_mode="music",
-                        song_title=song_t,
-                        album_title=album_t,
-                        artist_title=artist_t,
-                        paused=circles_paused,
-                        service_name=circles_service,
-                    ):
-                        changed = True
-                else:
-                    cast_rows: list[tuple[str, str]] = []
-                    try:
-                        from pigeon.tmdb_poster import get_cached_tmdb_cast
-
-                        tk = str(active_tmdb_title_key or "").strip()
-                        if tk:
-                            cast_rows = get_cached_tmdb_cast(tk)
-                    except Exception:
-                        cast_rows = []
-                    fetch_busy = bool(
-                        apple_tv_auto_state.get("tmdb_fetch_in_flight")
-                        or apple_tv_auto_state.get("pending_tmdb")
-                    )
-                    missing_art = bool(apple_tv_auto_state.get("tmdb_missing_art"))
-                    if view_circles_widget.update_state(
-                        progress=progress,
-                        elapsed_text=played_text,
-                        remaining_text=remaining_text,
-                        volume_text=vol,
-                        volume_fraction=vol_frac,
-                        incoming_audio=inc,
-                        playback_config=cfg,
-                        cast=cast_rows,
-                        poster_bgra=circles_poster_bgra,
-                        has_now_playing=has_np,
-                        searching=fetch_busy and not missing_art,
-                        missing_art=missing_art and not fetch_busy,
-                        content_mode="video",
-                        song_title="",
-                        album_title="",
-                        artist_title="",
-                        paused=circles_paused,
-                        service_name=circles_service,
-                    ):
-                        changed = True
+                    cast_rows = []
+                fetch_busy = bool(
+                    apple_tv_auto_state.get("tmdb_fetch_in_flight")
+                    or apple_tv_auto_state.get("pending_tmdb")
+                )
+                missing_art = bool(apple_tv_auto_state.get("tmdb_missing_art"))
+                if view_circles_widget.update_state(
+                    progress=progress,
+                    elapsed_text=played_text,
+                    remaining_text=remaining_text,
+                    volume_text=vol,
+                    volume_fraction=vol_frac,
+                    incoming_audio=inc,
+                    playback_config=cfg,
+                    cast=cast_rows,
+                    poster_bgra=circles_poster_bgra,
+                    has_now_playing=has_np,
+                    searching=fetch_busy and not missing_art,
+                    missing_art=missing_art and not fetch_busy,
+                    content_mode="video",
+                    song_title="",
+                    album_title="",
+                    artist_title="",
+                    paused=circles_paused,
+                    service_name=circles_service,
+                ):
+                    changed = True
             if changed:
                 skip_cache = None
 
         def _clear_now_playing_view_caches() -> None:
-            if now_playing_screen_widget is not None:
-                now_playing_screen_widget.clear_cache()
             if view_circles_widget is not None:
                 view_circles_widget.clear_cache()
 
         def _enable_now_playing_screen() -> None:
-            """Show View 1 now-playing chrome (circles or classic). Idempotent."""
+            """Show View 1 now-playing chrome (circles skin). Idempotent."""
             nonlocal skip_cache, last_frame, scene_enabled, brightness_current, brightness_from, brightness_target
-            if not _PIGEON_EXT or (
-                now_playing_screen_widget is None and view_circles_widget is None
-            ):
+            if not _PIGEON_EXT or view_circles_widget is None:
                 return
             display_view_holder[0] = DisplayView.ONE
             # View 1 chrome composites without a video ``last_frame``; keep scene off so
@@ -3379,29 +3267,18 @@ def main() -> int:
 
         def _warm_view_one_splash_chrome_only(*, phase: str = "chrome-only") -> None:
             """Rasterize View 1 SVG chrome early (no playback poll helpers required)."""
-            if not _PIGEON_EXT or (
-                now_playing_screen_widget is None and view_circles_widget is None
-            ):
+            if not _PIGEON_EXT or view_circles_widget is None:
                 return
             t0 = time.monotonic()
             display_view_holder[0] = DisplayView.ONE
             if status_bar_widget is not None:
                 status_bar_widget.set_now_playing_chrome_visible(True)
-            skin = _view_one_np_skin()
-            if skin == "circles" and view_circles_widget is not None:
-                if view_circles_widget.set_now_playing_chrome_visible(True):
-                    view_circles_widget.clear_cache()
-                try:
-                    view_circles_widget.bgra_frame()
-                except Exception:
-                    pass
-            elif now_playing_screen_widget is not None:
-                if now_playing_screen_widget.set_now_playing_chrome_visible(True):
-                    now_playing_screen_widget.clear_cache()
-                try:
-                    now_playing_screen_widget.bgra_frame()
-                except Exception:
-                    pass
+            if view_circles_widget.set_now_playing_chrome_visible(True):
+                view_circles_widget.clear_cache()
+            try:
+                view_circles_widget.bgra_frame()
+            except Exception:
+                pass
             try:
                 root.update_idletasks()
             except tk.TclError:
@@ -3415,12 +3292,9 @@ def main() -> int:
             t0 = time.monotonic()
             _enable_now_playing_screen()
             _warm_status_bar_blits()
-            skin = _view_one_np_skin()
             try:
-                if skin == "circles" and view_circles_widget is not None:
+                if view_circles_widget is not None:
                     view_circles_widget.bgra_frame()
-                elif now_playing_screen_widget is not None:
-                    now_playing_screen_widget.bgra_frame()
             except Exception:
                 pass
             try:
@@ -3565,59 +3439,12 @@ def main() -> int:
         _info_cluster_blits_sig: list[object | None] = [None]
         # [unix_sec, status_bar accent BGR or None] — clock patch invalidation.
         _clock_patch_sig: list = [-1, None]
-        # Optional full-canvas BGRA from ``pigeonAssets/TopGradient.png`` (above backdrop, under widgets).
-        top_gradient_design_bgra: list[np.ndarray | None] = [None]
-        _top_gradient_load_attempted: list[bool] = [False]
-
-        def _ensure_top_gradient_loaded() -> np.ndarray | None:
-            if top_gradient_design_bgra[0] is not None:
-                return top_gradient_design_bgra[0]
-            if _top_gradient_load_attempted[0]:
-                return None
-            _top_gradient_load_attempted[0] = True
-            p = Path(_PROJECT_DIR) / "pigeonAssets" / "TopGradient.png"
-            if not p.is_file():
-                return None
-            try:
-                from pigeon.image_ui_protocol import load_image_bgra
-
-                raw = load_image_bgra(str(p))
-                if raw is None or raw.size == 0:
-                    return None
-                h0, w0 = raw.shape[:2]
-                if w0 != DESIGN_W or h0 != DESIGN_H:
-                    raw = cv2.resize(
-                        raw,
-                        (DESIGN_W, DESIGN_H),
-                        interpolation=cv_resize_interp(w0, h0, DESIGN_W, DESIGN_H),
-                    )
-                top_gradient_design_bgra[0] = raw
-                return raw
-            except Exception:
-                return None
-
+        # TopGradient.png removed — top gradient overlay disabled (no-op).
         def _blend_top_gradient_design(canvas: np.ndarray) -> None:
-            if alpha_blend_bgra_over_bgr is None:
-                return
-            tg = _ensure_top_gradient_loaded()
-            if tg is None:
-                return
-            ch, cw = int(canvas.shape[0]), int(canvas.shape[1])
-            if cw != DESIGN_W or ch != DESIGN_H:
-                return
-            canvas[:] = alpha_blend_bgra_over_bgr(canvas, tg)
+            return
 
         def _blend_top_gradient_fast(base: np.ndarray, cap_w: int, cap_h: int) -> None:
-            if alpha_blend_bgra_over_bgr is None:
-                return
-            tg = _ensure_top_gradient_loaded()
-            if tg is None:
-                return
-            x, y, rw, rh = _design_rect_to_target(0, 0, DESIGN_W, DESIGN_H, cap_w, cap_h)
-            _gh, _gw = tg.shape[:2]
-            patch = cv2.resize(tg, (rw, rh), interpolation=cv_resize_interp(_gw, _gh, rw, rh))
-            sub = base[y : y + rh, x : x + rw]
-            sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
+            return
 
         def _apply_stage_chrome_colors() -> None:
             b, g, r = get_stage_bgr()
@@ -4038,10 +3865,6 @@ def main() -> int:
                 _refresh_tmdb_tt_gradient_tint()
                 return
             patch_wh = None
-            if _view_one_uses_now_playing_screen():
-                from pigeon.widgets.now_playing_screen import status_bar_slot_wh
-
-                patch_wh = status_bar_slot_wh()
             if active_tmdb_title_key:
                 tmdb_logo_patch_bgra = logo_w.bgra_patch_for_title(
                     active_tmdb_title_key,
@@ -4371,10 +4194,6 @@ def main() -> int:
 
         _playback_overlay_fast_sig: list[tuple[bool, bool, bool, bool, bool] | None] = [None]
 
-        def _maybe_blend_mic_visualizer(bgr_plane: np.ndarray) -> None:
-            """Microphone visualizer disabled."""
-            return
-
         def compose_display_fast_no_grid(
             frame_bgr: np.ndarray | None,
             brightness: float,
@@ -4383,29 +4202,6 @@ def main() -> int:
         ) -> np.ndarray:
             """Video at display size + poster/clock blits (no full design canvas). Used when developer grid is off."""
             assert _PIGEON_EXT
-            if _effective_display_view() == DisplayView.TWO:
-                from pigeon.image_ui_protocol import build_backdrop_design_layer_bgr
-
-                dw, dh = display_dims[0], display_dims[1]
-                cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
-                bm2 = _backdrop_bgr_for_view_two()
-                if bm2 is not None:
-                    bd2 = build_backdrop_design_layer_bgr(
-                        bm2,
-                        app_logo_letterbox_fit=backdrop_app_logo_letterbox_fit,
-                        app_logo_clock_saver_style=_app_logo_clock_saver_style_now(),
-                    )
-                    lit2 = _apply_brightness(bd2, brightness)
-                    assert scale_cover_center_crop is not None
-                    base2 = scale_cover_center_crop(lit2, cap_w, cap_h)
-                else:
-                    sb, sg, sr = get_stage_bgr()
-                    base2 = np.empty((cap_h, cap_w, 3), dtype=np.uint8)
-                    base2[:] = (sb, sg, sr)
-                _maybe_blend_mic_visualizer(base2)
-                if use_cap:
-                    return _present_frame_to_display(base2, dw, dh)
-                return base2
             # View 1: 070326 now-playing screen only (no classic chrome / TMDB backdrop stack).
             if _effective_display_view() == DisplayView.ONE:
                 _set_playback_overlay_clock_saver_volume_flag()
@@ -4471,12 +4267,7 @@ def main() -> int:
                         roi2[:] = alpha_blend_bgra_over_bgr(roi2, cs_bgra)
                 else:
                     _sync_now_playing_screen_state()
-                    skin = _view_one_np_skin()
-                    if skin == "circles" and view_circles_widget is not None:
-                        view_circles_widget.render(canvas_np)
-                    elif now_playing_screen_widget is not None:
-                        now_playing_screen_widget.render(canvas_np)
-                    elif view_circles_widget is not None:
+                    if view_circles_widget is not None:
                         view_circles_widget.render(canvas_np)
                 base2 = cv2.resize(
                     canvas_np,
@@ -4532,16 +4323,10 @@ def main() -> int:
             elif bdim < 1.0 - 1e-6:
                 base = (base.astype(np.float32) * bdim).astype(np.uint8)
             # Composite order: clock saver / small clock / overlays sit above
-            # the mic/EQ visualizer, which in turn sits above the bottom
-            # gradient (so the gradient never dims the EQ bars). The viz is
-            # blended per-branch below after the gradient call.
+            # the bottom gradient.
             if intro_op is None:
                 _blend_top_gradient_fast(base, cap_w, cap_h)
             if cs:
-                # Saver mode has no bottom gradient, so blend viz first; the
-                # saver digits then land on top for legibility.
-                if intro_op is None:
-                    _maybe_blend_mic_visualizer(base)
                 if alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
                         tuple(status_bar_widget.accent_bgr)
@@ -4607,8 +4392,6 @@ def main() -> int:
                     )
                     sub = base[y : y + rh, x : x + rw]
                     sub[:] = alpha_blend_bgra_over_bgr(sub, patch)
-                # Viz blends AFTER the bottom gradient — EQ bars ride on top.
-                _maybe_blend_mic_visualizer(base)
                 if _effective_display_view() != DisplayView.FOUR:
                     if _info_cluster_compose_active(now_cs):
                         _blend_info_cluster_into_target(base, cap_w, cap_h, now_cs)
@@ -4921,16 +4704,9 @@ def main() -> int:
                     main_settings_widget.render(canvas)
                 else:
                     _sync_now_playing_screen_state()
-                    skin = _view_one_np_skin()
-                    if skin == "circles" and view_circles_widget is not None:
-                        view_circles_widget.render(canvas)
-                    elif now_playing_screen_widget is not None:
-                        now_playing_screen_widget.render(canvas)
-                    elif view_circles_widget is not None:
+                    if view_circles_widget is not None:
                         view_circles_widget.render(canvas)
             elif cs:
-                if intro_op is None:
-                    _maybe_blend_mic_visualizer(canvas)
                 if alpha_blend_bgra_over_bgr is not None:
                     acc_cs = (
                         tuple(status_bar_widget.accent_bgr)
@@ -4988,8 +4764,6 @@ def main() -> int:
                     )
                     sub = canvas[gy : gy + gh, gx : gx + gw]
                     sub[:] = alpha_blend_bgra_over_bgr(sub, grad_bgra)
-                # Viz blends AFTER the bottom gradient — EQ bars ride on top.
-                _maybe_blend_mic_visualizer(canvas)
                 # viewOne.videoContent_c poster: sits above the top gradient and
                 # below the nowPlaying widget (status bar + playback overlay).
                 _paste_video_content_c_poster_above_top_gradient(canvas)
@@ -5583,7 +5357,7 @@ def main() -> int:
         def _compose_shown_frame(frame_bgr: np.ndarray | None, brightness: float) -> np.ndarray:
             if (
                 _PIGEON_EXT
-                and now_playing_screen_widget is not None
+                and view_circles_widget is not None
                 and _effective_display_view() == DisplayView.ONE
             ):
                 return compose_display_fast_no_grid(
@@ -6251,8 +6025,6 @@ def main() -> int:
                 use_backdrop_scene = False
                 scaled_version += 1
                 _warm_tmdb_logo_patch()
-                if now_playing_screen_widget is not None:
-                    now_playing_screen_widget.clear_cache()
                 if view_circles_widget is not None:
                     view_circles_widget.clear_cache()
                 _sync_now_playing_screen_state()
@@ -11321,7 +11093,23 @@ def main() -> int:
         merge_legacy_saved_receivers_into_av_slot()
         streaming_slot_holder[0] = read_saved_streaming_device()
         avr_slot_holder[0] = read_saved_av_receiver()
-        receiver_http_host["host"] = str(read_last_receiver().get("host") or "").strip()
+        # Prefer the location AV slot address over last_receiver — the latter can
+        # linger on a stale IP after the Denon DHCP/address changes, which leaves
+        # zone3 with an empty volume fraction (no red ring).
+        _av_boot = avr_slot_holder[0]
+        _av_adr = str((_av_boot or {}).get("address") or "").strip() if _av_boot else ""
+        _last_rx_host = str(read_last_receiver().get("host") or "").strip()
+        if _av_adr:
+            if _av_adr != _last_rx_host:
+                write_last_receiver(
+                    host=_av_adr,
+                    name=str(_av_boot.get("name") or "").strip() or None,
+                    label=str(_av_boot.get("label") or "").strip() or None,
+                    device_id=str(_av_boot.get("identifier") or "").strip() or None,
+                )
+            receiver_http_host["host"] = _av_adr
+        else:
+            receiver_http_host["host"] = _last_rx_host
         describe_current_apple_tv()
         _refresh_location_selector()
         _rebuild_paired_devices_panel()
@@ -11370,7 +11158,7 @@ def main() -> int:
 
         label.bind("<Button-1>", on_click_focus, add="+")
         # Tap-to-wake: some platforms deliver release more reliably for “tap” than press alone.
-        # While the saver layer is visible, a tap brightens it briefly (see CLOCK_SAVER_PEEK_S); view 3 is always on.
+        # While the saver layer is visible, a tap brightens it briefly (see CLOCK_SAVER_PEEK_S).
         def _on_label_button_release_peek_or_bump(event: tk.Event) -> None:
             nonlocal skip_cache
             if _PIGEON_EXT and clock_saver_composite_bgra is not None:
@@ -11544,7 +11332,7 @@ def main() -> int:
             if not _PIGEON_EXT:
                 return None
             ch = getattr(event, "char", "") or ""
-            if ch not in "123456":
+            if ch not in "145":
                 return None
             nonlocal skip_cache
             if ch == "1" and display_view_holder[0] == DisplayView.ONE:
@@ -11575,21 +11363,6 @@ def main() -> int:
                 if opt_key:
                     _bump_pigeon_user_activity(event)
                     return "break"
-                # Plain 1 on View 1: toggle circles ↔ classic now-playing skins.
-                if _view_one_uses_now_playing_screen():
-                    cur = _view_one_np_skin()
-                    view_one_np_skin_holder[0] = "classic" if cur == "circles" else "circles"
-                    _sync_now_playing_screen_state()
-                    skip_cache = None
-                    _bump_pigeon_user_activity(event)
-                    return "break"
-                _bump_pigeon_user_activity(event)
-                return "break"
-            if ch == "6" and _view_one_uses_now_playing_screen():
-                audio_levels_sim_holder[0] = not bool(audio_levels_sim_holder[0])
-                if now_playing_screen_widget is not None:
-                    now_playing_screen_widget.set_audio_levels_sim(audio_levels_sim_holder[0])
-                skip_cache = None
                 _bump_pigeon_user_activity(event)
                 return "break"
             if ch == "4" and display_view_holder[0] == DisplayView.FOUR:
@@ -11614,7 +11387,7 @@ def main() -> int:
             _capture_last_view_one_layout_from_live_view()
             return "break"
 
-        for _dv_ch in ("1", "2", "3", "4", "5", "6"):
+        for _dv_ch in ("1", "4", "5"):
             root.bind_all(f"<KeyPress-{_dv_ch}>", on_display_view_digit)
 
         def on_arrow_remote(event: tk.Event) -> str | None:
@@ -12111,9 +11884,6 @@ def main() -> int:
                 # Static settings UI: wake often enough for input, but avoid busy PhotoImage paste.
                 if dev_phase == DevPhase.MAIN_SETTINGS and sys.platform.startswith("linux"):
                     return 500
-                # Audio meter sim animates continuously; keep ~30 FPS while active.
-                if _audio_sim_active() and _view_one_uses_now_playing_screen():
-                    return 33
                 return paused_interval_ms
 
             # With ext + splash, only count this window **after** splash removal.
@@ -12276,7 +12046,7 @@ def main() -> int:
                     _PIGEON_EXT
                     and (
                         (
-                            now_playing_screen_widget is not None
+                            view_circles_widget is not None
                             and _effective_display_view() == DisplayView.ONE
                         )
                         or not scene_enabled
@@ -12372,11 +12142,9 @@ def main() -> int:
             tmdb_flag_badge_on = bool(tmdb_quality_error_flag[0])
             tmdb_flag_badge_cache_key = 1 if tmdb_flag_badge_on else 0
 
-            audio_sim_animating = _audio_sim_active() and _view_one_uses_now_playing_screen()
             if (
                 not playing
                 and not mic_eq_needs_composite
-                and not audio_sim_animating
                 and not brightness_animating
                 and not idle_dim_animating
                 and not location_toast_animating
@@ -12503,6 +12271,12 @@ def main() -> int:
             if receiver_poll_busy["active"]:
                 return
 
+            # Keep poll host aligned with the saved AV slot (not a stale last_receiver).
+            _av_row = avr_slot_holder[0]
+            if _av_row:
+                _slot_adr = str(_av_row.get("address") or "").strip()
+                if _slot_adr and _slot_adr != str(receiver_http_host.get("host") or "").strip():
+                    receiver_http_host["host"] = _slot_adr
             host = str(receiver_http_host.get("host") or "").strip()
             if not host:
                 return
@@ -12621,6 +12395,16 @@ def main() -> int:
                     elif denon_ok and denon_vol_effective:
                         denon_vol_cache["effective"] = denon_vol_effective
                         denon_vol_cache["mono_usable"] = time.monotonic()
+                    try:
+                        from pigeon.runtime_state import update_receiver_runtime
+
+                        update_receiver_runtime(
+                            host=host,
+                            reachable=bool(denon_ok and not denon_standby),
+                            standby=denon_standby,
+                        )
+                    except Exception:
+                        pass
                     try:
                         from pigeon.app_state import (
                             read_current_location_id,
