@@ -452,8 +452,8 @@
         <path id="hours_02" d="M650.62,190.77l13.16-58.35c-1.02-.23-2.05-.44-3.1-.62l-10.07,58.97Z" fill="red" stroke="red" stroke-miterlimit="10" stroke-width="2"/>
         <path id="hours_01" d="M650.5,190.76l6.99-59.42c-1.04-.12-2.09-.22-3.14-.29l-3.85,59.71Z" fill="red" stroke="red" stroke-miterlimit="10" stroke-width="2"/>
       </g>
-      <circle id="zone3_clock_exterior_accent" cx="650.18" cy="192.4" r="116.72" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
-      <circle id="zone3_clock_middle_accent" cx="650.14" cy="192.44" r="96.46" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
+      <circle id="zone3_clock_exterior_accent" cx="650.18" cy="192.4" r="116.72" fill="#FFFFFF" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
+      <circle id="zone3_clock_middle_accent" cx="650.14" cy="192.44" r="96.46" fill="#000000" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
       <circle id="zone3_clock_interior_accent" cx="649.96" cy="192.62" r="61.9" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
       <ellipse id="zone3_clock_center_container" cx="649.73" cy="193.09" rx="37.07" ry="23.1" stroke="#000" stroke-miterlimit="10"/>
       <text id="zone3_clock_digital_text" transform="translate(619.53 204.64)" fill="#939393" font-family="Digital-7, Digital-7" font-size="36" isolation="isolate"><tspan x="0" y="0">12:55</tspan></text>
@@ -856,8 +856,8 @@
         <path id="hours_02-2" data-name="hours_02" d="M401.88,190.77l13.16-58.35c-1.02-.23-2.05-.44-3.1-.62l-10.07,58.97Z" fill="red" stroke="red" stroke-miterlimit="10" stroke-width="2"/>
         <path id="hours_01-2" data-name="hours_01" d="M401.76,190.76l6.99-59.42c-1.04-.12-2.09-.22-3.14-.29l-3.85,59.71Z" fill="red" stroke="red" stroke-miterlimit="10" stroke-width="2"/>
       </g>
-      <circle id="zone2_clock_exterior_accent" cx="401.44" cy="192.4" r="116.72" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
-      <circle id="zone2_clock_middle_accent" cx="401.4" cy="192.44" r="96.46" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
+      <circle id="zone2_clock_exterior_accent" cx="401.44" cy="192.4" r="116.72" fill="#FFFFFF" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
+      <circle id="zone2_clock_middle_accent" cx="401.4" cy="192.44" r="96.46" fill="#000000" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
       <circle id="zone2_clock_interior_accent" cx="401.22" cy="192.62" r="61.9" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
       <ellipse id="zone2_clock_center_container" cx="401" cy="193.09" rx="37.07" ry="23.1" stroke="#000" stroke-miterlimit="10"/>
       <text id="zone2_clock_digital_text" transform="translate(370.79 204.64)" fill="#939393" font-family="Digital-7, Digital-7" font-size="36" isolation="isolate"><tspan x="0" y="0">12:55</tspan></text>
@@ -1275,8 +1275,8 @@
         <path id="hours_02-3" data-name="hours_02" d="M152.38,190.77l13.16-58.35c-1.02-.23-2.05-.44-3.1-.62l-10.07,58.97Z" fill="red" stroke="red" stroke-miterlimit="10" stroke-width="2"/>
         <path id="hours_01-3" data-name="hours_01" d="M152.26,190.76l6.99-59.42c-1.04-.12-2.09-.22-3.14-.29l-3.85,59.71Z" fill="red" stroke="red" stroke-miterlimit="10" stroke-width="2"/>
       </g>
-      <circle id="zone1_clock_exterior_accent" cx="151.94" cy="192.4" r="116.72" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
-      <circle id="zone1_clock_middle_accent" cx="151.9" cy="192.44" r="96.46" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
+      <circle id="zone1_clock_exterior_accent" cx="151.94" cy="192.4" r="116.72" fill="#FFFFFF" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
+      <circle id="zone1_clock_middle_accent" cx="151.9" cy="192.44" r="96.46" fill="#000000" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
       <circle id="zone1_clock_interior_accent" cx="151.72" cy="192.62" r="61.9" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="2"/>
       <ellipse id="zone1_clock_center_container" cx="151.5" cy="193.09" rx="37.07" ry="23.1" stroke="#000" stroke-miterlimit="10"/>
       <text id="zone1_clock_digital_text" transform="translate(121.29 204.64)" fill="#939393" font-family="Digital-7, Digital-7" font-size="36" isolation="isolate"><tspan x="0" y="0">12:55</tspan></text>

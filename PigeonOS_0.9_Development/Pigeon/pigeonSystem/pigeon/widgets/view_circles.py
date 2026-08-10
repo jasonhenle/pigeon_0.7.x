@@ -499,6 +499,11 @@ def _rasterize_svg_tree(root: ET.Element) -> np.ndarray:
 
 
 def _decanvas_white_bgra(src: np.ndarray, *, threshold: int = 252) -> np.ndarray:
+    """Punch out Illustrator page white, keeping intentional interior white fills.
+
+    Only near-white pixels connected to the image border become transparent so
+    solid white discs (e.g. ``zone*_clock_exterior_accent``) stay opaque.
+    """
     if src is None or src.size == 0 or src.ndim != 3 or src.shape[2] < 4:
         return src
     out = src.copy()
@@ -508,7 +513,33 @@ def _decanvas_white_bgra(src: np.ndarray, *, threshold: int = 252) -> np.ndarray
         & (rgb[:, :, 1] >= threshold)
         & (rgb[:, :, 2] >= threshold)
     )
-    out[white, 3] = 0
+    if not bool(np.any(white)):
+        return out
+    h, w = white.shape
+    # cv2.floodFill needs a 2-pixel border mask.
+    flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+    seed = (white.astype(np.uint8) * 255)
+    for x, y in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        if not white[y, x]:
+            continue
+        cv2.floodFill(
+            seed,
+            flood_mask,
+            (int(x), int(y)),
+            128,
+            loDiff=0,
+            upDiff=0,
+            flags=cv2.FLOODFILL_FIXED_RANGE,
+        )
+    edge_white = seed == 128
+    # Also treat any border white that flood missed (non-corner border seeds).
+    if not bool(np.any(edge_white)):
+        edge_white = white & False
+        edge_white[0, :] = white[0, :]
+        edge_white[-1, :] = white[-1, :]
+        edge_white[:, 0] = white[:, 0]
+        edge_white[:, -1] = white[:, -1]
+    out[edge_white, 3] = 0
     return out
 
 
@@ -721,24 +752,126 @@ def _accent_circle_r(clock: ET.Element, zone: int, kind: str, default: float) ->
         return default
 
 
-def _insert_clock_disc_fill(clock: ET.Element, zone: int) -> None:
-    """Solid black disc under the exterior accent (inner face + outer band)."""
-    fill_id = f"zone{zone}_clock_disc_fill"
-    for child in list(clock):
-        key = _layer_key(child)
-        if key in (fill_id, f"zone{zone}_clock_outer_band_fill"):
-            clock.remove(child)
-    cx, cy = _zone_clock_center(zone)
-    outer_r = _accent_circle_r(clock, zone, "exterior", _CLOCK_EXTERIOR_ACCENT_R)
-    el = ET.Element(f"{{{SVG_NS}}}circle")
-    el.set("id", fill_id)
-    el.set("data-name", fill_id)
-    el.set("cx", f"{cx:.3f}")
-    el.set("cy", f"{cy:.3f}")
-    el.set("r", f"{outer_r:.3f}")
-    el.set("fill", "#000000")
-    el.set("stroke", "none")
-    clock.insert(0, el)
+def _place_in_group(group: ET.Element | None, el: ET.Element | None, index: int) -> None:
+    """Move ``el`` to ``index`` within ``group`` (paint order)."""
+    if group is None or el is None:
+        return
+    kids = list(group)
+    if el not in kids:
+        return
+    group.remove(el)
+    group.insert(max(0, min(int(index), len(list(group)))), el)
+
+
+def _seconds_wedge_path_d(cx: float, cy: float, r: float, fraction: float) -> str | None:
+    """SVG pie path from 12 o'clock, clockwise, covering ``fraction`` of the disc.
+
+    Returns None when ``fraction`` is full (caller should use a solid circle fill).
+    """
+    frac = max(0.0, min(1.0, float(fraction)))
+    if frac <= 1e-6:
+        return ""
+    if frac >= 0.999:
+        return None
+    sweep = 2.0 * math.pi * frac
+    x1 = cx
+    y1 = cy - r
+    x2 = cx + r * math.sin(sweep)
+    y2 = cy - r * math.cos(sweep)
+    large = 1 if frac > 0.5 else 0
+    return (
+        f"M {cx:.4f},{cy:.4f} L {x1:.4f},{y1:.4f} "
+        f"A {r:.4f},{r:.4f} 0 {large},1 {x2:.4f},{y2:.4f} Z"
+    )
+
+
+def _apply_exterior_seconds_fill(
+    clock: ET.Element,
+    zone: int,
+    *,
+    sec_idx: int,
+) -> None:
+    """Paint exterior black; white only under seconds layers 1..``sec_idx``.
+
+    Middle black disc sits above the white wedge so the visible white is the
+    outer ring under the active second ticks.
+    """
+    exterior = _find_by_key(clock, f"zone{zone}_clock_exterior_accent")
+    middle = _find_by_key(clock, f"zone{zone}_clock_middle_accent")
+    fill_name = f"zone{zone}_clock_exterior_seconds_fill"
+    # Drop any prior wedge from a reused tree.
+    _remove_by_key(clock, fill_name)
+    if exterior is None:
+        return
+    try:
+        cx = float(exterior.get("cx") or _zone_clock_center(zone)[0])
+        cy = float(exterior.get("cy") or _zone_clock_center(zone)[1])
+        r = float(exterior.get("r") or _CLOCK_EXTERIOR_ACCENT_R)
+    except (TypeError, ValueError):
+        cx, cy = _zone_clock_center(zone)
+        r = _CLOCK_EXTERIOR_ACCENT_R
+    idx = max(1, min(60, int(sec_idx)))
+    frac = idx / 60.0
+    exterior.set("fill", "#000000")
+    d = _seconds_wedge_path_d(cx, cy, r, frac)
+    if d is None:
+        # Full minute (:00 / layer 60) — entire exterior turns white.
+        exterior.set("fill", "#FFFFFF")
+        _place_in_group(clock, exterior, 0)
+        _place_in_group(clock, middle, 1)
+        return
+    if not d:
+        _place_in_group(clock, exterior, 0)
+        _place_in_group(clock, middle, 1)
+        return
+    wedge = ET.Element(f"{{{SVG_NS}}}path")
+    wedge.set("id", fill_name)
+    wedge.set("data-name", fill_name)
+    wedge.set("d", d)
+    wedge.set("fill", "#FFFFFF")
+    clock.append(wedge)
+    # Exterior (black) → white seconds wedge → middle (black).
+    _place_in_group(clock, exterior, 0)
+    _place_in_group(clock, wedge, 1)
+    _place_in_group(clock, middle, 2)
+
+
+def _apply_clock_accent_fills(root: ET.Element) -> None:
+    """Clock accent stack (bottom → top): exterior black, then middle black.
+
+    Exterior starts black; a white seconds wedge is layered above it for the
+    active clock (see ``_apply_exterior_seconds_fill``). Middle sits above that;
+    ticks / interior / center paint above both.
+    """
+    for zone in (1, 2, 3):
+        clock = _clock_group_for_zone(root, zone)
+        if clock is None:
+            continue
+        for child in list(clock):
+            key = _layer_key(child)
+            if key in (
+                f"zone{zone}_clock_disc_fill",
+                f"zone{zone}_clock_outer_band_fill",
+                f"zone{zone}_clock_exterior_seconds_fill",
+            ):
+                clock.remove(child)
+        exterior = _find_by_key(clock, f"zone{zone}_clock_exterior_accent")
+        middle = _find_by_key(clock, f"zone{zone}_clock_middle_accent")
+        interior = _find_by_key(clock, f"zone{zone}_clock_interior_accent")
+        if exterior is not None:
+            exterior.set("fill", "#000000")
+        if middle is not None:
+            middle.set("fill", "#000000")
+        # Interior must not be white-filled — leave stroke-only / none.
+        if interior is not None and str(interior.get("fill") or "").strip().upper() in (
+            "#FFFFFF",
+            "#FFF",
+            "WHITE",
+        ):
+            interior.set("fill", "none")
+        # Bottom of widget: exterior, then middle immediately above it.
+        _place_in_group(clock, exterior, 0)
+        _place_in_group(clock, middle, 1)
 
 
 def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
@@ -751,7 +884,6 @@ def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
     clock = _clock_group_for_zone(root, zone)
     if clock is None:
         return
-    _insert_clock_disc_fill(clock, zone)
     hours_g = _hours_group(clock)
     minutes_g = _minutes_group(clock)
     seconds_g = _seconds_group(clock)
@@ -765,6 +897,9 @@ def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
     # Ring index: 0 → layer 60; 1..59 → matching index.
     min_idx = 60 if minute == 0 else minute
     sec_idx = 60 if second == 0 else second
+
+    # Exterior: black base + white sector under seconds 1..current.
+    _apply_exterior_seconds_fill(clock, zone, sec_idx=sec_idx)
 
     # Hours: only the matching face layer (original SVG shape).
     face_name = _HOUR_FACE_NAMES.get(h12, "")
@@ -870,6 +1005,8 @@ def apply_view_circles_svg_state(
         _detach_element(root, el)
 
     dt = now if now is not None else datetime.now()
+    # Exterior (black) under middle (black); active zone adds white seconds wedge.
+    _apply_clock_accent_fills(root)
     # Only drive ticks for the active (visible) clock zone.
     if vis.get(f"zone{active_clock_zone}_clock_group", False):
         _apply_clock_ticks(root, active_clock_zone, dt)
@@ -1827,7 +1964,7 @@ class ViewCirclesWidget:
             h12 = 12
         vol_disp = self._volume_fraction_for_display()
         return (
-            26,  # cache schema — zone0 date header
+            27,  # cache schema — exterior seconds white wedge
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -1873,7 +2010,7 @@ class ViewCirclesWidget:
             h12,
             int(now.minute),
             int(now.second),
-            7,  # chrome pipeline — zone0 date (demo text stripped)
+            8,  # chrome pipeline — exterior seconds white wedge
         )
 
     def _render_svg_base(self, now: datetime) -> np.ndarray:
