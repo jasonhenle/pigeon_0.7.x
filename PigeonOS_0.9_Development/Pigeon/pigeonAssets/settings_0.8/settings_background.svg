@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PigeonOS settings theme background: black canvas + 6 UI-tintable slants.
+     Slant fills are grayscale placeholders; the host tints them from SettingsTheme.ui
+     at 90/80/70/60/50/40% brightness. Do not embed this art in chrome SVGs. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1478.15 1513.78">
+  <defs>
+    <clipPath id="clippath">
+      <rect x="385.64" y="551.57" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-1">
+      <rect x="385.64" y="551.57" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-2">
+      <rect x="385.64" y="551.57" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-3">
+      <rect x="385.64" y="551.57" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-4">
+      <rect x="385.64" y="551.57" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-5">
+      <rect x="385.64" y="551.57" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+  </defs>
+  <g id="background">
+    <rect id="settings_background" x="363.37" y="441.08" width="800" height="480" fill="#000000"/>
+  </g>
+  <g id="container6">
+    <g clip-path="url(#clippath)">
+      <rect id="slant6_40_theme" x="921.73" y="391.14" width="197.03" height="1197.51" transform="translate(866.31 -423.29) rotate(39.65)" fill="#666666"/>
+    </g>
+  </g>
+  <g id="container5">
+    <g clip-path="url(#clippath-1)">
+      <rect id="slant5_50_theme" x="829.47" y="287.48" width="130.19" height="1197.51" transform="translate(771.26 -366.94) rotate(39.65)" fill="#7f7f7f"/>
+    </g>
+  </g>
+  <g id="container4">
+    <g clip-path="url(#clippath-2)">
+      <rect id="slant4_60_theme" x="713.94" y="198.52" width="147.74" height="1197.51" transform="translate(689.94 -319.29) rotate(39.65)" fill="#999999"/>
+    </g>
+  </g>
+  <g id="container3">
+    <g clip-path="url(#clippath-3)">
+      <rect id="slant3_70_theme" x="626.64" y="120.33" width="131.57" height="1196.76" transform="translate(617.87 -276.49) rotate(39.65)" fill="#b2b2b2"/>
+    </g>
+  </g>
+  <g id="container2">
+    <g clip-path="url(#clippath-4)">
+      <rect id="slant2_80_theme" x="515.68" y="33.97" width="145.33" height="1196.01" transform="translate(538.59 -230.04) rotate(39.65)" fill="#cccccc"/>
+    </g>
+  </g>
+  <g id="container1">
+    <g clip-path="url(#clippath-5)">
+      <rect id="slant1_90_theme" x="358.99" y="-73.76" width="200.51" height="1197.51" transform="translate(440.63 -172.27) rotate(39.65)" fill="#e5e5e5"/>
+    </g>
+  </g>
+</svg>

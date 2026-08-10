@@ -557,7 +557,7 @@ def poll_denon_like_receiver(host: str, timeout: float = 4.0) -> ReceiverPollRes
         vol_s = "mute"
     elif mv:
         low_mv = mv.lower()
-        vol_s = mv if "db" in low_mv or mv.strip().endswith("%") else f"{mv}dB"
+        vol_s = mv if "db" in low_mv or mv.strip().endswith("%") else f"{mv} dB"
     else:
         vol_s = ""
 

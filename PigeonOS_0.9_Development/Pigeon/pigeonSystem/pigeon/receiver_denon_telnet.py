@@ -274,10 +274,8 @@ def _denon_mv_to_db(digits: str) -> str:
     except ValueError:
         return ""
     db = n - 80.0
-    # Drop trailing ``.0`` to match Denon on-screen format.
-    if abs(db - int(db)) < 1e-6:
-        return f"{int(db)}dB"
-    return f"{db:.1f}dB"
+    # Always one decimal + spaced lowercase-d suffix: ``-22.5 dB``.
+    return f"{db:.1f} dB"
 
 
 def poll_denon_telnet(

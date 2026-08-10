@@ -14,7 +14,7 @@ default state (returned when the [1] toggle is in its initial position).
     .08 default (BD + TT + appLogo gone) -- no alternate
     .09 default (everything missing)     -- no alternate
 
-This module is self-contained and importable from ``pigeon_0_5.py``. It does
+This module is self-contained and importable from ``pigeon_0_9.py``. It does
 not touch Tk or the compositor; it only resolves which variant should render
 and provides the text/image patches the compositor needs for fallbacks.
 """
@@ -338,7 +338,8 @@ def _ellipsize_to_width(
     tw, _, _ = _measure(font, text)
     if tw <= max_w:
         return text
-    ell = "…"
+    # Prefer ASCII dots: some UI fonts (esp. Digital-7) map U+2026 to a bogus O/D glyph.
+    ell = "..."
     ell_w, _, _ = _measure(font, ell)
     if ell_w > max_w:
         return ""

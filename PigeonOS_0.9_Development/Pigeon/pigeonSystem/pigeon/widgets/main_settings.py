@@ -85,7 +85,7 @@ _WIFI_SEARCH_GLYPH_BGR = (255, 255, 255)
 
 _ARTBOARD_H = 480.0
 _WIFI_RADII_SVG: tuple[float, float, float] = (18.668, 29.008, 39.145)
-_WIFI_STROKE_SVG = 6.5
+_WIFI_STROKE_SVG = 5.0
 _WIFI_FAIL_SIZE_SVG = 42.0
 _COLOR_GRAY_BGR = (128, 128, 128)
 _COLOR_GRAY_RGBA = (128, 128, 128, 255)
@@ -280,7 +280,11 @@ _HIDE_ALWAYS_LOGICAL: tuple[str, ...] = (
     "keyboardtemp",
 )
 
-_BACKGROUND_CONTAINERS: tuple[str, ...] = tuple(f"container{i}" for i in range(1, 8))
+# Baked stripe groups in settings_main (containerN) and settings_pigeon (menu_container_N).
+_BACKGROUND_CONTAINERS: tuple[str, ...] = tuple(
+    [f"container{i}" for i in range(1, 8)]
+    + [f"menu_container_{i}" for i in range(1, 7)]
+)
 
 # Launch-visible layer groups (``settingInstructions_0.8.0``).
 _LAUNCH_VISIBLE_LOGICAL: frozenset[str] = frozenset(
@@ -1296,6 +1300,80 @@ def keyboard_svg_path(
     return Path(base) / "settings_0.8" / name
 
 
+# Full-frame registration PNG for the box1 pigeon mark (replaces the SVG wing polygon).
+_BOX1_PIGEON_LOGO_PNG = "settings_main_box1_pigeon_logo.png"
+_BOX1_PIGEON_LOGO_CACHE: dict[tuple[str, float, int, int], np.ndarray] = {}
+
+
+def box1_pigeon_logo_png_path(*, assets_dir: Path | str | None = None) -> Path:
+    """Resolve the full-screen box1 pigeon logo under ``settings_0.8/``."""
+    base = Path(assets_dir) if assets_dir is not None else Path(__file__).resolve().parents[3] / "pigeonAssets"
+    return Path(base) / "settings_0.8" / _BOX1_PIGEON_LOGO_PNG
+
+
+def _hide_box1_wing_logo_polygon(root: ET.Element) -> None:
+    """Drop the Illustrator wing polygon; left/right rules stay for chrome."""
+    icon = _find_by_logical_id(root, "main_box1_pigeon_logo_icon")
+    if icon is None:
+        return
+    for el in icon.iter():
+        if el.tag.endswith("polygon"):
+            _set_visible(el, False)
+
+
+def _load_box1_pigeon_logo_overlay_bgra(
+    *,
+    assets_dir: Path | str | None = None,
+) -> np.ndarray | None:
+    """Load + scale the registration PNG to the design canvas (BGRA)."""
+    path = box1_pigeon_logo_png_path(assets_dir=assets_dir)
+    if not path.is_file():
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    key = (str(path.resolve()), float(mtime), int(DESIGN_W), int(DESIGN_H))
+    hit = _BOX1_PIGEON_LOGO_CACHE.get(key)
+    if hit is not None:
+        return hit
+    src = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if src is None or src.size == 0:
+        return None
+    if src.ndim == 2:
+        src = cv2.cvtColor(src, cv2.COLOR_GRAY2BGRA)
+    elif src.shape[2] == 3:
+        src = cv2.cvtColor(src, cv2.COLOR_BGR2BGRA)
+    elif src.shape[2] != 4:
+        return None
+    if src.shape[0] != DESIGN_H or src.shape[1] != DESIGN_W:
+        src = cv2.resize(src, (DESIGN_W, DESIGN_H), interpolation=cv2.INTER_AREA)
+    _BOX1_PIGEON_LOGO_CACHE.clear()
+    _BOX1_PIGEON_LOGO_CACHE[key] = src
+    return src
+
+
+def _draw_box1_pigeon_logo_overlay(
+    bgra: np.ndarray,
+    *,
+    assets_dir: Path | str | None = None,
+    ui_hex: str = COLOR_UI_DEFAULT,
+) -> None:
+    """Composite the full-frame box1 pigeon mark, tinted brand red like the SVG icons."""
+    overlay = _load_box1_pigeon_logo_overlay_bgra(assets_dir=assets_dir)
+    if overlay is None or overlay.shape[:2] != bgra.shape[:2]:
+        return
+    if not np.any(overlay[:, :, 3]):
+        return
+    tinted = overlay.copy()
+    b, g, r = _hex_to_bgr(ui_hex or COLOR_UI_DEFAULT)
+    tinted[:, :, 0] = b
+    tinted[:, :, 1] = g
+    tinted[:, :, 2] = r
+    blended = _composite_bgra_over_bgra(bgra, tinted)
+    bgra[:] = blended
+
+
 def _parent_map(root: ET.Element) -> dict[ET.Element, ET.Element]:
     parents: dict[ET.Element, ET.Element] = {}
     for parent in root.iter():
@@ -1442,12 +1520,31 @@ def _discover_onboarding_search_arc_specs(root: ET.Element) -> tuple[_Onboarding
     return _discover_search_arc_specs_in_group(root, search_group)
 
 
+def _find_box_column_search_icon(root: ET.Element, box_num: int) -> ET.Element | None:
+    """Column ``main_box{N}_search_icon`` (skip WiFi onboarding art under add-search)."""
+    parents = _parent_map(root)
+    add_group = _wifi_onboarding_add_search_group(root)
+    box_root = _find_box_root_group(root, box_num)
+    want = f"main_box{box_num}_search_icon"
+    for el in _find_all_by_logical_id(root, want):
+        if add_group is not None and _is_descendant_of(el, add_group, parents):
+            continue
+        if box_root is not None and not _is_descendant_of(el, box_root, parents):
+            continue
+        return el
+    for el in _find_all_by_logical_id(root, want):
+        if add_group is not None and _is_descendant_of(el, add_group, parents):
+            continue
+        return el
+    return None
+
+
 def _discover_box_search_arc_specs(
     root: ET.Element,
     box_num: int,
 ) -> tuple[_OnboardingSearchArcSpec, ...]:
     """Clip-masked ring arcs for ``main_box{N}_search_icon`` column spinners."""
-    search_group = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    search_group = _find_box_column_search_icon(root, box_num)
     if search_group is None:
         return ()
     return _discover_search_arc_specs_in_group(root, search_group)
@@ -3186,6 +3283,61 @@ def _hide_svg_wifi_icons(root: ET.Element) -> None:
             parent.remove(el)
 
 
+def _hide_box_column_search_svg_circles(root: ET.Element) -> None:
+    """Hide column search ring circles; OpenCV redraws them with rect clip masks.
+
+    Triangles and ``+`` stay in the SVG (PyMuPDF renders those correctly). Stroke-only
+    ``clip-path`` circles become full rings under PyMuPDF, so they must not rasterize.
+    """
+    parents = _parent_map(root)
+    for box_num in (2, 3):
+        search_icon = _find_box_column_search_icon(root, box_num)
+        if search_icon is None or _is_subtree_hidden(search_icon, parents):
+            continue
+        for el in search_icon.iter():
+            if el.tag.endswith("circle"):
+                _set_visible(el, False)
+
+
+def _collect_box_search_arc_overlays(
+    root: ET.Element,
+    state: MainSettingsState,
+    *,
+    focused_logical: str,
+) -> list[_BoxSearchArcOverlay]:
+    """Arc specs + stroke colors for visible idle box2/box3 search icons."""
+    parents = _parent_map(root)
+    overlays: list[_BoxSearchArcOverlay] = []
+    for box_num in (2, 3):
+        search_icon = _find_box_column_search_icon(root, box_num)
+        if search_icon is None or _is_subtree_hidden(search_icon, parents):
+            continue
+        panel = state._box_panel(box_num)
+        # Rotating spinner path draws its own glyph; skip static arcs.
+        if panel.scanning and panel.active and not bool(
+            getattr(state, "spinner_glyph_capture", False)
+        ):
+            continue
+        specs = _discover_search_arc_specs_in_group(root, search_icon)
+        if not specs:
+            continue
+        selected = focused_logical == f"main_box{box_num}_button" or (
+            panel.scanning and panel.active
+        )
+        color_bgr = _hex_to_bgr("#202020" if selected else "#ffffff")
+        overlays.append(_BoxSearchArcOverlay(specs=specs, color_bgr=color_bgr))
+    return overlays
+
+
+def _draw_box_search_arc_overlays(
+    bgra: np.ndarray,
+    overlays: list[_BoxSearchArcOverlay],
+) -> None:
+    for overlay in overlays:
+        for spec in overlay.specs:
+            _draw_onboarding_search_arc_stroke(bgra, spec, color_bgr=overlay.color_bgr)
+
+
 def _svg_id_index(root: ET.Element) -> dict[str, ET.Element]:
     return {raw: el for el in root.iter() if (raw := el.get("id"))}
 
@@ -3462,13 +3614,21 @@ def _draw_wifi_overlays(
 
 @dataclass(frozen=True)
 class _OnboardingSearchArcSpec:
-    """Single clipped ring arc from onboarding ``main_box2_search_icon`` art."""
+    """Single clipped ring arc from search-icon art (box columns + onboarding)."""
 
     cx_svg: float
     cy_svg: float
     radius_svg: float
     stroke_svg: float
     clip_corners_svg: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class _BoxSearchArcOverlay:
+    """Idle box2/box3 search arcs redrawn after rasterize (PyMuPDF drops clip-path)."""
+
+    specs: tuple[_OnboardingSearchArcSpec, ...]
+    color_bgr: tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -3616,7 +3776,7 @@ def _hide_star_masked_svg_circles(root: ET.Element, specs: list[_StarMaskedCircl
 
 def _hide_box_search_animation_layers(root: ET.Element, box_num: int) -> None:
     """Force-hide search spinner art for a column (SVG vectors + group)."""
-    search_icon = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    search_icon = _find_box_column_search_icon(root, box_num)
     if search_icon is not None:
         _set_visible(search_icon, False)
         _hide_box_search_icon_vectors(search_icon)
@@ -3730,9 +3890,10 @@ def _apply_background_container(
     *,
     focused: str,
 ) -> None:
-    active = _active_background_container(state, focused)
+    """Legacy no-op: stripe backgrounds come from ``settings_background.svg`` now."""
+    del state, focused
     for cid in _BACKGROUND_CONTAINERS:
-        _set_visible(_find_by_logical_id(root, cid), cid == active)
+        _set_visible(_find_by_logical_id(root, cid), False)
 
 
 def _style_has_display_none(style: str | None) -> bool:
@@ -3795,37 +3956,51 @@ def _container_stripe_cache_key(stripes: tuple[_ContainerStripeSpec, ...]) -> tu
 def _draw_container_background_bgra(
     bgra: np.ndarray,
     stripes: tuple[_ContainerStripeSpec, ...] | None = None,
+    *,
+    ui_hex: str | None = None,
+    assets_dir: Path | str | None = None,
 ) -> None:
-    """Paint solid red menu plate + clipped diagonal stripes (PyMuPDF clip-path fix)."""
-    stripe_tuple = stripes or ()
-    key = _container_stripe_cache_key(stripe_tuple)
-    cached = _CONTAINER_BG_PLATE_CACHE.get(key)
-    if cached is not None:
-        bgra[:] = cached
-        return
+    """Paint black frame + UI-tinted theme slants (shared settings_background.svg).
 
-    plate = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
-    plate[:, :, 3] = 255
-    mask = _menu_container_mask()
-    _composite_stroke_mask(plate, mask, _hex_to_bgr(COLOR_UI_DEFAULT))
-    for stripe in stripe_tuple:
-        corners = _transform_rect_corners_svg(
-            stripe.x_svg,
-            stripe.y_svg,
-            stripe.width_svg,
-            stripe.height_svg,
-            stripe.matrix,
-        )
-        pts = np.array([_svg_to_px(x, y) for x, y in corners], dtype=np.int32)
-        poly_mask = np.zeros((DESIGN_H, DESIGN_W), dtype=np.uint8)
-        cv2.fillConvexPoly(poly_mask, pts, 255)
-        poly_mask = cv2.bitwise_and(poly_mask, mask)
-        _composite_stroke_mask(plate, poly_mask, _hex_to_bgr(stripe.fill_hex))
-    if len(_CONTAINER_BG_PLATE_CACHE) >= 8:
-        _CONTAINER_BG_PLATE_CACHE.clear()
-    _CONTAINER_BG_PLATE_CACHE[key] = plate
-    bgra[:] = plate
+    ``stripes`` is ignored (legacy baked SVG discovery); kept for call-site compat.
+    """
+    del stripes  # embedded chrome SVG stripes are no longer used
+    from pigeon.widgets.settings_theme_background import (
+        draw_settings_theme_background_bgra,
+    )
 
+    draw_settings_theme_background_bgra(
+        bgra,
+        ui_hex=ui_hex or COLOR_UI_DEFAULT,
+        clip_mask=_menu_container_mask(),
+        assets_dir=assets_dir,
+    )
+
+
+def _disable_embedded_settings_background_layers(root: ET.Element) -> None:
+    """Hide/remove baked stripe + canvas background groups from chrome SVGs.
+
+    All settings menus paint the shared ``settings_background.svg`` plate in code;
+    embedded Illustrator stripe/background layers must never rasterize.
+    """
+    for cid in _BACKGROUND_CONTAINERS:
+        el = _find_by_logical_id(root, cid)
+        if el is not None:
+            _set_visible(el, False)
+    # Catch any leftover stripe groups by logical id prefix.
+    for el in root.iter():
+        logical = _normalize_logical(el.get("id") or "")
+        if logical in ("background", "settings_background") or logical.startswith(
+            ("container", "menu_container_")
+        ):
+            if el.tag.endswith("g") or el.tag.endswith("rect"):
+                _set_visible(el, False)
+    _hide_container_stripe_rects(root)
+    _remove_canvas_background_rect(root)
+    for lid in ("settings_background", "background"):
+        el = _find_by_logical_id(root, lid)
+        if el is not None:
+            _set_visible(el, False)
 
 def _composite_bgra_over_bgra(base: np.ndarray, overlay: np.ndarray) -> np.ndarray:
     """Alpha-composite overlay onto base. Fast paths for empty / fully opaque pixels."""
@@ -3884,6 +4059,31 @@ def _discover_container_stripe_specs(root: ET.Element, container_id: str) -> tup
     return tuple(specs)
 
 
+def _parse_svg_slant_transform(
+    transform: str | None,
+) -> tuple[float, float, float, float, float, float] | None:
+    """Parse ``matrix(...)`` or Illustrator ``translate(...) rotate(...)`` CTMs."""
+    matrix = _parse_svg_matrix(transform)
+    if matrix is not None:
+        return matrix
+    if not transform:
+        return None
+    m = _TRANSLATE_RE.search(transform)
+    if not m:
+        return None
+    rot = re.search(r"rotate\(\s*([-\d.]+)\s*\)", transform, re.IGNORECASE)
+    if rot is None:
+        return None
+    import math
+
+    tx = float(m.group(1))
+    ty = float(m.group(2) or 0.0)
+    rad = math.radians(float(rot.group(1)))
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    return (cos_a, sin_a, -sin_a, cos_a, tx, ty)
+
+
 def _hide_container_stripe_rects(
     root: ET.Element,
     container_ids: tuple[str, ...] | None = None,
@@ -3899,7 +4099,7 @@ def _hide_container_stripe_rects(
                 continue
             style = el.get("style") or ""
             transform = el.get("transform") or _style_prop(style, "transform")
-            if _parse_svg_matrix(transform) is not None:
+            if _parse_svg_slant_transform(transform) is not None:
                 parent = parents.get(el)
                 if parent is not None:
                     parent.remove(el)
@@ -4475,7 +4675,7 @@ def _discover_box_search_triangle_specs(
     root: ET.Element,
     box_num: int,
 ) -> tuple[tuple[tuple[float, float], ...], ...]:
-    search_icon = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    search_icon = _find_box_column_search_icon(root, box_num)
     if search_icon is None:
         return ()
     specs: list[tuple[tuple[float, float], ...]] = []
@@ -4606,12 +4806,16 @@ def _set_box_search_plus_visible(search_icon: ET.Element | None, visible: bool) 
 
 
 def _show_box_search_icon_vectors(search_icon: ET.Element | None) -> None:
+    """Show SVG triangles; ring circles stay hidden (OpenCV clip redraw)."""
     if search_icon is None:
         return
     for el in search_icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
-        if tag in ("circle", "polygon"):
+        if tag == "polygon":
             _set_visible(el, True)
+        elif tag == "circle":
+            # PyMuPDF ignores circle clip-path → full rings; hide for OpenCV redraw.
+            _set_visible(el, False)
 
 
 def _hide_box_search_icon_vectors(search_icon: ET.Element | None) -> None:
@@ -4630,20 +4834,26 @@ def _apply_box_search_icon_variant(
     selected: bool,
     show_plus: bool = True,
 ) -> None:
-    """Paint box column search art (black glyphs on white pill, white on black)."""
+    """Paint box column search art (black glyphs on white pill, white on black).
+
+    Ellipse/triangle layers are Illustrator-named ``*_selected`` but have no
+    ``*_deselected`` twins — keep groups present and only recolor. Ring circles
+    are stroke-only with rect ``clip-path``; PyMuPDF drops those clips, so circles
+    are hidden before rasterize and redrawn via OpenCV (triangles stay in SVG).
+    """
     if search_icon is None:
         return
     color = "#202020" if selected else "#ffffff"
     _apply_box_search_icon_glyph_styles(search_icon, color=color)
+    # Keep ellipse clip groups in the tree for geometry discovery; hide circles.
     for el in search_icon.iter():
-        logical = _normalize_logical(el.get("id") or "")
         if el is search_icon:
             continue
-        if "_selected" in logical or "_deselected" in logical:
-            if "_selected" in logical:
-                _set_visible(el, selected)
-            if "_deselected" in logical:
-                _set_visible(el, not selected)
+        logical = _normalize_logical(el.get("id") or "")
+        if "ellipse" in logical or "eplipse" in logical:
+            _set_visible(el, True)
+        if el.tag.endswith("circle"):
+            _set_visible(el, False)
     plus_visible = bool(show_plus and not selected)
     _set_box_search_plus_visible(search_icon, plus_visible)
     if plus_visible:
@@ -4800,7 +5010,7 @@ def _apply_box_device_panel_layers(
     panel = state._box_panel(box_num)
     device_group = _find_box_device_group(root, box_num)
     location_group = _find_by_logical_id(root, f"main_box{box_num}_location_group")
-    search_icon = _find_by_logical_id(root, f"main_box{box_num}_search_icon")
+    search_icon = _find_box_column_search_icon(root, box_num)
     has_device = state.box_has_saved_device(box_num)
     capture = bool(getattr(state, "spinner_glyph_capture", False))
 
@@ -5218,10 +5428,7 @@ def render_main_settings_bgra(
     st.focus_index = int(st.focus_index) % max(1, len(present))
     apply_main_settings_svg_state(root, st)
     focused_logical = "" if st.keyboard_open else st.focused_id
-    active_container = _active_background_container(st, focused_logical or st.focused_id)
-    stripe_specs = _discover_container_stripe_specs(root, active_container)
-    _hide_container_stripe_rects(root)
-    _remove_canvas_background_rect(root)
+    _disable_embedded_settings_background_layers(root)
     # Discover after apply so hidden pigeon-logo icons are skipped, and circle
     # element ids match this tree for hide + OpenCV star-clip redraw.
     star_specs = _discover_star_masked_circles(root)
@@ -5229,17 +5436,39 @@ def render_main_settings_bgra(
     onboarding_arc_specs = geom["onboarding_arcs"]  # type: ignore[assignment]
     onboarding_triangle_specs = geom["onboarding_tris"]  # type: ignore[assignment]
     wifi_layouts = geom["wifi_layouts"]  # type: ignore[assignment]
+    # Box search rings: discover clip geometry while circles still exist, then
+    # strip them before PyMuPDF (which ignores clip-path → full rings).
+    box_search_arc_overlays = _collect_box_search_arc_overlays(
+        root, st, focused_logical=focused_logical
+    )
+    parents = _parent_map(root)
+    box1_logo_el = _find_by_logical_id(root, "main_box1_pigeon_logo_icon")
+    draw_box1_pigeon_logo = (
+        box1_logo_el is not None and not _is_subtree_hidden(box1_logo_el, parents)
+    )
+    _hide_box1_wing_logo_polygon(root)
     _hide_svg_wifi_icons(root)
     _hide_star_masked_svg_circles(root, star_specs)
+    _hide_box_column_search_svg_circles(root)
     _prune_display_none(root)
     ui_bgra = _rasterize_svg_tree(root)
     bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     bg_bgra[:, :, :3] = 0
     bg_bgra[:, :, 3] = 255
-    _draw_container_background_bgra(bg_bgra, stripe_specs)
+    assets_root = assets_dir if assets_dir is not None else path.parent.parent
+    _draw_container_background_bgra(
+        bg_bgra,
+        ui_hex=st.theme.ui,
+        assets_dir=assets_root,
+    )
     bgra = _composite_bgra_over_bgra(bg_bgra, ui_bgra)
+    if draw_box1_pigeon_logo:
+        _draw_box1_pigeon_logo_overlay(
+            bgra, assets_dir=assets_root, ui_hex=st.theme.ui
+        )
     _draw_wifi_overlays(bgra, st, wifi_layouts, focused_logical=focused_logical)
     _draw_star_masked_circle_overlays(bgra, st, star_specs, focused_logical=focused_logical)
+    _draw_box_search_arc_overlays(bgra, box_search_arc_overlays)
     _draw_wifi_onboarding_search_overlays(
         bgra, st, onboarding_arc_specs, onboarding_triangle_specs
     )
@@ -7176,7 +7405,7 @@ class MainSettingsWidget:
         else:
             roi[:] = alpha_blend_bgra_over_bgr(roi, resized)
 
-    # Alias used by ``pigeon_0_8`` composite paths.
+    # Alias used by ``pigeon_0_9`` composite paths.
     render_on_bgr = render
 
 

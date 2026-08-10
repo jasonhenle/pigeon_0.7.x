@@ -1,8 +1,9 @@
 """Launch splash: PNG sequence (e.g. 800×480 RGBA) under ``pigeonAssets/pigeonSplash``.
 
-Alpha is preserved end-to-end: the overlay is a full-``shell`` layer above ``content_host``,
-so transparent pixels show the composited scene underneath. The last ``SPLASH_FADE_OUT_FRAMES``
-frames apply an extra global alpha ramp so the whole graphic eases out smoothly.
+Alpha is preserved end-to-end: the overlay is a full-``shell`` layer above ``content_host``.
+Transparent PNG pixels reveal the UI underneath (clock saver from
+``SPLASH_CLOCK_REVEAL_FRAME``). Optional ``SPLASH_FADE_OUT_FRAMES`` can still apply a
+global alpha ramp at the tail; default is 0 (no fade — the PNG alpha does the reveal).
 """
 
 from __future__ import annotations
@@ -25,8 +26,11 @@ SPLASH_NOMINAL_H = 480
 SPLASH_FPS = 30
 # Hard cap so a huge folder cannot block startup for minutes.
 SPLASH_MAX_DURATION_S = 18.0
-# Last N frames: global alpha ramps 1 → 0 so the splash (and any opaque art) eases out smoothly.
-SPLASH_FADE_OUT_FRAMES = 21
+# Last N frames: global alpha ramps 1 → 0. 0 = no software fade (PNG alpha reveals underlay).
+SPLASH_FADE_OUT_FRAMES = 0
+# 0-based frame index when the clock saver should paint under the splash
+# (``WIDGET_splash_00090.png``). Earlier frames keep a black underlay.
+SPLASH_CLOCK_REVEAL_FRAME = 90
 
 # Built-in sequence when ``pigeonSplash`` has no PNGs (same nominal size as the window).
 FALLBACK_SPLASH_FRAME_COUNT = 72
@@ -36,6 +40,30 @@ _FALLBACK_SPLASH_INTRO_FRAMES = 12
 def _natural_png_sort_key(p: Path) -> tuple[object, ...]:
     parts = [int(x) for x in re.findall(r"\d+", p.stem)]
     return tuple(parts) + (p.stem.lower(), p.name.lower())
+
+
+def splash_effective_frame_count(png_paths: list[Path], *, reveal_frame: int) -> int:
+    """Return playback length, trimming trailing fully-transparent frames after reveal.
+
+    After Effects / PNG sequences often pad many empty frames after the graphic is gone;
+    playing those looks like the last splash frame is held.
+    """
+    n = len(png_paths)
+    if n <= 0:
+        return 0
+    start = max(0, min(int(reveal_frame), n - 1))
+    last_substantive = start
+    for i in range(start, n):
+        im = cv2.imread(str(png_paths[i]), cv2.IMREAD_UNCHANGED)
+        if im is None or im.ndim != 3 or im.shape[2] < 4:
+            continue
+        a = im[:, :, 3]
+        # Treat as empty once almost no pixels remain (allow tiny encoder dirt).
+        if float(a.mean()) < 1.0 and int((a > 10).sum()) < 1000:
+            break
+        last_substantive = i
+    # Inclusive end frame → count; keep at least the reveal frame itself.
+    return max(start + 1, last_substantive + 1)
 
 
 def list_splash_png_paths(assets_root: Path) -> list[Path]:

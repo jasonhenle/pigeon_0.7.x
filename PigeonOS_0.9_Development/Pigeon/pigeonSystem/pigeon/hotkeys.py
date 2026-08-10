@@ -25,13 +25,11 @@ PIGEON_HOTKEY_ROWS: list[tuple[str, str]] = [
         "else landing brightness pulse (when scene is on).",
     ),
     (
-        "1–5",
-        "Views: 1 pigeon (key 1 cycles pigeonFull: backdrop + logos + clock + status bar, "
-        "vs pigeonSimple: black + big centered title + same clock + status bar); "
-        "2 mic visualizer preset; "
-        "3 dedicated clock layout; "
+        "1, 4, 5",
+        "Views: 1 five-zone now-playing (circles); "
         "4 plain background + rawTitle debug text only; "
-        "5 design grid overlay (19×8) on the composite.",
+        "5 design grid overlay (19×8) on the composite. "
+        "Clock saver still appears automatically on idle (no dedicated view shortcut).",
     ),
     (
         "Arrow keys (Pigeon_ext)",

@@ -1,4 +1,4 @@
-# settings_advanced_matrix.py — next to pigeon_0_5.py (Tkinter Advanced delegation editor).
+# settings_advanced_matrix.py — next to pigeon_0_9.py (Tkinter Advanced delegation editor).
 from __future__ import annotations
 
 import sys

@@ -57,7 +57,7 @@ ID_UPDATE_LABEL_GROUP = "pop_)up_update_update_text"  # typo: pop_)up
 ID_UPDATE_LABEL = "pop_up_update_update_text"
 
 DEFAULT_CHANGELOG = "bug fixes and optimizations."
-UP_TO_DATE_CHANGELOG = "You are on the current version of PigeonOS"
+UP_TO_DATE_CHANGELOG = "You're on the current version of PigeonOS"
 PIGEONOS_LABEL = "PigeonOS"
 
 _UPDATE_FOCUS_AVAILABLE: tuple[str, ...] = ("later", "now")
@@ -67,10 +67,11 @@ _SVG_TREE_TEMPLATES: dict[tuple[str, int, int], ET.Element] = {}
 _SVG_TREE_TEMPLATE_MAX = 4
 
 # Geometry from 2026-07-27 Illustrator export — center controls when LATER hides.
+# Card widened (290.424 → 450) so the up-to-date changelog fits at 18px.
 _LATER_NOW_ROW = (313.104, 335.039, 494.502 - 313.104, 372.968 - 335.039)
 _NOW_BTN = (435.066, 335.039, 59.436, 37.929)
 _LATER_BTN = (322.664, 335.039, 59.436, 37.929)
-_VERSION_BAND = (263.793, 180.0, 290.424, 40.0)
+_VERSION_BAND = (184.005, 180.0, 450.0, 40.0)
 _CURRENT_DEFAULT_X = 340.0
 _CURRENT_ORIGIN_Y = 201.255
 _NEW_DEFAULT_X = 470.0
@@ -299,9 +300,11 @@ def _layout_up_to_date(root: ET.Element, state: MainSettingsState) -> None:
         now_group.set("transform", f"translate({dx:.3f} 0)")
     now_text = _find_by_logical_id(root, ID_NOW_TEXT)
     _set_text_content(now_text, "OK")
+    # Pillow text overlay ignores parent ``<g transform>`` — use the absolute
+    # centered-button midpoint, not the pre-nudge NOW label x.
     _set_text_translate(
         now_text,
-        x=_NOW_DEFAULT_X,
+        x=cx + _nw / 2.0,
         y=_NOW_TEXT_Y,
     )
 

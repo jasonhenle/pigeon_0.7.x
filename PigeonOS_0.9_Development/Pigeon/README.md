@@ -1,4 +1,4 @@
-# Pigeon 0.8
+# PigeonOS 0.9
 
 This folder is the runnable/shareable build for Pigeon (see `pigeonSystem/pigeon/version.py` for the current semver).
 
@@ -9,10 +9,10 @@ Pigeon is a full-screen media display and control surface. It can show playback 
 ## Core folder map
 
 - `installer/`: install and launch scripts for this build.
-  - `installer/run_pigeon_0_8.command`: macOS launch script.
-  - `installer/run_pigeon_0_8.sh`: Linux / Pi launch script.
+  - `installer/run_pigeon_0_9.command`: macOS launch script.
+  - `installer/run_pigeon_0_9.sh`: Linux / Pi launch script.
 - `pigeonSystem/`: all runnable code and system modules for this build.
-  - main app entrypoint: `pigeonSystem/pigeon_0_5.py`
+  - main app entrypoint: `pigeonSystem/pigeon_0_9.py`
   - package code: `pigeonSystem/pigeon/`
   - widget code: `pigeonSystem/pigeon/widgets/`
 - `pigeonAssets/`: static art and UI media.

@@ -153,6 +153,33 @@ def _receiver_volume_display_line(raw: object) -> str:
         return ""
     if s.lower() in ("n/a", "na", "none", "--"):
         return ""
+    # Canonical readout: ``-22.5 dB`` (space, lowercase d, uppercase B, one decimal).
+    m_db = re.fullmatch(
+        r"([+-]?\d+(?:\.\d+)?)\s*[dD][bB]\s*",
+        s,
+    )
+    if m_db:
+        try:
+            db = float(m_db.group(1))
+        except ValueError:
+            return s
+        return f"{db:.1f} dB"
+    # Bare signed level from some receivers → same shape.
+    m_bare = re.fullmatch(r"([+-]\d+(?:\.\d+)?)", s)
+    if m_bare:
+        try:
+            db = float(m_bare.group(1))
+        except ValueError:
+            return s
+        return f"{db:.1f} dB"
+    # Already has a messy ``db`` / ``DB`` suffix mid-string.
+    m_any = re.search(r"([+-]?\d+(?:\.\d+)?)\s*[dD][bB]\b", s)
+    if m_any:
+        try:
+            db = float(m_any.group(1))
+        except ValueError:
+            return re.sub(r"\s*[dD][bB]\b", " dB", s)
+        return f"{db:.1f} dB"
     return s
 
 

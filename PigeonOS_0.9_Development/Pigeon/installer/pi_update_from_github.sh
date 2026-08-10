@@ -17,6 +17,11 @@ APP_REL="PigeonOS_0.9_Development/Pigeon"
 INSTALL_DIR="${1:-}"
 if [[ -z "${INSTALL_DIR}" ]]; then
   for d in "${HOME}"/Pigeon_*; do
+    if [[ -f "${d}/installer/run_pigeon_0_9.sh" && -f "${d}/pigeonSystem/pigeon_0_9.py" ]]; then
+      INSTALL_DIR="${d}"
+      break
+    fi
+    # Legacy install trees (pre-0.9 entrypoint names).
     if [[ -f "${d}/installer/run_pigeon_0_8.sh" && -f "${d}/pigeonSystem/pigeon_0_8.py" ]]; then
       INSTALL_DIR="${d}"
       break
@@ -77,7 +82,7 @@ for candidate in \
   "${EXTRACT}"/*/"${APP_REL}" \
   "${EXTRACT}/${APP_REL}" \
   "${EXTRACT}"/*; do
-  if [[ -f "${candidate}/pigeonSystem/pigeon_0_8.py" ]]; then
+  if [[ -f "${candidate}/pigeonSystem/pigeon_0_9.py" || -f "${candidate}/pigeonSystem/pigeon_0_8.py" ]]; then
     SRC="${candidate}"
     break
   fi
@@ -108,7 +113,7 @@ source "${INSTALL_DIR}/installer/common.sh"
 pigeon_install_bundled_fonts "${INSTALL_DIR}" "${HOME}"
 
 echo "==> Refreshing Python dependencies…"
-bash "${INSTALL_DIR}/installer/run_pigeon_0_8.sh" --bootstrap-only
+bash "${INSTALL_DIR}/installer/run_pigeon_0_9.sh" --bootstrap-only
 
 VER="$(python3 -c "import importlib.util; p='${INSTALL_DIR}/pigeonSystem/pigeon/version.py'; s=importlib.util.spec_from_file_location('pv', p); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.version_string())")"
 echo ""

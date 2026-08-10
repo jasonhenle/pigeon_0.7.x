@@ -489,6 +489,18 @@ def _metadata_with_app(atv, metadata: dict[str, object]) -> dict[str, object]:
     else:
         out["app_name"] = ""
         out["app_id"] = ""
+    # Kids-primary apps (PBS Kids, …): bump TMDb prefer from auto → tv so movie-first
+    # ``auto`` cannot win adult documentaries that share short title tokens.
+    try:
+        from pigeon.tmdb_poster import prefer_media_for_streaming_service
+
+        out["prefer"] = prefer_media_for_streaming_service(
+            str(out.get("prefer") or "auto"),
+            app_name=str(out.get("app_name") or "") or None,
+            app_id=str(out.get("app_id") or "") or None,
+        )
+    except Exception:
+        pass
     # System output level when the protocol exposes it (often 0.0–100.0; not all devices).
     try:
         audio = atv.audio

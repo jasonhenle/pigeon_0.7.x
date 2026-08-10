@@ -8,19 +8,19 @@ ROOT="$(cd "${HERE}/.." && pwd)"
 source "${HERE}/common.sh"
 INSTALL_DIR="${PIGEON_INSTALL_DIR:-${HOME}/$(pigeon_install_dir_basename "${ROOT}")}"
 
-if [[ -x "${INSTALL_DIR}/installer/run_pigeon_0_8.sh" ]]; then
+if [[ -x "${INSTALL_DIR}/installer/run_pigeon_0_9.sh" ]]; then
   cd "${INSTALL_DIR}"
-  exec ./installer/run_pigeon_0_8.sh
+  exec ./installer/run_pigeon_0_9.sh
 fi
 
-if [[ -x "${HERE}/run_pigeon_0_8.sh" ]]; then
+if [[ -x "${HERE}/run_pigeon_0_9.sh" ]]; then
   cd "${HERE}"
-  exec ./run_pigeon_0_8.sh
+  exec ./run_pigeon_0_9.sh
 fi
 
-if [[ -x "${ROOT}/run_pigeon_0_8.sh" ]]; then
+if [[ -x "${ROOT}/run_pigeon_0_9.sh" ]]; then
   cd "${ROOT}"
-  exec ./run_pigeon_0_8.sh
+  exec ./run_pigeon_0_9.sh
 fi
 
 if command -v zenity >/dev/null 2>&1; then
