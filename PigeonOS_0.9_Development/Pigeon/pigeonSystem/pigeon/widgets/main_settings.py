@@ -14,6 +14,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import IntEnum
 from functools import lru_cache
 from pathlib import Path
@@ -465,6 +466,18 @@ class MainSettingsState:
     box3_ip_invalid: bool = False
     show_pigeon_settings: bool = False
     pigeon_focus_index: int = 0
+    show_preferences: bool = False
+    # "zones" = navigation A; "widgets" = navigation B after a zone is activated.
+    preferences_nav: str = "zones"
+    preferences_focus_index: int = 0
+    preferences_active_zone: int = 0  # 1–5 while in widgets nav; else 0
+    preferences_zone_widgets: tuple[str, str, str, str, str] = (
+        "clock",
+        "poster",
+        "volume",
+        "cast_info",
+        "now_playing",
+    )
     show_update_popup: bool = False
     update_popup_focus_index: int = 0
     update_available: bool = False
@@ -668,6 +681,7 @@ class MainSettingsState:
     def enter_location_picker(self) -> None:
         self.show_network_picker = False
         self.close_update_popup()
+        self.close_preferences()
         self.show_pigeon_settings = False
         self.show_location_picker = True
         self.renaming_location_id = ""
@@ -826,15 +840,149 @@ class MainSettingsState:
         self.show_pigeon_settings = True
         self.show_box1_panel = False
         self.close_update_popup()
+        self.close_preferences()
         ring = pigeon_focus_ring()
         self.pigeon_focus_index = ring.index("prefs_button")
 
     def exit_pigeon_settings(self) -> None:
         self.close_update_popup()
+        self.close_preferences()
         self.show_pigeon_settings = False
         self.ensure_focus_ring()
         if "main_box1_button" in self.focus_ring:
             self.focus_index = self.focus_ring.index("main_box1_button")
+
+    def open_preferences(self) -> None:
+        """Open the now-playing zone widget selector (prefs / settings)."""
+        from pigeon.widgets.preferences_settings import (
+            preferences_zone_focus_ring,
+            read_now_playing_zone_widgets,
+        )
+
+        self.show_preferences = True
+        self.preferences_nav = "zones"
+        self.preferences_active_zone = 0
+        self.preferences_zone_widgets = read_now_playing_zone_widgets()
+        ring = preferences_zone_focus_ring()
+        # Land on zone1 — first editable target.
+        self.preferences_focus_index = ring.index("zone1") if "zone1" in ring else 0
+
+    def close_preferences(self) -> None:
+        self.show_preferences = False
+        self.preferences_nav = "zones"
+        self.preferences_active_zone = 0
+        self.preferences_focus_index = 0
+
+    @property
+    def preferences_focused_id(self) -> str:
+        from pigeon.widgets.preferences_settings import (
+            preferences_widget_focus_ring,
+            preferences_zone_focus_ring,
+        )
+
+        if str(self.preferences_nav or "") == "widgets":
+            ring = preferences_widget_focus_ring(int(self.preferences_active_zone))
+        else:
+            ring = preferences_zone_focus_ring()
+        if not ring:
+            return "exit"
+        return ring[int(self.preferences_focus_index) % len(ring)]
+
+    def navigate_preferences(self, *, forward: bool = True) -> None:
+        from pigeon.widgets.preferences_settings import (
+            preferences_widget_focus_ring,
+            preferences_zone_focus_ring,
+            write_now_playing_zone_widgets,
+        )
+
+        step = 1 if forward else -1
+        if str(self.preferences_nav or "") == "widgets":
+            zone = int(self.preferences_active_zone)
+            ring = preferences_widget_focus_ring(zone)
+            if not ring:
+                return
+            self.preferences_focus_index = (
+                int(self.preferences_focus_index) + step
+            ) % len(ring)
+            focused = ring[self.preferences_focus_index]
+            # Live-assign the focused widget (skip BACK).
+            if focused != "exit" and 1 <= zone <= 5:
+                widgets = list(self.preferences_zone_widgets)
+                widgets[zone - 1] = focused
+                self.preferences_zone_widgets = (
+                    widgets[0],
+                    widgets[1],
+                    widgets[2],
+                    widgets[3],
+                    widgets[4],
+                )
+                write_now_playing_zone_widgets(self.preferences_zone_widgets)
+            return
+        ring = preferences_zone_focus_ring()
+        if not ring:
+            return
+        self.preferences_focus_index = (
+            int(self.preferences_focus_index) + step
+        ) % len(ring)
+
+    def activate_preferences(self) -> str:
+        """Handle activate while the preferences selector is open."""
+        from pigeon.widgets.preferences_settings import (
+            preferences_widget_focus_ring,
+            write_now_playing_zone_widgets,
+        )
+
+        focused = self.preferences_focused_id
+        if str(self.preferences_nav or "") != "widgets":
+            if focused == "exit":
+                self.close_preferences()
+                return "preferences_exit"
+            if focused.startswith("zone"):
+                try:
+                    zone = int(focused.replace("zone", ""))
+                except ValueError:
+                    return "preferences_noop"
+                self.preferences_nav = "widgets"
+                self.preferences_active_zone = zone
+                ring = preferences_widget_focus_ring(zone)
+                current = (
+                    self.preferences_zone_widgets[zone - 1]
+                    if 1 <= zone <= 5
+                    else "exit"
+                )
+                if current in ring:
+                    self.preferences_focus_index = ring.index(current)
+                else:
+                    self.preferences_focus_index = 0
+                return f"preferences_zone:{zone}"
+            return "preferences_noop"
+
+        # Widget navigation — BACK always returns to pigeon settings.
+        if focused == "exit":
+            write_now_playing_zone_widgets(self.preferences_zone_widgets)
+            self.close_preferences()
+            return "preferences_exit"
+        # Confirm focused widget, persist, and return to zone navigation.
+        zone = int(self.preferences_active_zone)
+        if 1 <= zone <= 5 and focused and focused != "exit":
+            widgets = list(self.preferences_zone_widgets)
+            widgets[zone - 1] = focused
+            self.preferences_zone_widgets = (
+                widgets[0],
+                widgets[1],
+                widgets[2],
+                widgets[3],
+                widgets[4],
+            )
+        write_now_playing_zone_widgets(self.preferences_zone_widgets)
+        self.preferences_nav = "zones"
+        self.preferences_active_zone = 0
+        from pigeon.widgets.preferences_settings import preferences_zone_focus_ring
+
+        zring = preferences_zone_focus_ring()
+        zid = f"zone{zone}"
+        self.preferences_focus_index = zring.index(zid) if zid in zring else 0
+        return f"preferences_widget:{focused}"
 
     def open_update_popup(self) -> None:
         """Show the GitHub update popup and always start a fresh check.
@@ -886,6 +1034,9 @@ class MainSettingsState:
     def navigate_pigeon(self, *, forward: bool = True) -> None:
         from pigeon.widgets.pigeon_settings import pigeon_focus_ring
 
+        if self.show_preferences:
+            self.navigate_preferences(forward=forward)
+            return
         if self.show_update_popup:
             self.navigate_update_popup(forward=forward)
             return
@@ -5820,6 +5971,13 @@ class MainSettingsWidget:
             st.box3_devices.picked,
             bool(st.show_pigeon_settings),
             int(st.pigeon_focus_index),
+            bool(st.show_preferences),
+            str(st.preferences_nav or ""),
+            int(st.preferences_focus_index),
+            int(st.preferences_active_zone),
+            tuple(st.preferences_zone_widgets),
+            # Prefs zone clock ticks + digital time advance with wall clock.
+            datetime.now().strftime("%H%M%S") if st.show_preferences else "",
             bool(st.show_update_popup),
             bool(st.update_available),
             bool(st.update_checking),
@@ -5912,6 +6070,10 @@ class MainSettingsWidget:
             int(st.box3_devices.scroll),
             st.box3_devices.picked,
             bool(st.show_pigeon_settings),
+            bool(st.show_preferences),
+            str(st.preferences_nav or ""),
+            int(st.preferences_active_zone),
+            # Zone widget assignments are focus-key only (change every widget nav).
             bool(st.show_update_popup),
             bool(st.update_available),
             bool(st.update_checking),
@@ -5944,6 +6106,11 @@ class MainSettingsWidget:
             int(st.box3_devices.row),
             str(st.box3_devices.arrow),
             int(st.pigeon_focus_index),
+            int(st.preferences_focus_index) if st.show_preferences else -1,
+            str(st.preferences_nav or "") if st.show_preferences else "",
+            int(st.preferences_active_zone) if st.show_preferences else 0,
+            tuple(st.preferences_zone_widgets) if st.show_preferences else (),
+            datetime.now().strftime("%H%M%S") if st.show_preferences else "",
             int(st.update_popup_focus_index) if st.show_update_popup else -1,
             bool(st.show_update_popup),
         )
@@ -6003,6 +6170,11 @@ class MainSettingsWidget:
             int(st.box3_devices.row),
             str(st.box3_devices.arrow),
             int(st.pigeon_focus_index),
+            int(st.preferences_focus_index) if st.show_preferences else -1,
+            str(st.preferences_nav or "") if st.show_preferences else "",
+            int(st.preferences_active_zone) if st.show_preferences else 0,
+            tuple(st.preferences_zone_widgets) if st.show_preferences else (),
+            datetime.now().strftime("%H%M%S") if st.show_preferences else "",
             int(st.update_popup_focus_index) if st.show_update_popup else -1,
             bool(st.show_update_popup),
         )
@@ -6083,6 +6255,77 @@ class MainSettingsWidget:
         if st.keyboard_open:
             return
         structure = self._structure_sig()
+        if st.show_pigeon_settings and st.show_preferences:
+            from pigeon.widgets.preferences_settings import (
+                preferences_widget_focus_ring,
+                preferences_zone_focus_ring,
+                render_preferences_settings_bgra,
+            )
+
+            if str(st.preferences_nav or "") == "widgets":
+                ring = preferences_widget_focus_ring(int(st.preferences_active_zone))
+            else:
+                ring = preferences_zone_focus_ring()
+            n = len(ring)
+            if n <= 1:
+                return
+            missing = []
+            for idx in range(n):
+                probe = copy.deepcopy(st)
+                probe.preferences_focus_index = idx
+                if self._focus_key_for_state(probe) not in self._focus_frame_cache:
+                    missing.append(idx)
+            if not missing:
+                return
+            self._prewarm_all_inflight = True
+            state_snap = copy.deepcopy(st)
+            assets_dir = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_prefs() -> None:
+                try:
+                    for idx in missing:
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        state_snap.preferences_focus_index = idx
+                        # Mirror live widget assignment while prewarming widget nav.
+                        if str(state_snap.preferences_nav or "") == "widgets":
+                            focused = ring[idx % n]
+                            zone = int(state_snap.preferences_active_zone)
+                            if focused != "exit" and 1 <= zone <= 5:
+                                widgets = list(state_snap.preferences_zone_widgets)
+                                widgets[zone - 1] = focused
+                                state_snap.preferences_zone_widgets = (
+                                    widgets[0],
+                                    widgets[1],
+                                    widgets[2],
+                                    widgets[3],
+                                    widgets[4],
+                                )
+                        key = self._focus_key_for_state(state_snap)
+                        if key in cache:
+                            continue
+                        try:
+                            frame = render_preferences_settings_bgra(
+                                state_snap, assets_dir=assets_dir
+                            )
+                        except Exception:
+                            return
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        if self._focus_cache_structure is None:
+                            self._focus_cache_structure = struct_ref
+                        cache[key] = frame
+                finally:
+                    self._prewarm_all_inflight = False
+
+            import threading as _threading
+
+            _threading.Thread(
+                target=_work_prefs, name="prefs-prewarm-all", daemon=True
+            ).start()
+            return
         if st.show_pigeon_settings:
             from pigeon.widgets.pigeon_settings import pigeon_focus_ring, render_pigeon_settings_bgra
 
@@ -6232,6 +6475,60 @@ class MainSettingsWidget:
             return
         st = self._state
         if st.keyboard_open:
+            return
+
+        if st.show_pigeon_settings and st.show_preferences:
+            from pigeon.widgets.preferences_settings import (
+                preferences_widget_focus_ring,
+                preferences_zone_focus_ring,
+                render_preferences_settings_bgra,
+            )
+
+            if str(st.preferences_nav or "") == "widgets":
+                ring = preferences_widget_focus_ring(int(st.preferences_active_zone))
+            else:
+                ring = preferences_zone_focus_ring()
+            n = len(ring)
+            if n <= 0:
+                return
+            nxt = (int(st.preferences_focus_index) + (1 if forward else -1)) % n
+            snap = copy.deepcopy(st)
+            snap.preferences_focus_index = nxt
+            focused = ring[nxt]
+            zone = int(snap.preferences_active_zone)
+            if (
+                str(snap.preferences_nav or "") == "widgets"
+                and focused != "exit"
+                and 1 <= zone <= 5
+            ):
+                widgets = list(snap.preferences_zone_widgets)
+                widgets[zone - 1] = focused
+                snap.preferences_zone_widgets = (
+                    widgets[0],
+                    widgets[1],
+                    widgets[2],
+                    widgets[3],
+                    widgets[4],
+                )
+            key_probe = self._focus_key_for_state(snap)
+            if key_probe in self._focus_frame_cache:
+                return
+            assets = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_prefs_n() -> None:
+                try:
+                    frame = render_preferences_settings_bgra(snap, assets_dir=assets)
+                except Exception:
+                    return
+                if self._focus_cache_structure != struct_ref:
+                    return
+                cache.setdefault(key_probe, frame)
+
+            threading.Thread(
+                target=_work_prefs_n, name="prefs-prewarm-n", daemon=True
+            ).start()
             return
 
         if st.show_pigeon_settings:
@@ -7049,6 +7346,10 @@ class MainSettingsWidget:
             return f"keyboard:{result}"
 
         if st.show_pigeon_settings:
+            if st.show_preferences:
+                action = st.activate_preferences()
+                self.invalidate()
+                return action
             if st.show_update_popup:
                 if st.update_applying or st.update_checking:
                     return "update_popup:busy"
@@ -7072,6 +7373,10 @@ class MainSettingsWidget:
                 st.open_update_popup()
                 self.invalidate()
                 return "update_popup:open"
+            if focused == "prefs_button":
+                st.open_preferences()
+                self.invalidate()
+                return "preferences_open"
             return f"pigeon_activate:{focused}"
 
         focused = st.focused_id
@@ -7231,20 +7536,32 @@ class MainSettingsWidget:
                 elif self._cached_main_bgra is not None and self._cached_main_sig == main_sig:
                     frame = self._cached_main_bgra
                 else:
-                    from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
+                    if st.show_preferences:
+                        from pigeon.widgets.preferences_settings import (
+                            render_preferences_settings_bgra,
+                        )
 
-                    frame = render_pigeon_settings_bgra(
-                        st,
-                        assets_dir=self._assets_dir,
-                    )
-                    if st.show_update_popup:
-                        from pigeon.widgets.update_popup import composite_update_popup_over_bgra
-
-                        frame = composite_update_popup_over_bgra(
-                            frame,
+                        frame = render_preferences_settings_bgra(
                             st,
                             assets_dir=self._assets_dir,
                         )
+                    else:
+                        from pigeon.widgets.pigeon_settings import render_pigeon_settings_bgra
+
+                        frame = render_pigeon_settings_bgra(
+                            st,
+                            assets_dir=self._assets_dir,
+                        )
+                        if st.show_update_popup:
+                            from pigeon.widgets.update_popup import (
+                                composite_update_popup_over_bgra,
+                            )
+
+                            frame = composite_update_popup_over_bgra(
+                                frame,
+                                st,
+                                assets_dir=self._assets_dir,
+                            )
                     self._cached_main_bgra = frame
                     self._cached_main_sig = main_sig
                     self._store_focus_frame(frame)

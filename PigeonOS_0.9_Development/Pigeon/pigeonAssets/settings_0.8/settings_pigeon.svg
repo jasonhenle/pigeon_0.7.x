@@ -298,19 +298,19 @@
     <text transform="translate(650.28 627.3)" fill="#fff" font-family="SharpSans-Bold, 'Sharp Sans'" font-size="60" font-weight="700"><tspan x="0" y="0" letter-spacing="0em">up</tspan><tspan x="76.14" y="0" letter-spacing="0em">d</tspan><tspan x="115.44" y="0" letter-spacing="-.02em">a</tspan><tspan x="150.66" y="0" letter-spacing="-.03em">t</tspan><tspan x="175.44" y="0">e</tspan></text>
   </g>
   <g id="_01_back_biutton_selected" data-name="01_back_biutton_selected">
-    <path d="M401.74,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="7" />
+    <path d="M437.813,536.080H387.737c-5.278,0-9.557-4.279-9.557-9.557V508.708c0-5.831,4.727-10.557,10.557-10.557h49.075c5.278,0,9.557,4.279,9.557,9.557v18.814C447.370,531.801,443.091,536.080,437.813,536.080z" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="7"/>
   </g>
   <g id="_01_button_back_text_selected" data-name="01_button_back_text_selected">
-    <text transform="translate(398.91 526.82)" fill="#000" font-family="Digital-7, Digital-7" font-size="29"><tspan x="0" y="0">BACK</tspan></text>
+    <text transform="translate(412.7750 526.8203)" fill="#000" font-family="Digital-7, Digital-7" font-size="29" text-anchor="middle"><tspan x="0" y="0">BACK</tspan></text>
   </g>
   <g id="_01_back_button_deselected" data-name="01_back_button_deselected">
-    <path d="M401.74,498.15h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="#202020" />
+    <path d="M437.813,536.080H387.737c-5.278,0-9.557-4.279-9.557-9.557V508.708c0-5.831,4.727-10.557,10.557-10.557h49.075c5.278,0,9.557,4.279,9.557,9.557v18.814C447.370,531.801,443.091,536.080,437.813,536.080z" fill="#202020" stroke="#000" stroke-miterlimit="10" stroke-width="7"/>
   </g>
   <g id="_01_back_accent_deselected" data-name="01_back_accent_deselected">
-    <path id="_01_outline" data-name="01_outline" d="M402.28,498.15h47.99c5.57,0,10.1,4.53,10.1,10.1v17.73c0,5.57-4.53,10.1-10.1,10.1h-48.99c-5.57,0-10.1-4.53-10.1-10.1v-16.73c0-6.13,4.97-11.1,11.1-11.1Z" fill="none" stroke="#fff" stroke-miterlimit="10" />
+    <path id="_01_outline" data-name="01_outline" d="M437.813,536.080H387.737c-5.278,0-9.557-4.279-9.557-9.557V508.708c0-5.831,4.727-10.557,10.557-10.557h49.075c5.278,0,9.557,4.279,9.557,9.557v18.814C447.370,531.801,443.091,536.080,437.813,536.080z" fill="none" stroke="#fff" stroke-miterlimit="10" stroke-width="2"/>
   </g>
   <g id="_01_button_back_text_deselected" data-name="01_button_back_text_deselected">
-    <text transform="translate(398.91 526.82)" fill="#fff" font-family="Digital-7, Digital-7" font-size="29"><tspan x="0" y="0">BACK</tspan></text>
+    <text transform="translate(412.7750 526.8203)" fill="#fff" font-family="Digital-7, Digital-7" font-size="29" text-anchor="middle"><tspan x="0" y="0">BACK</tspan></text>
   </g>
   <g id="pigeon_version_text">
     <text transform="translate(982 536.08)" fill="#fff" font-family="Digital-7, Digital-7" font-size="21"><tspan x="0" y="0" xml:space="preserve"> pigeon  0.7.81</tspan></text>

@@ -33,6 +33,15 @@ SVG_NS = "http://www.w3.org/2000/svg"
 
 _PIGEON_VIEWBOX = (350.37, 441.08, 800.0, 480.0)
 
+# Match settings_main EXIT geometry on the pigeon artboard (viewBox +350.37,+441.08).
+_BACK_BUTTON_D = (
+    "M437.813,536.080H387.737c-5.278,0-9.557-4.279-9.557-9.557V508.708"
+    "c0-5.831,4.727-10.557,10.557-10.557h49.075c5.278,0,9.557,4.279,9.557,9.557"
+    "v18.814C447.370,531.801,443.091,536.080,437.813,536.080z"
+)
+_BACK_TEXT_X = 412.775  # button center (design 62.405 + 350.37)
+_BACK_TEXT_Y = 526.8203  # same baseline as settings_main EXIT
+
 _PIGEON_FOCUS_RING: tuple[str, ...] = (
     "pigeon_back",
     "prefs_button",
@@ -139,6 +148,64 @@ def _pigeon_svg_tree_from_path(path: Path) -> ET.Element:
     return copy.deepcopy(template)
 
 
+def _iter_paths(el: ET.Element | None):
+    if el is None:
+        return
+    if el.tag.endswith("path"):
+        yield el
+    for node in el.iter():
+        if node is not el and node.tag.endswith("path"):
+            yield node
+
+
+def _iter_texts(el: ET.Element | None):
+    if el is None:
+        return
+    if el.tag.endswith("text"):
+        yield el
+    for node in el.iter():
+        if node is not el and node.tag.endswith("text"):
+            yield node
+
+
+def _sync_pigeon_back_button(root: ET.Element) -> None:
+    """Match settings_main EXIT placement; label centered as BACK."""
+    for lid in (
+        "_01_back_biutton_selected",
+        "_01_back_button_deselected",
+        "_01_back_accent_deselected",
+    ):
+        group = _find_by_logical_id(root, lid)
+        for path_el in _iter_paths(group):
+            path_el.set("d", _BACK_BUTTON_D)
+            if lid == "_01_back_accent_deselected":
+                path_el.set("fill", "none")
+                path_el.set("stroke", "#fff")
+                path_el.set("stroke-width", "2")
+            elif lid == "_01_back_biutton_selected":
+                path_el.set("fill", "#fff")
+                path_el.set("stroke", "#000")
+                path_el.set("stroke-width", "7")
+            else:
+                path_el.set("fill", "#202020")
+                path_el.set("stroke", "#000")
+                path_el.set("stroke-width", "7")
+    for lid, fill in (
+        ("_01_button_back_text_selected", "#000"),
+        ("_01_button_back_text_deselected", "#fff"),
+    ):
+        group = _find_by_logical_id(root, lid)
+        for text_el in _iter_texts(group):
+            text_el.set(
+                "transform", f"translate({_BACK_TEXT_X:.4f} {_BACK_TEXT_Y:.4f})"
+            )
+            text_el.set("text-anchor", "middle")
+            text_el.set("font-family", "Digital-7, Digital-7")
+            text_el.set("font-size", "29")
+            text_el.set("fill", fill)
+            _set_text_content(text_el, "BACK")
+
+
 def _ensure_back_selected_text_contrast(root: ET.Element) -> None:
     """Selected BACK sits on a white pill; GFX export omits fill so text defaults to white."""
     back_text = _find_by_logical_id(root, "_01_button_back_text_selected")
@@ -228,6 +295,7 @@ def _draw_pigeon_container_background_bgra(
 
 def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
     focused = state.pigeon_focused_id
+    _sync_pigeon_back_button(root)
     _ensure_back_selected_text_contrast(root)
     _ensure_update_deselected_layers(root)
 

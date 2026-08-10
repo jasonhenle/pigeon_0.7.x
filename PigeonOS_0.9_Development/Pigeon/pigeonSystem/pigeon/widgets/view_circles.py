@@ -161,6 +161,34 @@ _VOLUME_SIZE_PX = 32
 _AUDIO_CFG_SIZE_PX = 21
 _CLOCK_DIGITAL_SIZE = 42
 
+# Audio-levels channel labels (PyMuPDF can't paint Digital-7 — redrawn in Pillow).
+_AUDIO_LEVEL_LABEL_SIZE = 33
+_AUDIO_LEVEL_LABEL_BASELINE_Y = 304.67
+_AUDIO_LEVEL_LABELS_BY_ZONE: dict[int, tuple[tuple[str, float], ...]] = {
+    # (label, bar center x) — from pigeon_now_playing.svg meter columns.
+    1: (
+        ("sl", 44.115),
+        ("l", 99.245),
+        ("c", 152.705),
+        ("r", 206.165),
+        ("sr", 258.815),
+    ),
+    2: (
+        ("sl", 293.615),
+        ("l", 348.745),
+        ("c", 402.205),
+        ("r", 455.665),
+        ("sr", 508.315),
+    ),
+    3: (
+        ("sl", 542.355),
+        ("l", 597.475),
+        ("c", 650.935),
+        ("r", 704.395),
+        ("sr", 757.055),
+    ),
+}
+
 # Zone4 cast columns (actor / character).
 _CAST_COLS: tuple[tuple[float, int, int], ...] = (
     (152.0, 336, 356),
@@ -287,22 +315,47 @@ def default_view_circles_svg_path(
     return pigeon_root / "pigeonAssets" / filename
 
 
-def _poster_geometry(content_mode: str) -> tuple[int, int, int, int, int]:
+def _poster_geometry(
+    content_mode: str,
+    *,
+    zone: int = 2,
+) -> tuple[int, int, int, int, int]:
     if _normalize_content_mode(content_mode) == _CONTENT_MODE_MUSIC:
-        return (
+        px, py, pw, ph, prx = (
             _POSTER_MUSIC_X,
             _POSTER_MUSIC_Y,
             _POSTER_MUSIC_W,
             _POSTER_MUSIC_H,
             _POSTER_MUSIC_RX,
         )
+    else:
+        px, py, pw, ph, prx = (
+            _POSTER_VIDEO_X,
+            _POSTER_VIDEO_Y,
+            _POSTER_VIDEO_W,
+            _POSTER_VIDEO_H,
+            _POSTER_VIDEO_RX,
+        )
+    z = int(zone)
+    if z == 2:
+        return px, py, pw, ph, prx
+    # Shift art so its center tracks the target zone center (defaults are zone2).
+    base_cx, base_cy = _ZONE2_CX, _ZONE2_CY
+    cx, cy = _zone_clock_center(z)
     return (
-        _POSTER_VIDEO_X,
-        _POSTER_VIDEO_Y,
-        _POSTER_VIDEO_W,
-        _POSTER_VIDEO_H,
-        _POSTER_VIDEO_RX,
+        int(round(px + (cx - base_cx))),
+        int(round(py + (cy - base_cy))),
+        pw,
+        ph,
+        prx,
     )
+
+
+def _zone_for_widget(assignments: tuple[str, str, str, str, str], widget: str) -> int | None:
+    for i, name in enumerate(assignments):
+        if name == widget:
+            return i + 1
+    return None
 
 
 def _cover_fit_bgra(src: np.ndarray, tw: int, th: int) -> np.ndarray:
@@ -543,57 +596,96 @@ def _decanvas_white_bgra(src: np.ndarray, *, threshold: int = 252) -> np.ndarray
     return out
 
 
+def _default_zone_widget_assignments() -> tuple[str, str, str, str, str]:
+    try:
+        from pigeon.widgets.preferences_settings import read_now_playing_zone_widgets
+
+        return read_now_playing_zone_widgets()
+    except Exception:
+        return ("clock", "poster", "volume", "cast_info", "now_playing")
+
+
 def _zone_widget_visibility(
     *,
     content_mode: str,
     paused: bool,
+    zone_widgets: tuple[str, str, str, str, str] | None = None,
 ) -> dict[str, bool]:
-    """Default zone widget on/off map (customization UI later)."""
+    """Zone widget on/off map from preferences (defaults: clock / poster / volume / cast / bar)."""
     mode = _normalize_content_mode(content_mode)
     is_music = mode == _CONTENT_MODE_MUSIC
-    # Zone2 shows poster XOR album.
-    z2_poster = not is_music
-    z2_album = is_music
-    # Play button only on zones that currently show poster/album, when paused.
+    assignments = zone_widgets if zone_widgets is not None else _default_zone_widget_assignments()
+
+    def _is(zone: int, widget: str) -> bool:
+        if not (1 <= zone <= 5):
+            return False
+        return assignments[zone - 1] == widget
+
+    # Poster/album: music prefers 1×1 album art; video prefers 2×3 poster.
+    def _poster_on(zone: int) -> tuple[bool, bool]:
+        if not _is(zone, "poster"):
+            return False, False
+        if is_music:
+            return False, True
+        return True, False
+
+    z1_poster, z1_album = _poster_on(1)
+    z2_poster, z2_album = _poster_on(2)
+    z3_poster, z3_album = _poster_on(3)
+    play_z1 = bool(paused) and (z1_poster or z1_album)
     play_z2 = bool(paused) and (z2_poster or z2_album)
+    play_z3 = bool(paused) and (z3_poster or z3_album)
     vis = {
-        # zone1 — clock only
-        "zone1_volume_group": False,
-        "zone1_audio_levels_group": False,
-        "zone1_clock_group": True,
-        "zone1_poster_2x3": False,
-        "zone1_album_art_1x1": False,
-        "zone1_cast_group": False,
-        "zone1_play_button": False,
-        # zone2 — poster or album
-        "zone2_volume_group": False,
-        "zone2_audio_levels_group": False,
-        "zone2_audio_levles_gtoup": False,  # Illustrator typo id
-        "zone2_clock_group": False,
+        # zone1
+        # volume chrome is also used by circular now_playing (playback progress).
+        "zone1_volume_group": _is(1, "volume") or _is(1, "now_playing"),
+        "zone1_audio_levels_group": _is(1, "audio_levels"),
+        "zone1_clock_group": _is(1, "clock"),
+        "zone1_poster_2x3": z1_poster,
+        "zone1_album_art_1x1": z1_album,
+        "zone1_cast_group": _is(1, "cast_info"),
+        "zone1_play_button": play_z1,
+        # zone2
+        "zone2_volume_group": _is(2, "volume") or _is(2, "now_playing"),
+        "zone2_audio_levels_group": _is(2, "audio_levels"),
+        "zone2_audio_levles_gtoup": _is(2, "audio_levels"),  # Illustrator typo id
+        "zone2_clock_group": _is(2, "clock"),
         "zone2_poster_2x3": z2_poster,
         "zone2_album_art_1x1": z2_album,
-        "zone2_cast_group": False,
+        "zone2_cast_group": _is(2, "cast_info"),
         "zone2_play_button": play_z2,
-        # zone3 — volume only
-        "zone3_volume_group": True,
-        "zone3_audio_levels_group": False,
-        "zone3_clock_group": False,
-        "zone3_poster_2x3": False,
-        "zone3_2x3_poster_group": False,
-        "zone3_album_art_1x1": False,
-        "zone3_cast_group": False,
-        "zone3_play_button": False,
-        # zone4 — cast
-        "zone4_cast_group": True,
-        # zone5 — status bar
-        "zone5_now_playing_group": True,
+        # zone3
+        "zone3_volume_group": _is(3, "volume") or _is(3, "now_playing"),
+        "zone3_audio_levels_group": _is(3, "audio_levels"),
+        "zone3_clock_group": _is(3, "clock"),
+        "zone3_poster_2x3": z3_poster,
+        "zone3_2x3_poster_group": z3_poster,
+        "zone3_album_art_1x1": z3_album,
+        "zone3_cast_group": _is(3, "cast_info"),
+        "zone3_play_button": play_z3,
+        # zone4 — TMDb cast strip
+        "zone4_cast_group": _is(4, "cast_info"),
+        # zone5 — status bar or expanded cast
+        "zone5_now_playing_group": _is(5, "now_playing"),
         "zone5_locations_group": False,
-        "zone5_cast_group": False,
+        "zone5_cast_group": _is(5, "cast_info"),
         "zone5_now_playing_paused_text": False,  # redrawn with Sharp Sans
-        # zone0 — date header (text redrawn; keep group chrome)
-        "zone0_header_group": True,
+        # zone0 — date header (text redrawn; placement from poster occupancy)
+        "zone0_header_group": _zone0_date_align(assignments) is not None,
     }
     return vis
+
+
+def _zone0_date_align(
+    assignments: tuple[str, str, str, str, str] | None = None,
+) -> str | None:
+    """``left`` / ``center`` / ``right``, or ``None`` when the header is off."""
+    try:
+        from pigeon.widgets.preferences_settings import zone0_date_align
+
+        return zone0_date_align(assignments)
+    except Exception:
+        return "left"
 
 
 def _ordinal_day(day: int) -> str:
@@ -979,6 +1071,7 @@ def apply_view_circles_svg_state(
     for name in _STRIP_OR_HIDE_NAMES:
         _remove_by_key(root, name)
     # Remove poster_tmdb images (Illustrator -N copies) and unused cast demo text.
+    # Also strip audio-levels channel labels (Digital-7 redrawn after rasterize).
     pending: list[ET.Element] = []
     for el in root.iter():
         key = _layer_key(el)
@@ -1001,15 +1094,23 @@ def apply_view_circles_svg_state(
             )
         ):
             pending.append(el)
+            continue
+        if el.tag.endswith("text") and "audio_levels" in key:
+            pending.append(el)
     for el in pending:
         _detach_element(root, el)
 
     dt = now if now is not None else datetime.now()
     # Exterior (black) under middle (black); active zone adds white seconds wedge.
     _apply_clock_accent_fills(root)
-    # Only drive ticks for the active (visible) clock zone.
-    if vis.get(f"zone{active_clock_zone}_clock_group", False):
-        _apply_clock_ticks(root, active_clock_zone, dt)
+    # Drive ticks for whichever clock zone is visible (preferences may move it).
+    clock_zone = int(active_clock_zone)
+    for z in (1, 2, 3):
+        if vis.get(f"zone{z}_clock_group", False):
+            clock_zone = z
+            break
+    if vis.get(f"zone{clock_zone}_clock_group", False):
+        _apply_clock_ticks(root, clock_zone, dt)
     # Clear any leftover digital clock text nodes.
     for z in (1, 2, 3):
         _clear_text_content(_find_by_key(root, f"zone{z}_clock_digital_text"))
@@ -1963,8 +2064,9 @@ class ViewCirclesWidget:
         if h12 == 0:
             h12 = 12
         vol_disp = self._volume_fraction_for_display()
+        zone_widgets = _default_zone_widget_assignments()
         return (
-            27,  # cache schema — exterior seconds white wedge
+            28,  # cache schema — preferences zone widgets
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -1989,6 +2091,7 @@ class ViewCirclesWidget:
             int(now.minute),
             int(now.second),
             _format_zone0_date(datetime.now()),
+            zone_widgets,
         )
 
     def _svg_chrome_cache_key(self, now: datetime) -> tuple[object, ...]:
@@ -2001,6 +2104,7 @@ class ViewCirclesWidget:
         h12 = now.hour % 12
         if h12 == 0:
             h12 = 12
+        zone_widgets = _default_zone_widget_assignments()
         # Reuse rasters across hours/days — ticks only depend on h/m/s + mode/pause.
         return (
             str(path),
@@ -2010,7 +2114,8 @@ class ViewCirclesWidget:
             h12,
             int(now.minute),
             int(now.second),
-            8,  # chrome pipeline — exterior seconds white wedge
+            9,  # chrome pipeline — preferences zone widgets
+            zone_widgets,
         )
 
     def _render_svg_base(self, now: datetime) -> np.ndarray:
@@ -2087,7 +2192,13 @@ class ViewCirclesWidget:
         )
 
     def _draw_poster(self, out: np.ndarray) -> None:
-        px, py, pw, ph, prx = _poster_geometry(self.content_mode)
+        assignments = _default_zone_widget_assignments()
+        poster_zone = _zone_for_widget(assignments, "poster")
+        if poster_zone is None:
+            return
+        px, py, pw, ph, prx = _poster_geometry(
+            self.content_mode, zone=int(poster_zone)
+        )
         dim = _POSTER_PAUSED_DIM if self._state.paused else 1.0
         src = self._poster_bgra
         if src is not None and src.size > 0 and not self._state.searching:
@@ -2254,17 +2365,26 @@ class ViewCirclesWidget:
             _paste_centered(out, paused_patch, _PAUSED_TEXT_CX, _PAUSED_TEXT_CY)
 
     def _draw_clock_digital(self, out: np.ndarray, now: datetime) -> None:
+        assignments = _default_zone_widget_assignments()
+        clock_zone = _zone_for_widget(assignments, "clock")
+        if clock_zone is None:
+            return
+        cx, cy = _zone_clock_center(int(clock_zone))
         time_p, _, _ = _text_patch_digital7(_clock_hhmm(now), size_px=_CLOCK_DIGITAL_SIZE)
-        _paste_centered(out, time_p, _ZONE1_CX, _ZONE1_CY)
+        _paste_centered(out, time_p, cx, cy)
 
     def _draw_zone0_date(
         self,
         out: np.ndarray,
         now: datetime,
         *,
-        align: str = _ZONE0_DATE_ALIGN_DEFAULT,
+        align: str | None = None,
     ) -> None:
-        """Live date in zone0; default alignment is left (SVG ``zone0_date_left_text``)."""
+        """Live date in zone0; placement follows poster occupancy in zones 1–3."""
+        if align is None:
+            align = _zone0_date_align(_default_zone_widget_assignments())
+        if align is None:
+            return
         key = str(align or _ZONE0_DATE_ALIGN_DEFAULT).strip().lower()
         if key not in _ZONE0_DATE_BASELINE:
             key = _ZONE0_DATE_ALIGN_DEFAULT
@@ -2286,13 +2406,19 @@ class ViewCirclesWidget:
         paste_y = int(round(y_base - (pad - t)))
         _paste_patch_bgra(out, patch, paste_x, paste_y)
 
-    def _draw_audio_sep_line(self, out: np.ndarray) -> None:
+    def _draw_audio_sep_line(
+        self,
+        out: np.ndarray,
+        *,
+        cx: float = _ZONE3_CX,
+        cy: float = _AUDIO_SEP_CY,
+    ) -> None:
         """Short chrome rule at digital-clock Y, centered in the volume zone."""
-        cy = int(round(_AUDIO_SEP_CY))
-        cx = int(round(_ZONE3_CX))
-        x0 = cx - _AUDIO_SEP_HALF_W
-        x1 = cx + _AUDIO_SEP_HALF_W
-        y0 = cy - max(0, _AUDIO_SEP_THICKNESS // 2)
+        cy_i = int(round(cy))
+        cx_i = int(round(cx))
+        x0 = cx_i - _AUDIO_SEP_HALF_W
+        x1 = cx_i + _AUDIO_SEP_HALF_W
+        y0 = cy_i - max(0, _AUDIO_SEP_THICKNESS // 2)
         y1 = y0 + max(1, _AUDIO_SEP_THICKNESS)
         h, w = out.shape[:2]
         x0 = max(0, min(w, x0))
@@ -2308,20 +2434,46 @@ class ViewCirclesWidget:
         if out.shape[2] >= 4:
             out[y0:y1, x0:x1, 3] = 255
 
-    def _draw_audio_group(self, out: np.ndarray) -> None:
+    def _draw_audio_level_labels(self, out: np.ndarray) -> None:
+        """Paint sl/l/c/r/sr under each meter column in Digital-7."""
+        assignments = _default_zone_widget_assignments()
+        for zone, cols in _AUDIO_LEVEL_LABELS_BY_ZONE.items():
+            if assignments[zone - 1] != "audio_levels":
+                continue
+            for label, cx in cols:
+                patch, tw, th = _text_patch_digital7(
+                    label,
+                    size_px=_AUDIO_LEVEL_LABEL_SIZE,
+                )
+                if tw < 1 or th < 1:
+                    continue
+                # SVG baseline → patch is tight ink; sit on the same baseline band.
+                _paste_centered(
+                    out,
+                    patch,
+                    cx,
+                    float(_AUDIO_LEVEL_LABEL_BASELINE_Y) - th * 0.35,
+                )
+
+    def _draw_audio_group(
+        self,
+        out: np.ndarray,
+        *,
+        cx: float = _ZONE3_CX,
+        cy: float = _AUDIO_SEP_CY,
+    ) -> None:
         st = self._state
         vol = _receiver_volume_display_line(st.volume)
         show_vol = bool(vol) and vol.strip().lower() not in ("mute", "muted")
         cfg = receiver_audio_config_display_line(st.incoming, st.config)
-        sep = float(_AUDIO_SEP_CY)
+        sep = float(cy)
         half_t = max(1, _AUDIO_SEP_THICKNESS) / 2.0
         gap = float(_AUDIO_STACK_GAP)
-        vol_p = cfg_p = None
         if show_vol:
             # Smaller than before so it can sit higher with even stack spacing.
             vol_p, _, vh = _text_patch_digital7(vol, size_px=_VOLUME_SIZE_PX)
             vol_cy = sep - half_t - gap - (vh / 2.0)
-            _paste_centered(out, vol_p, _VOLUME_CX, vol_cy)
+            _paste_centered(out, vol_p, cx, vol_cy)
         if cfg:
             cfg_p, _, ch = _text_patch_digital7(
                 cfg.upper(),
@@ -2329,9 +2481,36 @@ class ViewCirclesWidget:
                 max_width_px=200,
             )
             cfg_cy = sep + half_t + gap + (ch / 2.0)
-            _paste_centered(out, cfg_p, _AUDIO_CFG_CX, cfg_cy)
+            _paste_centered(out, cfg_p, cx, cfg_cy)
         if show_vol and cfg:
-            self._draw_audio_sep_line(out)
+            self._draw_audio_sep_line(out, cx=cx, cy=cy)
+
+    def _draw_circular_now_playing(
+        self,
+        out: np.ndarray,
+        *,
+        cx: float,
+        cy: float,
+        now: datetime | None = None,
+    ) -> None:
+        """Volume-ring chrome: red = watched; centered readout is time of day.
+
+        No audio-config line (unlike the volume widget).
+        """
+        st = self._state
+        pf = max(0.0, min(1.0, float(st.progress)))
+        _draw_circle_pair(
+            out,
+            cx=cx,
+            cy=cy,
+            fraction=pf,
+            show_accent=pf > 1e-6,
+        )
+        time_p, _, _ = _text_patch_digital7(
+            _clock_hhmm(now),
+            size_px=_CLOCK_DIGITAL_SIZE,
+        )
+        _paste_centered(out, time_p, cx, cy)
 
     def _draw_cast(self, out: np.ndarray) -> None:
         cast = list(self._state.cast or [])
@@ -2374,6 +2553,7 @@ class ViewCirclesWidget:
     def _render_static_bgra(self) -> np.ndarray:
         now = self._clock_now_for_display()
         out = _fallback_base_bgra()
+        assignments = _default_zone_widget_assignments()
         if (
             self._poster_bgra is not None
             and self._poster_bgra.size > 0
@@ -2388,26 +2568,43 @@ class ViewCirclesWidget:
             content_mode=self.content_mode,
             paused=bool(self._state.paused),
         )
-        # Poster/album under SVG chrome so zone2 play button + accents sit on top.
+        # Poster/album under SVG chrome so play button + accents sit on top.
         self._draw_poster(out)
         _paste_patch_bgra(out, self._render_svg_base(now), 0, 0)
-        # Zone3 volume annular pie (zone1 clock ticks come from SVG).
-        vol_frac = self._volume_fraction_for_display()
-        _draw_circle_pair(
-            out,
-            cx=_ZONE3_CX,
-            cy=_ZONE3_CY,
-            fraction=vol_frac,
-            show_accent=vol_frac > 1e-6,
-        )
-        self._draw_status_bar(out)
+        vol_zone = _zone_for_widget(assignments, "volume")
+        if vol_zone is not None:
+            vol_frac = self._volume_fraction_for_display()
+            cx, cy = _zone_clock_center(int(vol_zone))
+            _draw_circle_pair(
+                out,
+                cx=cx,
+                cy=cy,
+                fraction=vol_frac,
+                show_accent=vol_frac > 1e-6,
+            )
+        for z in (1, 2, 3):
+            if assignments[z - 1] != "now_playing":
+                continue
+            ncx, ncy = _zone_clock_center(z)
+            self._draw_circular_now_playing(out, cx=ncx, cy=ncy, now=now)
+        if assignments[4] == "now_playing":
+            self._draw_status_bar(out)
         self._draw_zone0_date(out, datetime.now())
         self._draw_clock_digital(out, now)
-        self._draw_audio_group(out)
+        self._draw_audio_level_labels(out)
+        if vol_zone is not None:
+            vcx, vcy = _zone_clock_center(int(vol_zone))
+            self._draw_audio_group(out, cx=vcx, cy=vcy)
         if self.content_mode == _CONTENT_MODE_MUSIC:
-            self._draw_track_titles(out)
+            if _zone_for_widget(assignments, "poster") is not None:
+                self._draw_track_titles(out)
         else:
-            self._draw_cast(out)
+            # Zone4 (and zone5 expanded cast) get the live cast redraw.
+            if (
+                _zone_for_widget(assignments, "cast_info") == 4
+                or _zone_for_widget(assignments, "cast_info") == 5
+            ):
+                self._draw_cast(out)
         return out
 
     def bgra_frame(self) -> np.ndarray | None:
