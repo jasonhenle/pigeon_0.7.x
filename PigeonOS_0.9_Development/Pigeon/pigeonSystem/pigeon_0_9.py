@@ -12408,6 +12408,13 @@ def main() -> int:
                 return
 
             # Keep poll host aligned with the saved AV slot (not a stale last_receiver).
+            # Re-read from disk so an updated AVR IP (DHCP/move) applies without restart.
+            try:
+                _av_disk = read_saved_av_receiver()
+            except Exception:
+                _av_disk = None
+            if _av_disk:
+                avr_slot_holder[0] = _av_disk
             _av_row = avr_slot_holder[0]
             if _av_row:
                 _slot_adr = str(_av_row.get("address") or "").strip()

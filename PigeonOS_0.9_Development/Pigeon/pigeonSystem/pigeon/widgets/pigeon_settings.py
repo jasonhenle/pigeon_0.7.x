@@ -1,115 +1,99 @@
 """
-Pigeon device settings menu — ``settings_0.8/settings_pigeon.svg``.
+Pigeon device settings — 12-tile grid (settings home).
 
-Opened from main settings box1 (device panel). Five icon tabs + BACK.
-Foreground art from ``settings_pigeon.svg``; diagonal stripe background uses the
-shared ``settings_background.svg`` theme plate (UI color at 90…40% brightness).
-Embedded ``menu_container_*`` stripe groups are disabled before rasterize.
+Opened from main settings box1 (device panel). Pure black stage + white tile
+chrome; focused tile fills with the settings UI color. Existing destinations:
+GENERAL → preferences, COLORS → color page, UPDATE → update popup.
 """
 
 from __future__ import annotations
 
-import copy
 import os
-import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 
 from pigeon.design import DESIGN_H, DESIGN_W
-from pigeon.widgets.main_settings import (
-    MainSettingsState,
-    _composite_bgra_over_bgra,
-    _disable_embedded_settings_background_layers,
-    _draw_container_background_bgra,
-    _find_by_logical_id,
-    _prune_display_none,
-    _rasterize_svg_tree,
-    _set_text_content,
-    _set_visible,
-)
+from pigeon.widgets.main_settings import MainSettingsState
 
-SVG_NS = "http://www.w3.org/2000/svg"
-
-_PIGEON_VIEWBOX = (350.37, 441.08, 800.0, 480.0)
-
-# Match settings_main EXIT geometry on the pigeon artboard (viewBox +350.37,+441.08).
-_BACK_BUTTON_D = (
-    "M437.813,536.080H387.737c-5.278,0-9.557-4.279-9.557-9.557V508.708"
-    "c0-5.831,4.727-10.557,10.557-10.557h49.075c5.278,0,9.557,4.279,9.557,9.557"
-    "v18.814C447.370,531.801,443.091,536.080,437.813,536.080z"
-)
-_BACK_TEXT_X = 412.775  # button center (design 62.405 + 350.37)
-_BACK_TEXT_Y = 526.8203  # same baseline as settings_main EXIT
+# ---------------------------------------------------------------------------
+# Focus / tile catalog (row-major: 6×2)
+# ---------------------------------------------------------------------------
 
 _PIGEON_FOCUS_RING: tuple[str, ...] = (
     "pigeon_back",
-    "prefs_button",
-    "color_button",
+    "general_button",
+    "colors_button",
+    "display_button",
+    "network_button",
     "audio_button",
+    "time_button",
+    "wifi_button",
     "music_button",
+    "bluetooth_button",
+    "system_button",
     "update_button",
+    "about_button",
 )
 
-_PIGEON_BACK_LAYERS: dict[str, tuple[str, ...]] = {
-    "selected": (
-        "_01_back_biutton_selected",
-        "_01_button_back_text_selected",
-    ),
-    "deselected": (
-        "_01_back_button_deselected",
-        "_01_back_accent_deselected",
-        "_01_button_back_text_deselected",
-    ),
+# Legacy aliases kept so older focus indices / saved expectations still resolve.
+_FOCUS_ALIASES: dict[str, str] = {
+    "prefs_button": "general_button",
+    "color_button": "colors_button",
 }
 
-_PIGEON_MENU_LAYERS: dict[str, dict[str, object]] = {
-    "prefs_button": {
-        "title": "settings",
-        "selected": ("_03_settingsicon_prefs_selected", "_03_button_prefs_selected"),
-        "deselected": ("_03_settingicon_prefs_deselected",),
-    },
-    "color_button": {
-        "title": "color",
-        "selected": ("_04_settingsicon_color_selected", "_04_button_color_selected"),
-        "deselected": (
-            "_04_settingsicon_color_deselected",
-            "_04_button_color_deselected",
-        ),
-    },
-    "audio_button": {
-        "title": "audio",
-        "selected": ("_05_settingsicon_audio_selected", "_05_button_audio_selected"),
-        "deselected": (
-            "_05_settingsicon_audio_deselected",
-            "_05_button_audio_deselected",
-        ),
-    },
-    "music_button": {
-        "title": "music",
-        "selected": ("_06_settingsicon_music_selected", "_06_button_music_selected"),
-        "deselected": (
-            "_06_settingsicon_music_deselected",
-            "_06_button_music_deselected",
-        ),
-    },
-    "update_button": {
-        "title": "update",
-        "selected": (
-            "_07_settingsicon_update_selected",
-            "_07_button_text_update_selected",
-        ),
-        "deselected": (
-            "_07_settingsicon_update_deselected",
-            "_07_button_text_update_deselected",
-        ),
-    },
-}
 
-_HIDE_ALWAYS: tuple[str, ...] = ("_06_button_music_selected-2",)
+@dataclass(frozen=True)
+class _Tile:
+    focus_id: str
+    label: str
+    icon: str  # general | colors | display | update | about | none
+
+
+_TILES: tuple[_Tile, ...] = (
+    _Tile("general_button", "GENERAL", "general"),
+    _Tile("colors_button", "COLORS", "colors"),
+    _Tile("display_button", "DISPLAY", "display"),
+    _Tile("network_button", "NETWORK", "none"),
+    _Tile("audio_button", "AUDIO", "none"),
+    _Tile("time_button", "TIME", "none"),
+    _Tile("wifi_button", "WIFI", "none"),
+    _Tile("music_button", "MUSIC", "none"),
+    _Tile("bluetooth_button", "BLUETOOTH", "none"),
+    _Tile("system_button", "SYSTEM", "none"),
+    _Tile("update_button", "UPDATE", "update"),
+    _Tile("about_button", "ABOUT", "about"),
+)
+
+# Layout (design 800×480).
+_COLS = 6
+_ROWS = 2
+_TILE = 96
+_GAP_X = 18
+_GAP_Y = 28
+_GRID_W = _COLS * _TILE + (_COLS - 1) * _GAP_X
+_GRID_H = _ROWS * _TILE + (_ROWS - 1) * _GAP_Y
+_GRID_X = (DESIGN_W - _GRID_W) // 2
+_GRID_Y = 118
+_LABEL_GAP = 10
+_LABEL_SIZE = 13
+_CORNER = 10
+_BRACKET = 10
+_STROKE = 2
+
+_HEADER_SETTINGS_SIZE = 36
+_HEADER_PIGEON_SIZE = 18
+_HEADER_META_SIZE = 16
+_HEADER_X = 36
+_HEADER_SETTINGS_Y = 36
+_HEADER_PIGEON_Y = 72
+_HEADER_META_Y = 40
 
 
 def default_pigeon_settings_svg_path(assets_dir: Path | str | None = None) -> Path:
+    """Legacy path retained for callers / env overrides (grid is drawn in code)."""
     env = os.environ.get("PIGEON_PIGEON_SETTINGS_SVG", "").strip()
     if env:
         return Path(env).expanduser().resolve()
@@ -123,206 +107,401 @@ def pigeon_focus_ring() -> tuple[str, ...]:
     return _PIGEON_FOCUS_RING
 
 
-_PIGEON_SVG_TREE_TEMPLATES: dict[tuple[str, int, int], ET.Element] = {}
-_PIGEON_SVG_TREE_TEMPLATE_MAX = 4
+def normalize_pigeon_focus_id(focus_id: str) -> str:
+    fid = str(focus_id or "").strip()
+    return _FOCUS_ALIASES.get(fid, fid)
 
 
-def _pigeon_svg_tree_from_path(path: Path) -> ET.Element:
-    try:
-        st = path.stat()
-        key = (str(path.resolve()), int(st.st_mtime_ns), int(st.st_size))
-    except OSError:
-        key = (str(path), 0, 0)
-    template = _PIGEON_SVG_TREE_TEMPLATES.get(key)
-    if template is None:
-        tree = ET.parse(path)
-        root = tree.getroot()
-        x, y, w, h = _PIGEON_VIEWBOX
-        root.set("viewBox", f"{x} {y} {w} {h}")
-        root.set("width", str(DESIGN_W))
-        root.set("height", str(DESIGN_H))
-        if len(_PIGEON_SVG_TREE_TEMPLATES) >= _PIGEON_SVG_TREE_TEMPLATE_MAX:
-            _PIGEON_SVG_TREE_TEMPLATES.clear()
-        _PIGEON_SVG_TREE_TEMPLATES[key] = root
-        template = root
-    return copy.deepcopy(template)
+# ---------------------------------------------------------------------------
+# Fonts / text
+# ---------------------------------------------------------------------------
 
 
-def _iter_paths(el: ET.Element | None):
-    if el is None:
+@lru_cache(maxsize=32)
+def _load_font(size_px: int, *, bold: bool = True):
+    from PIL import ImageFont
+
+    from pigeon.font_paths import resolve_ui_font_extrabold, resolve_ui_font_medium
+
+    path = resolve_ui_font_extrabold() if bold else resolve_ui_font_medium()
+    if path:
+        try:
+            return ImageFont.truetype(str(path), size=max(8, int(size_px)))
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+@lru_cache(maxsize=128)
+def _text_patch(
+    text: str,
+    size_px: int,
+    fill_rgba: tuple[int, int, int, int],
+    *,
+    bold: bool = True,
+) -> tuple[np.ndarray, int, int]:
+    from PIL import Image, ImageDraw
+    import cv2
+
+    draw_text = str(text or "")
+    if not draw_text:
+        return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
+    font = _load_font(size_px, bold=bold)
+    probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(probe)
+    left, top, right, bottom = draw.textbbox((0, 0), draw_text, font=font)
+    tw, th = max(1, right - left), max(1, bottom - top)
+    pad = 1
+    img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.text((pad - left, pad - top), draw_text, font=font, fill=fill_rgba)
+    return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA), tw + pad * 2, th + pad * 2
+
+
+def _paste_bgra(dst: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
+    if patch is None or patch.size == 0:
         return
-    if el.tag.endswith("path"):
-        yield el
-    for node in el.iter():
-        if node is not el and node.tag.endswith("path"):
-            yield node
-
-
-def _iter_texts(el: ET.Element | None):
-    if el is None:
+    ph, pw = patch.shape[:2]
+    x0, y0 = int(x), int(y)
+    x1, y1 = x0 + pw, y0 + ph
+    if x1 <= 0 or y1 <= 0 or x0 >= dst.shape[1] or y0 >= dst.shape[0]:
         return
-    if el.tag.endswith("text"):
-        yield el
-    for node in el.iter():
-        if node is not el and node.tag.endswith("text"):
-            yield node
-
-
-def _sync_pigeon_back_button(root: ET.Element) -> None:
-    """Match settings_main EXIT placement; label centered as BACK."""
-    for lid in (
-        "_01_back_biutton_selected",
-        "_01_back_button_deselected",
-        "_01_back_accent_deselected",
-    ):
-        group = _find_by_logical_id(root, lid)
-        for path_el in _iter_paths(group):
-            path_el.set("d", _BACK_BUTTON_D)
-            if lid == "_01_back_accent_deselected":
-                path_el.set("fill", "none")
-                path_el.set("stroke", "#fff")
-                path_el.set("stroke-width", "2")
-            elif lid == "_01_back_biutton_selected":
-                path_el.set("fill", "#fff")
-                path_el.set("stroke", "#000")
-                path_el.set("stroke-width", "7")
-            else:
-                path_el.set("fill", "#202020")
-                path_el.set("stroke", "#000")
-                path_el.set("stroke-width", "7")
-    for lid, fill in (
-        ("_01_button_back_text_selected", "#000"),
-        ("_01_button_back_text_deselected", "#fff"),
-    ):
-        group = _find_by_logical_id(root, lid)
-        for text_el in _iter_texts(group):
-            text_el.set(
-                "transform", f"translate({_BACK_TEXT_X:.4f} {_BACK_TEXT_Y:.4f})"
-            )
-            text_el.set("text-anchor", "middle")
-            text_el.set("font-family", "Digital-7, Digital-7")
-            text_el.set("font-size", "29")
-            text_el.set("fill", fill)
-            _set_text_content(text_el, "BACK")
-
-
-def _ensure_back_selected_text_contrast(root: ET.Element) -> None:
-    """Selected BACK sits on a white pill; GFX export omits fill so text defaults to white."""
-    back_text = _find_by_logical_id(root, "_01_button_back_text_selected")
-    if back_text is None:
+    sx0 = max(0, -x0)
+    sy0 = max(0, -y0)
+    dx0 = max(0, x0)
+    dy0 = max(0, y0)
+    dx1 = min(dst.shape[1], x1)
+    dy1 = min(dst.shape[0], y1)
+    if dx0 >= dx1 or dy0 >= dy1:
         return
-    for node in back_text.iter():
-        if node.tag.endswith("text") or node.tag.endswith("tspan"):
-            node.set("fill", "#000")
-
-
-def _ensure_update_deselected_layers(root: ET.Element) -> None:
-    """Synthesize update deselected layers when missing from the GFX export."""
-    if _find_by_logical_id(root, "_07_settingsicon_update_deselected") is not None:
+    src = patch[sy0 : sy0 + (dy1 - dy0), sx0 : sx0 + (dx1 - dx0)]
+    if src.shape[2] < 4:
+        dst[dy0:dy1, dx0:dx1, :3] = src[:, :, :3]
+        dst[dy0:dy1, dx0:dx1, 3] = 255
         return
-    sel_icon = _find_by_logical_id(root, "_07_settingsicon_update_selected")
-    sel_btn = _find_by_logical_id(root, "_07_button_text_update_selected")
-    if sel_icon is None:
+    a = src[:, :, 3:4].astype(np.float32) / 255.0
+    out = dst[dy0:dy1, dx0:dx1].astype(np.float32)
+    out[:, :, :3] = out[:, :, :3] * (1.0 - a) + src[:, :, :3].astype(np.float32) * a
+    out[:, :, 3] = np.maximum(out[:, :, 3], src[:, :, 3].astype(np.float32))
+    dst[dy0:dy1, dx0:dx1] = np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _paste_centered(dst: np.ndarray, patch: np.ndarray, cx: float, cy: float) -> None:
+    if patch is None or patch.size == 0:
         return
-
-    def _parent_of(child: ET.Element) -> ET.Element | None:
-        for parent in root.iter():
-            if child in list(parent):
-                return parent
-        return None
-
-    des_icon = copy.deepcopy(sel_icon)
-    des_icon.set("id", "_07_settingsicon_update_deselected")
-    for el in des_icon.iter():
-        if el.tag.endswith("rect"):
-            sw = str(el.get("stroke-width") or "")
-            stroke = (el.get("stroke") or "").lower()
-            if sw in ("12", "12.0") and stroke in ("#fff", "#ffffff", "white"):
-                el.set("display", "none")
-    parent = _parent_of(sel_icon)
-    if parent is not None:
-        parent.append(des_icon)
-
-    if sel_btn is not None:
-        des_btn = copy.deepcopy(sel_btn)
-        des_btn.set("id", "_07_button_text_update_deselected")
-        for rect in des_btn.iter():
-            if not rect.tag.endswith("rect"):
-                continue
-            fill = (rect.get("fill") or "").lower()
-            if fill in ("#fff", "#ffffff", "white"):
-                rect.set("fill", "#202020")
-                rect.set("stroke", "#000")
-            elif fill in ("none", ""):
-                stroke = (rect.get("stroke") or "").lower()
-                if stroke in ("#000", "#000000", "#202020"):
-                    rect.set("stroke", "#fff")
-        for text in des_btn.iter():
-            if text.tag.endswith("text") or text.tag.endswith("tspan"):
-                text.set("fill", "#fff")
-        parent_btn = _parent_of(sel_btn)
-        if parent_btn is not None:
-            parent_btn.append(des_btn)
+    ph, pw = patch.shape[:2]
+    _paste_bgra(dst, patch, int(round(cx - pw / 2.0)), int(round(cy - ph / 2.0)))
 
 
-def _set_heading_text(el: ET.Element | None, text: str) -> None:
-    if el is None:
-        return
-    for node in el.iter():
-        if not node.tag.endswith("text"):
-            continue
-        for child in list(node):
-            node.remove(child)
-        tspan = ET.SubElement(node, f"{{{SVG_NS}}}tspan")
-        tspan.set("x", "0")
-        tspan.set("y", "0")
-        tspan.text = text
+def _hex_to_bgr(hex_color: str) -> tuple[int, int, int]:
+    s = str(hex_color or "").strip().lstrip("#")
+    if len(s) >= 6:
+        try:
+            r = int(s[0:2], 16)
+            g = int(s[2:4], 16)
+            b = int(s[4:6], 16)
+            return (b, g, r)
+        except ValueError:
+            pass
+    return (0, 0, 255)
 
 
-def _draw_pigeon_container_background_bgra(
+# ---------------------------------------------------------------------------
+# Chrome drawing
+# ---------------------------------------------------------------------------
+
+
+def _draw_rounded_rect_outline(
     bgra: np.ndarray,
     *,
-    ui_hex: str | None = None,
-    assets_dir: Path | str | None = None,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    radius: int,
+    color_bgr: tuple[int, int, int],
+    thickness: int = 2,
 ) -> None:
-    """Paint shared ``settings_background.svg`` plate (same clip as main settings)."""
-    _draw_container_background_bgra(
-        bgra,
-        ui_hex=ui_hex,
-        assets_dir=assets_dir,
+    import cv2
+
+    if w < 2 or h < 2:
+        return
+    r = max(1, min(int(radius), w // 2, h // 2))
+    t = max(1, int(thickness))
+    # Outer rounded mask minus inset → stroke ring.
+    outer = np.zeros((h, w), dtype=np.uint8)
+    cv2.rectangle(outer, (r, 0), (w - r - 1, h - 1), 255, -1)
+    cv2.rectangle(outer, (0, r), (w - 1, h - r - 1), 255, -1)
+    cv2.circle(outer, (r, r), r, 255, -1, lineType=cv2.LINE_AA)
+    cv2.circle(outer, (w - r - 1, r), r, 255, -1, lineType=cv2.LINE_AA)
+    cv2.circle(outer, (r, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
+    cv2.circle(outer, (w - r - 1, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
+    inner = np.zeros((h, w), dtype=np.uint8)
+    if w > 2 * t and h > 2 * t:
+        ir = max(1, r - t)
+        cv2.rectangle(inner, (ir + t, t), (w - ir - t - 1, h - t - 1), 255, -1)
+        cv2.rectangle(inner, (t, ir + t), (w - t - 1, h - ir - t - 1), 255, -1)
+        cv2.circle(inner, (t + ir, t + ir), ir, 255, -1, lineType=cv2.LINE_AA)
+        cv2.circle(inner, (w - t - ir - 1, t + ir), ir, 255, -1, lineType=cv2.LINE_AA)
+        cv2.circle(inner, (t + ir, h - t - ir - 1), ir, 255, -1, lineType=cv2.LINE_AA)
+        cv2.circle(
+            inner, (w - t - ir - 1, h - t - ir - 1), ir, 255, -1, lineType=cv2.LINE_AA
+        )
+    ring = cv2.subtract(outer, inner)
+    ys, xs = np.where(ring > 0)
+    if not ys.size:
+        return
+    yy = ys + int(y)
+    xx = xs + int(x)
+    valid = (
+        (yy >= 0)
+        & (yy < bgra.shape[0])
+        & (xx >= 0)
+        & (xx < bgra.shape[1])
+    )
+    yy, xx = yy[valid], xx[valid]
+    bgra[yy, xx, 0] = color_bgr[0]
+    bgra[yy, xx, 1] = color_bgr[1]
+    bgra[yy, xx, 2] = color_bgr[2]
+    bgra[yy, xx, 3] = 255
+
+
+def _draw_rounded_rect_fill(
+    bgra: np.ndarray,
+    *,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    radius: int,
+    color_bgr: tuple[int, int, int],
+) -> None:
+    import cv2
+
+    if w < 2 or h < 2:
+        return
+    r = max(1, min(radius, w // 2, h // 2))
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.rectangle(mask, (r, 0), (w - r - 1, h - 1), 255, -1)
+    cv2.rectangle(mask, (0, r), (w - 1, h - r - 1), 255, -1)
+    cv2.circle(mask, (r, r), r, 255, -1, lineType=cv2.LINE_AA)
+    cv2.circle(mask, (w - r - 1, r), r, 255, -1, lineType=cv2.LINE_AA)
+    cv2.circle(mask, (r, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
+    cv2.circle(mask, (w - r - 1, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
+    roi = bgra[y : y + h, x : x + w]
+    if roi.shape[0] != h or roi.shape[1] != w:
+        return
+    m = mask > 0
+    roi[m, 0] = color_bgr[0]
+    roi[m, 1] = color_bgr[1]
+    roi[m, 2] = color_bgr[2]
+    roi[m, 3] = 255
+
+
+def _draw_corner_brackets(
+    bgra: np.ndarray,
+    *,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    length: int,
+    color_bgr: tuple[int, int, int],
+    thickness: int = 2,
+) -> None:
+    import cv2
+
+    L = max(4, int(length))
+    t = max(1, int(thickness))
+    pts = [
+        # TL
+        ((x, y + L), (x, y), (x + L, y)),
+        # TR
+        ((x + w - 1 - L, y), (x + w - 1, y), (x + w - 1, y + L)),
+        # BL
+        ((x, y + h - 1 - L), (x, y + h - 1), (x + L, y + h - 1)),
+        # BR
+        ((x + w - 1 - L, y + h - 1), (x + w - 1, y + h - 1), (x + w - 1, y + h - 1 - L)),
+    ]
+    for a, b, c in pts:
+        cv2.line(bgra, a, b, (*color_bgr, 255), t, lineType=cv2.LINE_AA)
+        cv2.line(bgra, b, c, (*color_bgr, 255), t, lineType=cv2.LINE_AA)
+
+
+def _draw_icon_general(tile: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
+    import cv2
+
+    h, w = tile.shape[:2]
+    cx, cy = w // 2, h // 2
+    for i, dy in enumerate((-18, 0, 18)):
+        y = cy + dy
+        cv2.circle(tile, (cx - 22, y), 3, (*color_bgr, 255), -1, lineType=cv2.LINE_AA)
+        cv2.line(
+            tile,
+            (cx - 12, y),
+            (cx + 24, y),
+            (*color_bgr, 255),
+            3,
+            lineType=cv2.LINE_AA,
+        )
+
+
+def _draw_icon_colors(tile: np.ndarray) -> None:
+    """Rainbow square with black center disc."""
+    import cv2
+
+    h, w = tile.shape[:2]
+    pad = 18
+    x0, y0 = pad, pad
+    bw, bh = w - 2 * pad, h - 2 * pad
+    # HSV sweep left→right.
+    for x in range(bw):
+        hue = int(179 * x / max(1, bw - 1))
+        hsv = np.uint8([[[hue, 255, 255]]])
+        bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
+        tile[y0 : y0 + bh, x0 + x, 0] = int(bgr[0])
+        tile[y0 : y0 + bh, x0 + x, 1] = int(bgr[1])
+        tile[y0 : y0 + bh, x0 + x, 2] = int(bgr[2])
+        tile[y0 : y0 + bh, x0 + x, 3] = 255
+    cv2.circle(
+        tile,
+        (w // 2, h // 2),
+        14,
+        (0, 0, 0, 255),
+        -1,
+        lineType=cv2.LINE_AA,
     )
 
 
-def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
-    focused = state.pigeon_focused_id
-    _sync_pigeon_back_button(root)
-    _ensure_back_selected_text_contrast(root)
-    _ensure_update_deselected_layers(root)
+def _draw_icon_display(tile: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
+    import cv2
 
-    for lid in _HIDE_ALWAYS:
-        _set_visible(_find_by_logical_id(root, lid), False)
+    h, w = tile.shape[:2]
+    cx, cy = w // 2, h // 2
+    rw, rh = 36, 56
+    x0, y0 = cx - rw // 2, cy - rh // 2
+    cv2.rectangle(
+        tile,
+        (x0, y0),
+        (x0 + rw, y0 + rh),
+        (*color_bgr, 255),
+        2,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.circle(tile, (cx, y0 + 8), 2, (*color_bgr, 255), -1, lineType=cv2.LINE_AA)
 
-    back_selected = focused == "pigeon_back"
-    for lid in _PIGEON_BACK_LAYERS["selected"]:
-        _set_visible(_find_by_logical_id(root, lid), back_selected)
-    for lid in _PIGEON_BACK_LAYERS["deselected"]:
-        _set_visible(_find_by_logical_id(root, lid), not back_selected)
 
-    title = "update"
-    for focus_id, spec in _PIGEON_MENU_LAYERS.items():
-        selected = focused == focus_id
-        if selected:
-            title = str(spec["title"])
-        for lid in spec["selected"]:  # type: ignore[union-attr]
-            _set_visible(_find_by_logical_id(root, str(lid)), selected)
-        for lid in spec["deselected"]:  # type: ignore[union-attr]
-            _set_visible(_find_by_logical_id(root, str(lid)), not selected)
+def _draw_icon_update(tile: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
+    import cv2
 
-    _set_heading_text(_find_by_logical_id(root, "_02_settings_title_text"), title)
-    ver = state.version_string
-    if ver and not ver.startswith("v"):
-        ver = f"v.{ver}"
-    _set_text_content(_find_by_logical_id(root, "pigeon_version_text"), ver)
+    h, w = tile.shape[:2]
+    cx, cy = w // 2, h // 2
+    r = 22
+    # Two open arcs with arrowheads.
+    cv2.ellipse(
+        tile,
+        (cx, cy),
+        (r, r),
+        0,
+        40,
+        220,
+        (*color_bgr, 255),
+        3,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.ellipse(
+        tile,
+        (cx, cy),
+        (r, r),
+        0,
+        220,
+        400,
+        (*color_bgr, 255),
+        3,
+        lineType=cv2.LINE_AA,
+    )
+    # Arrow tips
+    cv2.arrowedLine(
+        tile,
+        (cx + r - 2, cy - 8),
+        (cx + r + 2, cy + 6),
+        (*color_bgr, 255),
+        3,
+        tipLength=0.45,
+        line_type=cv2.LINE_AA,
+    )
+    cv2.arrowedLine(
+        tile,
+        (cx - r + 2, cy + 8),
+        (cx - r - 2, cy - 6),
+        (*color_bgr, 255),
+        3,
+        tipLength=0.45,
+        line_type=cv2.LINE_AA,
+    )
+
+
+def _draw_icon_about(tile: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
+    import cv2
+
+    h, w = tile.shape[:2]
+    cx, cy = w // 2, h // 2
+    cv2.line(
+        tile,
+        (cx - 26, cy),
+        (cx + 26, cy),
+        (*color_bgr, 255),
+        4,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.circle(tile, (cx + 8, cy), 7, (*color_bgr, 255), -1, lineType=cv2.LINE_AA)
+    cv2.circle(tile, (cx + 8, cy), 7, (0, 0, 0, 255), 2, lineType=cv2.LINE_AA)
+
+
+def _draw_tile_icon(
+    tile: np.ndarray,
+    icon: str,
+    color_bgr: tuple[int, int, int],
+) -> None:
+    if icon == "general":
+        _draw_icon_general(tile, color_bgr)
+    elif icon == "colors":
+        _draw_icon_colors(tile)
+    elif icon == "display":
+        _draw_icon_display(tile, color_bgr)
+    elif icon == "update":
+        _draw_icon_update(tile, color_bgr)
+    elif icon == "about":
+        _draw_icon_about(tile, color_bgr)
+
+
+def _draw_badge(
+    bgra: np.ndarray,
+    *,
+    cx: int,
+    cy: int,
+    text: str,
+    fill_bgr: tuple[int, int, int],
+) -> None:
+    import cv2
+
+    r = 12
+    cv2.circle(bgra, (cx, cy), r, (*fill_bgr, 255), -1, lineType=cv2.LINE_AA)
+    patch, tw, th = _text_patch(text, 14, (255, 255, 255, 255), bold=True)
+    _paste_bgra(bgra, patch, cx - tw // 2, cy - th // 2)
+
+
+def _tile_origin(index: int) -> tuple[int, int]:
+    col = index % _COLS
+    row = index // _COLS
+    x = _GRID_X + col * (_TILE + _GAP_X)
+    y = _GRID_Y + row * (_TILE + _GAP_Y)
+    return x, y
+
+
+def apply_pigeon_settings_svg_state(root, state: MainSettingsState) -> None:
+    """No-op — grid UI is drawn in Pillow/OpenCV, not from SVG layers."""
+    del root, state
 
 
 def render_pigeon_settings_bgra(
@@ -331,33 +510,124 @@ def render_pigeon_settings_bgra(
     svg_path: Path | str | None = None,
     assets_dir: Path | str | None = None,
 ) -> np.ndarray:
-    if svg_path is not None:
-        path = Path(svg_path)
-    else:
-        path = default_pigeon_settings_svg_path(assets_dir)
-    if not path.is_file():
-        raise FileNotFoundError(f"pigeon settings SVG not found: {path}")
-
+    del svg_path, assets_dir
     st = state if state is not None else MainSettingsState()
-    root = _pigeon_svg_tree_from_path(path)
-    apply_pigeon_settings_svg_state(root, st)
-    _disable_embedded_settings_background_layers(root)
-    _prune_display_none(root)
-    ui_bgra = _rasterize_svg_tree(root)
-    bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
-    bg_bgra[:, :, :3] = 0
-    bg_bgra[:, :, 3] = 255
-    _draw_pigeon_container_background_bgra(
-        bg_bgra,
-        ui_hex=st.theme.ui,
-        assets_dir=assets_dir if assets_dir is not None else path.parent.parent,
+    focused = normalize_pigeon_focus_id(st.pigeon_focused_id)
+    ui_bgr = _hex_to_bgr(getattr(st.theme, "ui", "#ff0013"))
+    white = (255, 255, 255)
+
+    out = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
+    out[:, :, 3] = 255
+
+    # Header: SETTINGS / Pigeon (left), version meta (right).
+    settings_p, sw, sh = _text_patch(
+        "SETTINGS", _HEADER_SETTINGS_SIZE, (255, 255, 255, 255), bold=True
     )
-    return _composite_bgra_over_bgra(bg_bgra, ui_bgra)
+    _paste_bgra(out, settings_p, _HEADER_X, _HEADER_SETTINGS_Y)
+    pigeon_p, _pw, _ph = _text_patch(
+        "Pigeon", _HEADER_PIGEON_SIZE, (220, 220, 220, 255), bold=False
+    )
+    _paste_bgra(out, pigeon_p, _HEADER_X, _HEADER_PIGEON_Y)
+
+    ver = str(getattr(st, "version_string", "") or "").strip()
+    if ver and not ver.lower().startswith("v"):
+        meta = f"MAIN {ver}"
+    elif ver:
+        meta = f"MAIN {ver.lstrip('vV').lstrip('.')}"
+    else:
+        meta = "MAIN"
+    meta_p, mw, _mh = _text_patch(
+        meta, _HEADER_META_SIZE, (255, 255, 255, 255), bold=False
+    )
+    _paste_bgra(out, meta_p, DESIGN_W - _HEADER_X - mw, _HEADER_META_Y)
+
+    # BACK affordance: underline SETTINGS when focused.
+    if focused == "pigeon_back":
+        import cv2
+
+        y = _HEADER_SETTINGS_Y + sh + 4
+        cv2.line(
+            out,
+            (_HEADER_X, y),
+            (_HEADER_X + sw, y),
+            (*ui_bgr, 255),
+            3,
+            lineType=cv2.LINE_AA,
+        )
+
+    for i, tile in enumerate(_TILES):
+        x, y = _tile_origin(i)
+        selected = focused == tile.focus_id
+        # Cell buffer for icon compositing.
+        cell = np.zeros((_TILE, _TILE, 4), dtype=np.uint8)
+        if selected:
+            _draw_rounded_rect_fill(
+                cell,
+                x=0,
+                y=0,
+                w=_TILE,
+                h=_TILE,
+                radius=_CORNER,
+                color_bgr=ui_bgr,
+            )
+            icon_color = white
+            label_rgba = (*ui_bgr[::-1], 255)  # BGR→RGB for Pillow fill
+        else:
+            icon_color = white
+            label_rgba = (255, 255, 255, 255)
+
+        _draw_tile_icon(cell, tile.icon, icon_color)
+        _paste_bgra(out, cell, x, y)
+
+        border = ui_bgr if selected else white
+        _draw_rounded_rect_outline(
+            out,
+            x=x,
+            y=y,
+            w=_TILE,
+            h=_TILE,
+            radius=_CORNER,
+            color_bgr=border,
+            thickness=_STROKE,
+        )
+        _draw_corner_brackets(
+            out,
+            x=x + 4,
+            y=y + 4,
+            w=_TILE - 8,
+            h=_TILE - 8,
+            length=_BRACKET,
+            color_bgr=border,
+            thickness=2,
+        )
+
+        # Update badge on ABOUT when an update is available.
+        if tile.focus_id == "about_button" and bool(getattr(st, "update_available", False)):
+            _draw_badge(
+                out,
+                cx=x + _TILE - 6,
+                cy=y + 6,
+                text="1",
+                fill_bgr=ui_bgr,
+            )
+
+        lab_p, lw, lh = _text_patch(
+            tile.label, _LABEL_SIZE, label_rgba, bold=True
+        )
+        _paste_bgra(
+            out,
+            lab_p,
+            x + (_TILE - lw) // 2,
+            y + _TILE + _LABEL_GAP,
+        )
+
+    return out
 
 
 __all__ = [
     "apply_pigeon_settings_svg_state",
     "default_pigeon_settings_svg_path",
+    "normalize_pigeon_focus_id",
     "pigeon_focus_ring",
     "render_pigeon_settings_bgra",
 ]

@@ -17,7 +17,7 @@ Preferences zone nav: zone1 → zone5 → **color** → BACK. The color control 
 | Name | Module / surface | Asset |
 |------|------------------|-------|
 | **settings_main** | `pigeon/widgets/main_settings.py` + OpenCV composite | `pigeonAssets/settings_0.8/settings_main.svg` |
-| **pigeon settings** | `pigeon/widgets/pigeon_settings.py` | `pigeon_settings_*.svg` |
+| **pigeon settings** | `pigeon/widgets/pigeon_settings.py` (12-tile grid) | drawn in code (legacy `settings_pigeon.svg` unused) |
 | **preferences** | `pigeon/widgets/preferences_settings.py` | `pigeon_settings_preferences.svg` |
 | **update popup** | `pigeon/widgets/update_popup.py` | update SVG layers |
 | **keyboards** | `pigeon/widgets/settings_keyboard.py` | `keyboard_*.svg` |

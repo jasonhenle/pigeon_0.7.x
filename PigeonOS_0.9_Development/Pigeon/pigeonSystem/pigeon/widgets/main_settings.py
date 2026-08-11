@@ -865,10 +865,15 @@ class MainSettingsState:
 
     @property
     def pigeon_focused_id(self) -> str:
-        from pigeon.widgets.pigeon_settings import pigeon_focus_ring
+        from pigeon.widgets.pigeon_settings import (
+            normalize_pigeon_focus_id,
+            pigeon_focus_ring,
+        )
 
         ring = pigeon_focus_ring()
-        return ring[int(self.pigeon_focus_index) % len(ring)]
+        return normalize_pigeon_focus_id(
+            ring[int(self.pigeon_focus_index) % len(ring)]
+        )
 
     def enter_pigeon_settings(self) -> None:
         from pigeon.widgets.pigeon_settings import pigeon_focus_ring
@@ -878,9 +883,13 @@ class MainSettingsState:
         self.show_box1_panel = False
         self.close_update_popup()
         self.close_preferences()
+        self.close_ui_color()
         load_persisted_theme_into_state(self)
         ring = pigeon_focus_ring()
-        self.pigeon_focus_index = ring.index("prefs_button")
+        # Land on GENERAL (first tile); BACK is still in the ring via SETTINGS header.
+        self.pigeon_focus_index = (
+            ring.index("general_button") if "general_button" in ring else 0
+        )
 
     def exit_pigeon_settings(self) -> None:
         self.close_update_popup()
@@ -7800,17 +7809,17 @@ class MainSettingsWidget:
                 st.open_update_popup()
                 self.invalidate()
                 return "update_popup:open"
-            if focused == "prefs_button":
+            if focused in ("general_button", "prefs_button"):
                 st.open_preferences()
                 self.invalidate()
                 return "preferences_open"
-            if focused == "color_button":
-                # Color page backs into preferences; ensure prefs is underneath.
-                if not st.show_preferences:
-                    st.open_preferences()
+            if focused in ("colors_button", "color_button"):
+                # Color page opens directly from the grid (BACK returns here).
+                st.close_preferences()
                 st.open_ui_color()
                 self.invalidate()
                 return "ui_color_open"
+            # Remaining tiles are chrome placeholders for now.
             return f"pigeon_activate:{focused}"
 
         focused = st.focused_id

@@ -53,7 +53,9 @@ _SVG_H = 480.0
 _COLOR_BG_HEX = "#000000"
 _COLOR_ACCENT_BGR = (0, 0, 255)  # #FF0000 — legacy default (mapped to theme.ui)
 _COLOR_UNPLAYED_BGR = (147, 147, 147)  # #939393
-_COLOR_BUTTON_BGR = (35, 35, 35)  # #232323
+_COLOR_BUTTON_BGR = (35, 35, 35)  # #232323 — legacy; inner discs use pure black
+_COLOR_CENTER_BLACK_HEX = "#000000"
+_COLOR_CENTER_BLACK_BGR = (0, 0, 0)
 _COLOR_CHROME_BGR = (147, 147, 147)  # #939393
 _COLOR_CHROME_RGB = (147, 147, 147)
 
@@ -972,7 +974,7 @@ def _apply_exterior_seconds_fill(
 ) -> None:
     """Paint exterior button color; accent only under seconds layers 1..``sec_idx``.
 
-    Middle button disc sits above the accent wedge so the visible accent is the
+    Black middle disc sits above the accent wedge so the visible accent is the
     outer ring under the active second ticks.
     """
     th = theme or np_theme_from_settings()
@@ -1010,18 +1012,18 @@ def _apply_exterior_seconds_fill(
     wedge.set("d", d)
     wedge.set("fill", th.accent_hex)
     clock.append(wedge)
-    # Exterior (button) → accent seconds wedge → middle (button).
+    # Exterior (button) → accent seconds wedge → middle (black).
     _place_in_group(clock, exterior, 0)
     _place_in_group(clock, wedge, 1)
     _place_in_group(clock, middle, 2)
 
 
 def _apply_clock_accent_fills(root: ET.Element, *, theme: _NpTheme | None = None) -> None:
-    """Clock accent stack (bottom → top): exterior button, then middle button.
+    """Clock accent stack (bottom → top): exterior button, then black middle disc.
 
     Exterior starts as button color; an accent seconds wedge is layered above it
-    for the active clock (see ``_apply_exterior_seconds_fill``). Middle sits above
-    that; ticks / interior / center paint above both.
+    for the active clock (see ``_apply_exterior_seconds_fill``). Middle is always
+    pure black so the face reads as a solid center above the ring.
     """
     th = theme or np_theme_from_settings()
     for zone in (1, 2, 3):
@@ -1042,7 +1044,7 @@ def _apply_clock_accent_fills(root: ET.Element, *, theme: _NpTheme | None = None
         if exterior is not None:
             exterior.set("fill", th.button_hex)
         if middle is not None:
-            middle.set("fill", th.button_hex)
+            middle.set("fill", _COLOR_CENTER_BLACK_HEX)
         # Interior must not be white-filled — leave stroke-only / none.
         if interior is not None and str(interior.get("fill") or "").strip().upper() in (
             "#FFFFFF",
@@ -1820,11 +1822,12 @@ def _draw_circle_pair(
     show_accent: bool,
     theme: _NpTheme | None = None,
 ) -> None:
-    """Volume ring: visible grey empty track, UI-color level, button center.
+    """Volume / circular-NP ring: grey track, UI-color level, black center.
 
     Pure-black track on the black stage reads as a "blacked out" zone once the
     TMDb intro spin stops (especially at low / zero volume). Chrome-grey empty
-    track + edge strokes keep the widget present; theme.ui shows level.
+    track + edge strokes keep the widget present; theme.ui shows level. Center
+    disc stays pure black (not the settings button swatch).
     """
     del show_accent  # track always drawn; UI overlay follows fraction
     th = theme or np_theme_from_settings()
@@ -1872,7 +1875,7 @@ def _draw_circle_pair(
         cx=cx,
         cy=cy,
         r=_RING_INNER_R,
-        fill_bgr=th.button_bgr,
+        fill_bgr=_COLOR_CENTER_BLACK_BGR,
         fill_opacity=1.0,
     )
 
