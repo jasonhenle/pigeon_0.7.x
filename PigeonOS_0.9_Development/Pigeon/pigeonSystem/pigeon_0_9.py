@@ -430,9 +430,8 @@ OVERLAY_HUD_H = 52
 
 class DevPhase(IntEnum):
     OFF = 0
-    GRID = 1
-    SETTINGS = 2  # legacy Tk settings form
-    MAIN_SETTINGS = 3  # SVG main_settings (settings_main.svg)
+    GRID = 1  # rare: Advanced matrix may stash this while open
+    MAIN_SETTINGS = 2  # SVG settings_main + pigeon / prefs / update / keyboard
 
 
 class DisplayView(IntEnum):
@@ -528,6 +527,8 @@ ATV_IDLE_MONO_ANIM_S = 2.0
 # mic does not touch those timestamps) **and** the same span without **significant** device signals (content
 # selection, ``device_state``, or ``volume_percent`` from the player poll, plus receiver volume line changes).
 CLOCK_SAVER_AFTER_S = 300.0
+# Leave settings_main after this long with no mouse/key/rotary input.
+SETTINGS_MENU_IDLE_EXIT_S = 60.0
 # Saver text opacity when idle; tap while saver is up briefly uses 1.0 (see clock_saver_peek_until_mono).
 CLOCK_SAVER_DIM_OPACITY = 0.54
 CLOCK_SAVER_PEEK_S = 2.5
@@ -1498,11 +1499,11 @@ def main() -> int:
         loading = tk.Label(
             content_host,
             text="Starting Pigeon…\n\n"
-            "Tab cycles main settings → legacy settings → off. Shift+Tab / F9 toggle settings ↔ off. "
+            "Tab / Shift+Tab / F9 toggle settings ↔ off. "
             "Key 5 shows grid overlay (press 5 again to toggle detail lines). "
-            "Return opens the command bar in Settings, grid overlay (5), or legacy grid mode. "
+            "Return opens the command bar in settings or grid overlay (5). "
             "Esc closes the bar or quits. F10 / double-click toggles the display. "
-            "Space = activate in main settings; else play/pause on the selected Player "
+            "Space = activate in settings; else play/pause on the selected Player "
             "(Apple TV / Roku) when set; else TMDb backdrop + logo when loaded; else landing brightness pulse.",
             justify="center",
             fg="#ddd",
@@ -1621,6 +1622,8 @@ def main() -> int:
             except Exception:
                 pass
 
+        # Deprecated Tk settings form (never packed). Runtime state helpers below still
+        # attach holders here; UI is settings_main SVG only (DevPhase.MAIN_SETTINGS).
         settings_frame = tk.Frame(video_area, bg="#111")
         settings_scroll_outer = tk.Frame(settings_frame, bg="#111")
         settings_scroll_outer.pack(fill=tk.BOTH, expand=True)
@@ -1731,6 +1734,158 @@ def main() -> int:
             last_metadata_activity_mono[0] = now_act
             _boot_clock_saver_until_playback[0] = False
 
+        def _maybe_exit_settings_menus_on_idle(now_mono: float | None = None) -> bool:
+            """Close settings_main after ``SETTINGS_MENU_IDLE_EXIT_S`` without input.
+
+            Returns True when menus were closed (compose should show now-playing or
+            clock saver via the normal OFF-phase path).
+            """
+            nonlocal dev_phase, skip_cache
+            if dev_phase != DevPhase.MAIN_SETTINGS:
+                return False
+            now_i = float(now_mono if now_mono is not None else time.monotonic())
+            if (now_i - float(last_pigeon_user_activity_mono[0])) < float(
+                SETTINGS_MENU_IDLE_EXIT_S
+            ):
+                return False
+            if main_settings_widget is not None:
+                try:
+                    st_ms = main_settings_widget.state
+                    if st_ms.keyboard_open:
+                        st_ms.close_keyboard(commit=False)
+                    st_ms.exit_pigeon_settings()
+                    main_settings_widget.invalidate()
+                except Exception:
+                    pass
+            dev_phase = DevPhase.OFF
+            skip_cache = None
+            try:
+                sync_developer_chrome()
+            except Exception:
+                pass
+            return True
+
+        def _sync_preferences_now_playing_progress() -> None:
+            """Feed live NP content into prefs; idle keeps SVG demos."""
+            if main_settings_widget is None:
+                return
+            st_ms = main_settings_widget.state
+            if not st_ms.show_preferences:
+                return
+
+            def _clear_prefs_live() -> None:
+                st_ms.preferences_live_content = False
+                st_ms.preferences_np_progress = None
+                st_ms.preferences_poster_bgra = None
+                st_ms.preferences_volume = None
+                st_ms.preferences_volume_fraction = None
+                st_ms.preferences_incoming = None
+                st_ms.preferences_config = None
+                st_ms.preferences_cast = None
+                st_ms.preferences_elapsed_text = None
+                st_ms.preferences_remaining_text = None
+                st_ms.preferences_service_name = None
+                st_ms.preferences_content_mode = None
+                st_ms.preferences_song_title = None
+                st_ms.preferences_album_title = None
+                st_ms.preferences_artist_title = None
+
+            try:
+                prog = _playback_progress_fraction_for_bar()
+            except Exception:
+                prog = None
+            clk = apple_tv_playback_clock
+            has_playback = bool(clk.get("has_sync") or clk.get("live_mode"))
+            poster = None
+            try:
+                poster = _circles_poster_bgra()
+            except Exception:
+                poster = None
+            live = bool(
+                has_playback
+                or prog is not None
+                or (poster is not None and getattr(poster, "size", 0) > 0)
+                or bool(str(active_tmdb_title_key or "").strip())
+            )
+            if not live:
+                _clear_prefs_live()
+                return
+
+            st_ms.preferences_live_content = True
+            st_ms.preferences_np_progress = prog
+            st_ms.preferences_poster_bgra = poster
+            try:
+                inc, cfg, vol = _resolve_receiver_lines_for_now_playing()
+            except Exception:
+                inc, cfg, vol = "", "", ""
+            st_ms.preferences_incoming = inc
+            st_ms.preferences_config = cfg
+            st_ms.preferences_volume = vol
+            try:
+                from pigeon.widgets.playback_overlay import volume_fraction_from_display_line
+
+                st_ms.preferences_volume_fraction = float(
+                    volume_fraction_from_display_line(vol)
+                )
+            except Exception:
+                st_ms.preferences_volume_fraction = 0.0
+
+            remaining_text = ""
+            played_text = ""
+            if clk.get("live_mode"):
+                remaining_text = "LIVE"
+                played_text = "LIVE"
+            else:
+                try:
+                    pair = _playback_extrapolated_pair()
+                except Exception:
+                    pair = None
+                if pair is not None:
+                    played_text = _format_hmmss(int(pair[0]))
+                    remaining_text = _format_hmmss(int(pair[1]))
+            st_ms.preferences_elapsed_text = played_text
+            st_ms.preferences_remaining_text = remaining_text
+
+            sb = streaming_badge_state
+            svc = str(sb.get("label") or "").strip()
+            if not svc:
+                lm_svc = apple_tv_auto_state.get("last_metadata")
+                if isinstance(lm_svc, dict):
+                    svc = str(lm_svc.get("app_name") or "").strip()
+            st_ms.preferences_service_name = svc
+
+            is_music = bool(_vv_is_music())
+            st_ms.preferences_content_mode = "music" if is_music else "video"
+            if is_music:
+                lm_music = apple_tv_auto_state.get("last_metadata")
+                song_t = album_t = artist_t = ""
+                if isinstance(lm_music, dict):
+                    song_t = str(lm_music.get("title") or "").strip()
+                    album_t = str(lm_music.get("album") or "").strip()
+                    artist_t = str(lm_music.get("artist") or "").strip()
+                    if not song_t and album_t:
+                        song_t, album_t = album_t, ""
+                st_ms.preferences_song_title = song_t
+                st_ms.preferences_album_title = album_t
+                st_ms.preferences_artist_title = artist_t
+                st_ms.preferences_cast = ()
+            else:
+                st_ms.preferences_song_title = ""
+                st_ms.preferences_album_title = ""
+                st_ms.preferences_artist_title = ""
+                cast_rows: list[tuple[str, str]] = []
+                try:
+                    from pigeon.tmdb_poster import get_cached_tmdb_cast
+
+                    tk = str(active_tmdb_title_key or "").strip()
+                    if tk:
+                        cast_rows = list(get_cached_tmdb_cast(tk) or [])
+                except Exception:
+                    cast_rows = []
+                st_ms.preferences_cast = tuple(
+                    (str(a or ""), str(c or "")) for a, c in cast_rows[:3]
+                )
+
         def _settings_wheel_target_should_ignore(widget: tk.Misc) -> bool:
             """Let Listbox/Text/Entry keep their own scroll behavior."""
             try:
@@ -1760,7 +1915,8 @@ def main() -> int:
 
         def _settings_mousewheel(event: tk.Event) -> str | None:
             _bump_pigeon_user_activity(event)
-            if dev_phase != DevPhase.SETTINGS or not settings_frame.winfo_ismapped():
+            # Legacy Tk settings form is never shown.
+            if not settings_frame.winfo_ismapped():
                 return None
             try:
                 under = root.winfo_containing(event.x_root, event.y_root)
@@ -2074,6 +2230,7 @@ def main() -> int:
         def _resolve_receiver_lines_for_now_playing() -> tuple[str, str, str]:
             """Incoming/config/volume for View 1, with Denon telnet fallback."""
             if bool(receiver_standby_holder[0]):
+                denon_vol_cache["np_hold"] = ""
                 return "", "", ""
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
@@ -2092,16 +2249,26 @@ def main() -> int:
                 )
             if not vol:
                 raw_vol = str(receiver_overlay_state.get("volume") or "").strip()
-                if raw_vol and not (
-                    raw_vol.isdigit() and 0 <= int(raw_vol) <= 100
-                ):
-                    vol = raw_vol
-                elif raw_vol and (
-                    "db" in raw_vol.lower()
-                    or raw_vol.endswith("%")
-                    or raw_vol.lower() == "mute"
-                ):
-                    vol = raw_vol
+                if raw_vol:
+                    # Accept dB, mute, percent, and bare 0–100 (player-reported).
+                    low = raw_vol.lower()
+                    if (
+                        low in ("mute", "muted", "off")
+                        or "db" in low
+                        or raw_vol.endswith("%")
+                        or (raw_vol.isdigit() and 0 <= int(raw_vol) <= 100)
+                        or raw_vol[:1] in "+-"
+                    ):
+                        vol = raw_vol
+            if vol:
+                denon_vol_cache["np_hold"] = vol
+            else:
+                # Keep last good readout so zone3 does not flash an empty ring
+                # between AVR polls / while Apple TV reports volume_percent=0.
+                held = str(denon_vol_cache.get("np_hold") or "").strip()
+                if not held:
+                    held = str(denon_vol_cache.get("effective") or "").strip()
+                vol = held
             return inc, cfg, vol
 
         apple_tv_dashboard_track: dict[str, object] = {"last_poll_ok": None, "consecutive_fail": 0}
@@ -2507,7 +2674,7 @@ def main() -> int:
         content_buttons_row.pack(anchor=tk.W, pady=(0, 6))
         # Purge is parented here after handlers. TMDb (Manual Fetch, Report Failure, retry log) lives on Advanced.
 
-        # Bottom “info bar” HUD removed; Tab cycles main → legacy settings → off.
+        # Bottom “info bar” HUD removed; Tab toggles settings_main ↔ off.
         hud_bar = None
         hud = None
 
@@ -3057,6 +3224,8 @@ def main() -> int:
         denon_vol_cache: dict[str, object] = {
             "effective": "",
             "mono_usable": 0.0,
+            # Last volume string shown on View 1 (survives brief empty polls).
+            "np_hold": "",
         }
         # True when the last Denon poll answered but reported OFF/STANDBY — hide all
         # receiver metadata and treat the receiver indicator as inactive.
@@ -4665,7 +4834,10 @@ def main() -> int:
                 )
             if not canvas.flags["C_CONTIGUOUS"]:
                 canvas = np.ascontiguousarray(canvas)
+            if _maybe_exit_settings_menus_on_idle():
+                pass
             if dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
+                _sync_preferences_now_playing_progress()
                 main_settings_widget.render(canvas)
                 dw, dh = display_dims[0], display_dims[1]
                 cap_w, cap_h, use_cap = _composite_cap_dims(dw, dh)
@@ -4701,6 +4873,7 @@ def main() -> int:
                     # Pre-reveal splash underlay stays black.
                     pass
                 elif dev_phase == DevPhase.MAIN_SETTINGS and main_settings_widget is not None:
+                    _sync_preferences_now_playing_progress()
                     main_settings_widget.render(canvas)
                 else:
                     _sync_now_playing_screen_state()
@@ -5596,11 +5769,6 @@ def main() -> int:
             _ui_scale()
             if command_entry_visible:
                 place_command_bar()
-            if dev_phase == DevPhase.SETTINGS:
-                try:
-                    root.after_idle(_settings_update_scrollregion)
-                except Exception:
-                    pass
 
         def place_command_bar() -> None:
             dw, dh = display_dims[0], display_dims[1]
@@ -5614,34 +5782,17 @@ def main() -> int:
             command_entry_visible = False
             command_bar.place_forget()
             try:
-                if dev_phase == DevPhase.SETTINGS:
-                    settings_frame.focus_set()
-                else:
-                    label.focus_set()
+                label.focus_set()
             except tk.TclError:
                 pass
 
         def _apply_dev_phase_widgets() -> None:
-            if dev_phase == DevPhase.SETTINGS:
-                try:
-                    label.pack_forget()
-                except tk.TclError:
-                    pass
-                settings_frame.pack(fill=tk.BOTH, expand=True)
-                try:
-                    settings_frame.lift()
-                except tk.TclError:
-                    pass
-                try:
-                    root.after(200, _schedule_refresh_pairing_leds)
-                except Exception:
-                    pass
-            else:
-                try:
-                    settings_frame.pack_forget()
-                except tk.TclError:
-                    pass
-                label.pack(fill=tk.BOTH, expand=True)
+            # settings_main composites onto the video label; never pack the Tk form.
+            try:
+                settings_frame.pack_forget()
+            except tk.TclError:
+                pass
+            label.pack(fill=tk.BOTH, expand=True)
 
         def _current_location_display_name() -> str:
             cid = (read_current_location_id() or "").strip()
@@ -5688,13 +5839,7 @@ def main() -> int:
                     highlightcolor="#0a84ff",
                 )
             elif dev_phase == DevPhase.MAIN_SETTINGS:
-                root.title(f"Pigeon {version_string()} — main settings")
-                try:
-                    label.configure(highlightthickness=0)
-                except tk.TclError:
-                    pass
-            elif dev_phase == DevPhase.SETTINGS:
-                root.title(f"Pigeon {version_string()} — legacy settings")
+                root.title(f"Pigeon {version_string()} — settings")
                 try:
                     label.configure(highlightthickness=0)
                 except tk.TclError:
@@ -5703,13 +5848,7 @@ def main() -> int:
                 root.title("")
                 label.configure(highlightthickness=0)
                 hide_command_entry()
-            if dev_phase == DevPhase.SETTINGS:
-                _settings_bind_wheel_globals()
-                root.after_idle(_settings_update_scrollregion)
-                root.after_idle(_refresh_match_quality_glance_label)
-                _check_for_updates(force=False)
-            else:
-                _settings_unbind_wheel_globals()
+            _settings_unbind_wheel_globals()
             if command_entry_visible:
                 place_command_bar()
                 command_bar.lift()
@@ -5736,16 +5875,48 @@ def main() -> int:
             root.quit()
 
         def cycle_dev_phase(_event=None) -> str:
+            """Toggle OFF ↔ MAIN_SETTINGS (also exits GRID → OFF)."""
             nonlocal dev_phase, skip_cache
             _bump_pigeon_user_activity()
-            if dev_phase == DevPhase.GRID:
+            if dev_phase == DevPhase.MAIN_SETTINGS:
+                if main_settings_widget is not None:
+                    try:
+                        st_ms = main_settings_widget.state
+                        if st_ms.keyboard_open:
+                            st_ms.close_keyboard(commit=False)
+                        st_ms.exit_pigeon_settings()
+                        main_settings_widget.invalidate()
+                    except Exception:
+                        pass
                 dev_phase = DevPhase.OFF
-            elif dev_phase == DevPhase.OFF:
-                dev_phase = DevPhase.SETTINGS
+            elif dev_phase == DevPhase.GRID:
+                dev_phase = DevPhase.OFF
             else:
-                dev_phase = DevPhase.OFF
+                if main_settings_widget is not None:
+                    try:
+                        if main_settings_widget.state.keyboard_open:
+                            main_settings_widget.state.close_keyboard(commit=False)
+                            main_settings_widget.invalidate()
+                    except Exception:
+                        pass
+                    try:
+                        from pigeon.widgets.ui_color_settings import (
+                            load_persisted_theme_into_state,
+                        )
+
+                        load_persisted_theme_into_state(main_settings_widget.state)
+                        main_settings_widget.invalidate()
+                    except Exception:
+                        pass
+                    try:
+                        main_settings_widget.prefetch_scans_for_settings()
+                    except Exception:
+                        pass
+                dev_phase = DevPhase.MAIN_SETTINGS
             skip_cache = None
             sync_developer_chrome()
+            if dev_phase == DevPhase.MAIN_SETTINGS:
+                render_once()
             return "break"
 
         def _open_landing_scene() -> bool:
@@ -5780,10 +5951,6 @@ def main() -> int:
 
             _save_persisted_scene_enabled(scene_enabled)
             skip_cache = None
-
-            if dev_phase == DevPhase.SETTINGS:
-                sync_developer_chrome()
-                return
 
             if not scene_enabled:
                 if _PIGEON_EXT:
@@ -5925,7 +6092,7 @@ def main() -> int:
             cv2.line(frame_bgr, (x0, y1), (x1, y0), (0, 0, 255), thickness=thick, lineType=cv2.LINE_AA)
 
         def try_cycle_dev_phase(event: tk.Event | None) -> str | None:
-            """Debounced OFF↔SETTINGS cycle (mouse / F9); design grid overlay is key 5."""
+            """Debounced OFF↔MAIN_SETTINGS cycle (mouse / F9); design grid overlay is key 5."""
             now = time.monotonic()
             if now - _last_overlay_mono[0] < 0.08:
                 return "break"
@@ -5934,7 +6101,7 @@ def main() -> int:
             return "break"
 
         def on_tab_key(event: tk.Event) -> str | None:
-            """Plain Tab: OFF → main_settings → legacy_settings → OFF."""
+            """Plain Tab: toggle OFF ↔ MAIN_SETTINGS (settings_main)."""
             if _widget_accepts_typing(event.widget):
                 return None
             if getattr(event, "keysym", "") == "ISO_Left_Tab":
@@ -5944,30 +6111,11 @@ def main() -> int:
                 return None
             if st_tab & 0x0004:
                 return None
-            _bump_pigeon_user_activity(event)
-            nonlocal dev_phase, skip_cache
-            # Leaving main_settings closes any open text keyboard without commit.
-            if (
-                dev_phase == DevPhase.MAIN_SETTINGS
-                and main_settings_widget is not None
-                and main_settings_widget.state.keyboard_open
-            ):
-                main_settings_widget.state.close_keyboard(commit=False)
-                main_settings_widget.invalidate()
-            if dev_phase == DevPhase.OFF or dev_phase == DevPhase.GRID:
-                dev_phase = DevPhase.MAIN_SETTINGS
-                if main_settings_widget is not None:
-                    # Silent WiFi/box scans so activate from a box is usually cache-hit.
-                    main_settings_widget.prefetch_scans_for_settings()
-            elif dev_phase == DevPhase.MAIN_SETTINGS:
-                dev_phase = DevPhase.SETTINGS
-            else:
-                # SETTINGS (legacy) or any other → off
-                dev_phase = DevPhase.OFF
-            skip_cache = None
-            sync_developer_chrome()
-            if dev_phase == DevPhase.MAIN_SETTINGS:
-                render_once()
+            now = time.monotonic()
+            if now - _last_overlay_mono[0] < 0.08:
+                return "break"
+            _last_overlay_mono[0] = now
+            cycle_dev_phase()
             return "break"
 
         def on_shift_tab_dev_cycle(event: tk.Event) -> str | None:
@@ -6137,7 +6285,7 @@ def main() -> int:
 
         def show_command_entry(_event=None) -> None:
             nonlocal command_entry_visible
-            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS) and display_view_holder[0] != DisplayView.FIVE:
+            if dev_phase != DevPhase.GRID and display_view_holder[0] != DisplayView.FIVE:
                 return
             command_entry_visible = True
             place_command_bar()
@@ -6519,8 +6667,6 @@ def main() -> int:
                             _sync_now_playing_screen_state()
                         skip_cache = None
                         render_once()
-                        if dev_phase == DevPhase.SETTINGS:
-                            sync_developer_chrome()
                         _drain_pending_tmdb_spawn()
                         return
                     active_tmdb_title_key = None
@@ -6536,8 +6682,6 @@ def main() -> int:
                         _sync_now_playing_screen_state()
                     skip_cache = None
                     render_once()
-                    if dev_phase == DevPhase.SETTINGS:
-                        sync_developer_chrome()
                     _drain_pending_tmdb_spawn()
                     return
                 _clear_tmdb_missing_art()
@@ -6641,8 +6785,6 @@ def main() -> int:
                             tmdb_quality_last_scored_event_key[0] = ev_key
                     except Exception:
                         pass
-                if dev_phase == DevPhase.SETTINGS:
-                    sync_developer_chrome()
                 if _view_one_uses_now_playing_screen():
                     _clear_now_playing_view_caches()
                     _sync_now_playing_screen_state()
@@ -6848,20 +6990,8 @@ def main() -> int:
             return f"TMDb match quality   {s} ok   {f} fail   {tot} events   {ok_pct:.0f}% ok"
 
         def _refresh_match_quality_glance_label() -> None:
-            if dev_phase != DevPhase.SETTINGS:
-                return
-            w = match_quality_glance_label_holder[0]
-            if w is None:
-                return
-            try:
-                s, f = _read_tmdb_quality_counts()
-                txt = _format_tmdb_match_quality_glance(s, f)
-                if match_quality_glance_sig[0] == txt:
-                    return
-                match_quality_glance_sig[0] = txt
-                w.configure(text=txt)
-            except tk.TclError:
-                pass
+            # Legacy Tk glance label — unused with settings_main.
+            return
 
         def _refresh_content_indicator() -> None:
             cv = content_indicator_cv_holder[0]
@@ -8911,12 +9041,6 @@ def main() -> int:
             except ImportError as e:
                 messagebox.showerror("Advanced", f"Could not open capability matrix:\n{e}", parent=root)
                 return
-            if dev_phase == DevPhase.SETTINGS:
-                advanced_matrix_restore_phase[0] = DevPhase.SETTINGS
-                _capture_last_view_one_layout_from_live_view()
-                dev_phase = DevPhase.GRID
-                skip_cache = None
-                sync_developer_chrome()
             adv_kw: dict[str, object] = {
                 "playback_content_ok": _advanced_feature_pipeline_ok,
                 "on_closed": _on_advanced_matrix_closed,
@@ -10332,10 +10456,7 @@ def main() -> int:
             _refresh_content_indicator()
 
             if had_art:
-                if dev_phase == DevPhase.SETTINGS:
-                    sync_developer_chrome()
-                else:
-                    render_once()
+                render_once()
 
         def _apple_tv_auto_poll_tick() -> None:
             if apple_tv_auto_state.get("running"):
@@ -11119,7 +11240,7 @@ def main() -> int:
 
         def submit_command_entry(_event=None) -> str:
             nonlocal skip_cache
-            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS) and display_view_holder[0] != DisplayView.FIVE:
+            if dev_phase != DevPhase.GRID and display_view_holder[0] != DisplayView.FIVE:
                 return "break"
             _bump_pigeon_user_activity()
             now_sub = time.monotonic()
@@ -11208,7 +11329,7 @@ def main() -> int:
                 return None
             if _widget_accepts_typing(w):
                 return None
-            if dev_phase in (DevPhase.GRID, DevPhase.SETTINGS) or display_view_holder[0] == DisplayView.FIVE:
+            if dev_phase == DevPhase.GRID or display_view_holder[0] == DisplayView.FIVE:
                 if command_entry_visible:
                     try:
                         command_entry.focus_force()
@@ -11562,7 +11683,7 @@ def main() -> int:
             _bump_pigeon_user_activity(event)
             if not _PIGEON_EXT:
                 return None
-            if dev_phase not in (DevPhase.GRID, DevPhase.SETTINGS) and display_view_holder[0] != DisplayView.FIVE:
+            if dev_phase != DevPhase.GRID and display_view_holder[0] != DisplayView.FIVE:
                 return None
             if _widget_accepts_typing(event.widget):
                 return None
@@ -11732,6 +11853,13 @@ def main() -> int:
                     main_settings_widget.invalidate()
             except Exception:
                 pass
+            try:
+                from pigeon.widgets.ui_color_settings import load_persisted_theme_into_state
+
+                load_persisted_theme_into_state(main_settings_widget.state)
+                main_settings_widget.invalidate()
+            except Exception:
+                pass
             dev_phase = DevPhase.MAIN_SETTINGS
             try:
                 main_settings_widget.prefetch_scans_for_settings()
@@ -11848,6 +11976,9 @@ def main() -> int:
             _render_tick_t0 = time.perf_counter()
             now = time.monotonic()
             _intro_mono = post_splash_mono[0]
+            if _maybe_exit_settings_menus_on_idle(now):
+                # Fall through to OFF-phase compose (now-playing or clock saver).
+                pass
 
             def _schedule_next_render() -> None:
                 elapsed_ms = int((time.perf_counter() - _render_tick_t0) * 1000.0)
@@ -11898,7 +12029,6 @@ def main() -> int:
                     SKIP_POST_SPLASH_STARTUP_TRANSITION
                     or _startup_elapsed >= STARTUP_PIGEON_WORDMARK_MAX_S
                 )
-                and dev_phase != DevPhase.SETTINGS
             ):
                 _startup_splash_complete[0] = True
                 if (
@@ -11913,10 +12043,6 @@ def main() -> int:
                     return
                 skip_cache = None
                 _warm_playback_overlay_blits()
-
-            if dev_phase == DevPhase.SETTINGS:
-                _schedule_render_oneshot(paused_interval_ms)
-                return
 
             if _PIGEON_EXT:
                 _compose_idle_strength_holder[0] = _update_idle_dim_strength(now)
@@ -11988,6 +12114,15 @@ def main() -> int:
                     clock_saver_off = 1 if _clock_saver_for_compose(now) else 0
                     if clock_saver_off:
                         no_anim = False
+                    _np_vol_sig = ""
+                    if view_circles_widget is not None:
+                        try:
+                            _np_vol_sig = (
+                                f"{view_circles_widget._state.volume!s}\x1f"
+                                f"{round(float(view_circles_widget._state.volume_fraction), 4)}"
+                            )
+                        except Exception:
+                            _np_vol_sig = ""
                     scene_off_key = (
                         int(dev_phase),
                         settings_tok,
@@ -12002,6 +12137,7 @@ def main() -> int:
                         tick_key_off,
                         clock_saver_off,
                         int(display_view_holder[0]),
+                        _np_vol_sig,
                     )
                     if no_anim and skip_cache == scene_off_key:
                         _schedule_next_render()
@@ -12392,9 +12528,11 @@ def main() -> int:
                         # Standby is treated as off: drop cached volume and overlay text.
                         denon_vol_cache["effective"] = ""
                         denon_vol_cache["mono_usable"] = 0.0
+                        denon_vol_cache["np_hold"] = ""
                     elif denon_ok and denon_vol_effective:
                         denon_vol_cache["effective"] = denon_vol_effective
                         denon_vol_cache["mono_usable"] = time.monotonic()
+                        denon_vol_cache["np_hold"] = denon_vol_effective
                     try:
                         from pigeon.runtime_state import update_receiver_runtime
 

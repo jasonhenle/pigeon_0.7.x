@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1478.15 1513.77">
+  <g id="color_container_group">
+    <rect id="color_containter_button" x="431.34" y="574.01" width="674.92" height="259.19" rx="13.04" ry="13.04" fill="#1c1c1c" stroke="#1c1c1c" stroke-miterlimit="10" stroke-width="7"/>
+    <rect id="color_container_accent" x="431.34" y="574.01" width="674.92" height="259.19" rx="13.04" ry="13.04" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="3"/>
+  </g>
+  <g id="button_color_group">
+    <g id="black_swatch_group">
+      <rect id="black_swatch" x="1021.49" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#202020" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="black_swatch_icon" cx="1057.77" cy="783.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="darkpurple_swatch_group">
+      <rect id="darkpurple_swatch" x="940.72" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#490089" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="darkpurple_swatch_icon" cx="977.84" cy="783.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="darkblue_swatch_group">
+      <rect id="darkblue_swatch" x="860.98" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#03237f" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="darkblue_swatch_icon" cx="898.2" cy="783.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="darkgreen_swatch_group">
+      <rect id="darkgreen_swatch" x="781.21" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#2f7f00" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="darkgreen_swatch_icon" cx="818.66" cy="783.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="darkyellow_swatch_group">
+      <rect id="darkyellow_swatch" x="700.51" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#878000" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="darkyellow_swatch_icon" cx="737.82" cy="783.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="darkorange_swatch_group">
+      <rect id="darkorange_swatch" x="620.74" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#825a00" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="darkorange_swatch_icon" cx="658.08" cy="783.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="darkred_swatch_group">
+      <rect id="darkred_swatch" x="540.97" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#7f0000" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="darkred_swatch_icon" cx="578.14" cy="783.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <text id="button_text" transform="translate(453.26 811.31) scale(1.14 1)" fill="#919190" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="21.11" font-weight="600"><tspan x="0" y="0" letter-spacing="0em">b</tspan><tspan x="13.97" y="0">u</tspan><tspan x="27.08" y="0" letter-spacing="0em">t</tspan><tspan x="36.24" y="0" letter-spacing="-.03em">t</tspan><tspan x="44.53" y="0">on</tspan></text>
+  </g>
+  <g id="ui_color_group">
+    <g id="gray_swatch_group">
+      <rect id="gray_swatch" x="1021.49" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#777" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="gray_swatch_icon" cx="1058.77" cy="702.87" r="30.63" fill="#fff" stroke="#202020" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="purple_swatch_group">
+      <rect id="purple_swatch" x="940.72" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#9500ff" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="purple_swatch_icon" cx="977.84" cy="702.87" r="30.63" fill="#fff" stroke="#202020" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="blue_swatch_group">
+      <rect id="blue_swatch" x="861.98" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#0037ff" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="blue_swatch_icon" cx="899.5" cy="702.87" r="30.63" fill="#fff" stroke="#202020" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="green_swatch_group">
+      <rect id="green_swatch" x="781.21" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#58ff00" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="green_swatch_icon" cx="818.36" cy="702.87" r="30.63" fill="#fff" stroke="#202020" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="yellow_swatch_group">
+      <rect id="yellow_swatch" x="700.51" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#fff800" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="yellow_swatch_icon" cx="737.72" cy="702.87" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="orange_Swatch_group">
+      <rect id="orange_swatch" x="620.74" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#ffb600" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="orange_swatch_icon" cx="658.08" cy="702.87" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="red_swatch_group">
+      <rect id="red_swatch_button" x="540.97" y="665.79" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="red" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="red_swatch_icon" cx="578.14" cy="702.87" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <text id="ui_text" transform="translate(513.81 731.17)" fill="#919190" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0" letter-spacing="0em">u</tspan><tspan x="14.93" y="0">i</tspan></text>
+  </g>
+  <g id="accent_color_group">
+    <g id="lightpurple_swatch_group">
+      <rect id="lightpurple_swatch" x="940.72" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#c27efc" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="lightpurple_swatch_icon" cx="978.04" cy="622.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="lightblue_swatch_group">
+      <rect id="lightblue_swatch" x="860.98" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#7196ff" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <g id="lightblue_swatch_icon">
+        <circle cx="898.6" cy="622.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+      </g>
+    </g>
+    <g id="lightgreen_swatch_group">
+      <rect id="lightgreen_swatch" x="781.21" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#acff7b" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="lightgreen_swatch_icon" cx="818.36" cy="622.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="lightyellow_swatch_group">
+      <rect id="lightyellow_swatch" x="700.51" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#fff87d" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="lightyellow_swatch_icon" cx="737.52" cy="622.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="lightorange_group">
+      <rect id="orange_swatch-2" data-name="orange_swatch" x="620.74" y="584.96" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#ffd985" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="orange_swatch_icon-2" data-name="orange_swatch_icon" cx="658.08" cy="622.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <g id="lightred_swatch_group">
+      <rect id="lightred_swatch" x="540.97" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#ff8383" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="lightred_swatch_icon" cx="578.14" cy="622.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <text id="accent_text" transform="translate(450.48 650.47)" fill="#fff" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0">a</tspan><tspan x="14.57" y="0" letter-spacing="0em">cc</tspan><tspan x="43.75" y="0">e</tspan><tspan x="59.18" y="0" letter-spacing="-.02em">n</tspan><tspan x="73.68" y="0">t</tspan></text>
+    <g id="white_swatch_group">
+      <rect id="white_swatch" x="1021.49" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" fill="#fff" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+      <circle id="white_swatch_icon" cx="1057.77" cy="622.15" r="30.63" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+  </g>
+  <g id="back_group">
+    <path id="back_button" d="M404.37,505.47h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="#202020" stroke="#202020" stroke-miterlimit="10" stroke-width="7"/>
+    <g id="back_accent">
+      <path d="M404.37,505.47h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" fill="none" stroke="#666" stroke-miterlimit="10" stroke-width="3"/>
+    </g>
+    <text id="back_text" transform="translate(402.34 534.04)" fill="#fff" font-family="Digital-7, Digital-7" font-size="29"><tspan x="0" y="0">BACK</tspan></text>
+  </g>
+</svg>

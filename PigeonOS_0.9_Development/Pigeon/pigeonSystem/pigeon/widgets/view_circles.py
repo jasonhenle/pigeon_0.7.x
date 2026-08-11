@@ -51,11 +51,93 @@ _SVG_W = 800.0
 _SVG_H = 480.0
 
 _COLOR_BG_HEX = "#000000"
-_COLOR_ACCENT_BGR = (0, 0, 255)  # #FF0000
+_COLOR_ACCENT_BGR = (0, 0, 255)  # #FF0000 — legacy default (mapped to theme.ui)
 _COLOR_UNPLAYED_BGR = (147, 147, 147)  # #939393
 _COLOR_BUTTON_BGR = (35, 35, 35)  # #232323
 _COLOR_CHROME_BGR = (147, 147, 147)  # #939393
 _COLOR_CHROME_RGB = (147, 147, 147)
+
+
+def _hex_to_bgr(hex_color: str) -> tuple[int, int, int]:
+    h = (hex_color or "").strip().lstrip("#")
+    if len(h) == 3:
+        h = f"{h[0]}{h[0]}{h[1]}{h[1]}{h[2]}{h[2]}"
+    if len(h) != 6:
+        return _COLOR_ACCENT_BGR
+    try:
+        r = int(h[0:2], 16)
+        g = int(h[2:4], 16)
+        b = int(h[4:6], 16)
+    except ValueError:
+        return _COLOR_ACCENT_BGR
+    return (b, g, r)
+
+
+def _darken_hex(hex_color: str, *, factor: float = 0.5) -> str:
+    h = (hex_color or "").strip().lstrip("#")
+    if len(h) == 3:
+        h = f"{h[0]}{h[0]}{h[1]}{h[1]}{h[2]}{h[2]}"
+    if len(h) != 6:
+        return "#800000"
+    try:
+        r = int(h[0:2], 16)
+        g = int(h[2:4], 16)
+        b = int(h[4:6], 16)
+    except ValueError:
+        return "#800000"
+    f = max(0.0, min(1.0, float(factor)))
+    return f"#{int(r * f):02x}{int(g * f):02x}{int(b * f):02x}"
+
+
+@dataclass(frozen=True)
+class _NpTheme:
+    """Settings color page → now-playing paint roles."""
+
+    ui_hex: str = "#ff0013"
+    accent_hex: str = "#FFFFFF"
+    button_hex: str = "#202020"
+
+    @property
+    def ui_bgr(self) -> tuple[int, int, int]:
+        return _hex_to_bgr(self.ui_hex)
+
+    @property
+    def accent_bgr(self) -> tuple[int, int, int]:
+        return _hex_to_bgr(self.accent_hex)
+
+    @property
+    def button_bgr(self) -> tuple[int, int, int]:
+        return _hex_to_bgr(self.button_hex)
+
+    @property
+    def tick_active(self) -> str:
+        return self.ui_hex
+
+    @property
+    def tick_dim(self) -> str:
+        return _darken_hex(self.ui_hex, factor=0.5)
+
+    @property
+    def cache_key(self) -> tuple[str, str, str]:
+        return (self.ui_hex.lower(), self.accent_hex.lower(), self.button_hex.lower())
+
+
+def np_theme_from_settings() -> _NpTheme:
+    """Load accent / ui / button colors from the settings color page."""
+    try:
+        from pigeon.widgets.ui_color_settings import (
+            hex_for_color_key,
+            read_ui_color_keys,
+        )
+
+        keys = read_ui_color_keys()
+        return _NpTheme(
+            ui_hex=hex_for_color_key("ui", keys.get("ui", "red")),
+            accent_hex=hex_for_color_key("accent", keys.get("accent", "white")),
+            button_hex=hex_for_color_key("button", keys.get("button", "black")),
+        )
+    except Exception:
+        return _NpTheme()
 
 # Zone centers (design coords).
 _ZONE1_CX, _ZONE1_CY = 152.0, 192.0
@@ -251,17 +333,21 @@ _STRIP_OR_HIDE_NAMES: tuple[str, ...] = (
     "zone3_volume_container",
     "zone2_volume_deselected_buton",
     "zone2_volume_selected_button",
+    "zone2_volume_container",
     "zone1_volume_deselected_buton",
     "zone1_volume_selected_button",
+    "zone1_volume_container",
 )
 
 # Zone0 date header (SVG left/center/right; default = left).
+# Centers align with zone1 / zone2 / zone3 widget columns.
 _ZONE0_DATE_ALIGN_DEFAULT = "left"
 _ZONE0_DATE_SIZE_PX = 14
-_ZONE0_DATE_BASELINE: dict[str, tuple[float, float]] = {
-    "left": (35.22, 19.94),
-    "center": (282.27, 19.94),
-    "right": (522.95, 19.94),
+_ZONE0_DATE_BASELINE_Y = 19.94
+_ZONE0_DATE_CENTER_X: dict[str, float] = {
+    "left": _ZONE1_CX,
+    "center": _ZONE2_CX,
+    "right": _ZONE3_CX,
 }
 
 
@@ -882,12 +968,14 @@ def _apply_exterior_seconds_fill(
     zone: int,
     *,
     sec_idx: int,
+    theme: _NpTheme | None = None,
 ) -> None:
-    """Paint exterior black; white only under seconds layers 1..``sec_idx``.
+    """Paint exterior button color; accent only under seconds layers 1..``sec_idx``.
 
-    Middle black disc sits above the white wedge so the visible white is the
+    Middle button disc sits above the accent wedge so the visible accent is the
     outer ring under the active second ticks.
     """
+    th = theme or np_theme_from_settings()
     exterior = _find_by_key(clock, f"zone{zone}_clock_exterior_accent")
     middle = _find_by_key(clock, f"zone{zone}_clock_middle_accent")
     fill_name = f"zone{zone}_clock_exterior_seconds_fill"
@@ -904,11 +992,11 @@ def _apply_exterior_seconds_fill(
         r = _CLOCK_EXTERIOR_ACCENT_R
     idx = max(1, min(60, int(sec_idx)))
     frac = idx / 60.0
-    exterior.set("fill", "#000000")
+    exterior.set("fill", th.button_hex)
     d = _seconds_wedge_path_d(cx, cy, r, frac)
     if d is None:
-        # Full minute (:00 / layer 60) — entire exterior turns white.
-        exterior.set("fill", "#FFFFFF")
+        # Full minute (:00 / layer 60) — entire exterior turns accent.
+        exterior.set("fill", th.accent_hex)
         _place_in_group(clock, exterior, 0)
         _place_in_group(clock, middle, 1)
         return
@@ -920,21 +1008,22 @@ def _apply_exterior_seconds_fill(
     wedge.set("id", fill_name)
     wedge.set("data-name", fill_name)
     wedge.set("d", d)
-    wedge.set("fill", "#FFFFFF")
+    wedge.set("fill", th.accent_hex)
     clock.append(wedge)
-    # Exterior (black) → white seconds wedge → middle (black).
+    # Exterior (button) → accent seconds wedge → middle (button).
     _place_in_group(clock, exterior, 0)
     _place_in_group(clock, wedge, 1)
     _place_in_group(clock, middle, 2)
 
 
-def _apply_clock_accent_fills(root: ET.Element) -> None:
-    """Clock accent stack (bottom → top): exterior black, then middle black.
+def _apply_clock_accent_fills(root: ET.Element, *, theme: _NpTheme | None = None) -> None:
+    """Clock accent stack (bottom → top): exterior button, then middle button.
 
-    Exterior starts black; a white seconds wedge is layered above it for the
-    active clock (see ``_apply_exterior_seconds_fill``). Middle sits above that;
-    ticks / interior / center paint above both.
+    Exterior starts as button color; an accent seconds wedge is layered above it
+    for the active clock (see ``_apply_exterior_seconds_fill``). Middle sits above
+    that; ticks / interior / center paint above both.
     """
+    th = theme or np_theme_from_settings()
     for zone in (1, 2, 3):
         clock = _clock_group_for_zone(root, zone)
         if clock is None:
@@ -951,9 +1040,9 @@ def _apply_clock_accent_fills(root: ET.Element) -> None:
         middle = _find_by_key(clock, f"zone{zone}_clock_middle_accent")
         interior = _find_by_key(clock, f"zone{zone}_clock_interior_accent")
         if exterior is not None:
-            exterior.set("fill", "#000000")
+            exterior.set("fill", th.button_hex)
         if middle is not None:
-            middle.set("fill", "#000000")
+            middle.set("fill", th.button_hex)
         # Interior must not be white-filled — leave stroke-only / none.
         if interior is not None and str(interior.get("fill") or "").strip().upper() in (
             "#FFFFFF",
@@ -966,13 +1055,20 @@ def _apply_clock_accent_fills(root: ET.Element) -> None:
         _place_in_group(clock, middle, 1)
 
 
-def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
+def _apply_clock_ticks(
+    root: ET.Element,
+    zone: int,
+    now: datetime,
+    *,
+    theme: _NpTheme | None = None,
+) -> None:
     """Drive clock tick layers for the active zone.
 
     Hours: original geometry; only the current face layer is kept.
-    Minutes + seconds: keep layers 1..current (0 → 60); prior ticks dark red,
-    current full red and raised above siblings.
+    Minutes + seconds: keep layers 1..current (0 → 60); prior ticks dim UI,
+    current full UI and raised above siblings.
     """
+    th = theme or np_theme_from_settings()
     clock = _clock_group_for_zone(root, zone)
     if clock is None:
         return
@@ -990,10 +1086,10 @@ def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
     min_idx = 60 if minute == 0 else minute
     sec_idx = 60 if second == 0 else second
 
-    # Exterior: black base + white sector under seconds 1..current.
-    _apply_exterior_seconds_fill(clock, zone, sec_idx=sec_idx)
+    # Exterior: button base + accent sector under seconds 1..current.
+    _apply_exterior_seconds_fill(clock, zone, sec_idx=sec_idx, theme=th)
 
-    # Hours: only the matching face layer (original SVG shape).
+    # Hours: only the matching face layer (original SVG shape), painted UI.
     face_name = _HOUR_FACE_NAMES.get(h12, "")
     for el, key in list(_iter_named_children(hours_g)):
         if not key.startswith("hours_"):
@@ -1001,6 +1097,8 @@ def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
         # hours_61 maps to missing hours_51 — never a face hour for display.
         if key != face_name:
             _detach_element(root, el)
+            continue
+        _set_tick_paint(el, color=th.tick_active)
 
     # Minutes: layers 1..current; dim priors, highlight current.
     current_min: ET.Element | None = None
@@ -1014,9 +1112,9 @@ def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
             continue
         if idx == min_idx:
             current_min = el
-            _set_tick_paint(el, color=_TICK_ACTIVE_FILL)
+            _set_tick_paint(el, color=th.tick_active)
         else:
-            _set_tick_paint(el, color=_TICK_DIM_FILL)
+            _set_tick_paint(el, color=th.tick_dim)
     _raise_in_group(minutes_g, current_min)
 
     # Seconds: layers 1..current; dim priors, highlight current.
@@ -1025,12 +1123,12 @@ def _apply_clock_ticks(root: ET.Element, zone: int, now: datetime) -> None:
         if not key.startswith("seconds_"):
             continue
         if el is current_sec:
-            _set_tick_paint(el, color=_TICK_ACTIVE_FILL)
+            _set_tick_paint(el, color=th.tick_active)
             continue
         m = re.fullmatch(r"seconds_(\d{2})", key)
         idx = int(m.group(1)) if m else -1
         if 1 <= idx <= sec_idx:
-            _set_tick_paint(el, color=_TICK_DIM_FILL)
+            _set_tick_paint(el, color=th.tick_dim)
         else:
             _detach_element(root, el)
     _raise_in_group(seconds_g, current_sec)
@@ -1052,8 +1150,10 @@ def apply_view_circles_svg_state(
     paused: bool = False,
     now: datetime | None = None,
     active_clock_zone: int = 1,
+    theme: _NpTheme | None = None,
 ) -> None:
     mode = _normalize_content_mode(content_mode)
+    th = theme or np_theme_from_settings()
     root.set("style", "background:transparent")
     _remove_element_by_id(root, "background")
     _remove_element_by_id(root, "background-2")
@@ -1101,8 +1201,23 @@ def apply_view_circles_svg_state(
         _detach_element(root, el)
 
     dt = now if now is not None else datetime.now()
-    # Exterior (black) under middle (black); active zone adds white seconds wedge.
-    _apply_clock_accent_fills(root)
+    # Exterior (button) under middle (button); active zone adds accent seconds wedge.
+    _apply_clock_accent_fills(root, theme=th)
+    # Audio-levels channel bars follow settings UI color (LFE stays chrome).
+    for zone in (1, 2, 3):
+        group = None
+        if vis.get(f"zone{zone}_audio_levels_group", False):
+            group = _find_by_key(root, f"zone{zone}_audio_levels_group")
+        if group is None and zone == 2 and vis.get("zone2_audio_levles_gtoup", False):
+            group = _find_by_key(root, "zone2_audio_levles_gtoup")
+        if group is None:
+            continue
+        for el in group.iter():
+            key = _layer_key(el)
+            if "lfe" in key.lower():
+                continue
+            if "audio_levels" in key and "button" in key and not key.endswith("_text"):
+                _set_tick_paint(el, color=th.ui_hex)
     # Drive ticks for whichever clock zone is visible (preferences may move it).
     clock_zone = int(active_clock_zone)
     for z in (1, 2, 3):
@@ -1110,7 +1225,7 @@ def apply_view_circles_svg_state(
             clock_zone = z
             break
     if vis.get(f"zone{clock_zone}_clock_group", False):
-        _apply_clock_ticks(root, clock_zone, dt)
+        _apply_clock_ticks(root, clock_zone, dt, theme=th)
     # Clear any leftover digital clock text nodes.
     for z in (1, 2, 3):
         _clear_text_content(_find_by_key(root, f"zone{z}_clock_digital_text"))
@@ -1123,8 +1238,10 @@ def render_view_circles_svg_base_bgra(
     content_mode: str = _CONTENT_MODE_VIDEO,
     paused: bool = False,
     now: datetime | None = None,
+    theme: _NpTheme | None = None,
 ) -> np.ndarray:
     mode = _normalize_content_mode(content_mode)
+    th = theme or np_theme_from_settings()
     if svg_path is not None:
         path = Path(svg_path)
     else:
@@ -1138,6 +1255,7 @@ def render_view_circles_svg_base_bgra(
         paused=paused,
         now=now,
         active_clock_zone=1,
+        theme=th,
     )
     bgra = _rasterize_svg_tree(root)
     bgra = _decanvas_white_bgra(bgra)
@@ -1700,14 +1818,16 @@ def _draw_circle_pair(
     cy: float,
     fraction: float,
     show_accent: bool,
+    theme: _NpTheme | None = None,
 ) -> None:
-    """Volume ring: visible grey empty track, red level, dark center for readout.
+    """Volume ring: visible grey empty track, UI-color level, button center.
 
     Pure-black track on the black stage reads as a "blacked out" zone once the
     TMDb intro spin stops (especially at low / zero volume). Chrome-grey empty
-    track + edge strokes keep the widget present; red still shows level.
+    track + edge strokes keep the widget present; theme.ui shows level.
     """
-    del show_accent  # track always drawn; red overlay follows fraction
+    del show_accent  # track always drawn; UI overlay follows fraction
+    th = theme or np_theme_from_settings()
     frac = max(0.0, min(1.0, float(fraction)))
     # Empty headroom — opaque enough to read on black / blurred artwork.
     _draw_progress_ring(
@@ -1729,7 +1849,7 @@ def _draw_circle_pair(
             outer_r=_RING_OUTER_R,
             inner_r=_RING_INNER_R,
             fraction=frac,
-            fill_bgr=_COLOR_ACCENT_BGR,
+            fill_bgr=th.ui_bgr,
             fill_opacity=1.0,
             stroke=0,
         )
@@ -1752,7 +1872,7 @@ def _draw_circle_pair(
         cx=cx,
         cy=cy,
         r=_RING_INNER_R,
-        fill_bgr=(0, 0, 0),
+        fill_bgr=th.button_bgr,
         fill_opacity=1.0,
     )
 
@@ -2065,8 +2185,9 @@ class ViewCirclesWidget:
             h12 = 12
         vol_disp = self._volume_fraction_for_display()
         zone_widgets = _default_zone_widget_assignments()
+        theme_key = np_theme_from_settings().cache_key
         return (
-            28,  # cache schema — preferences zone widgets
+            29,  # cache schema — settings theme colors
             st.content_mode,
             round(st.progress, 6),
             st.elapsed_text,
@@ -2092,6 +2213,7 @@ class ViewCirclesWidget:
             int(now.second),
             _format_zone0_date(datetime.now()),
             zone_widgets,
+            theme_key,
         )
 
     def _svg_chrome_cache_key(self, now: datetime) -> tuple[object, ...]:
@@ -2114,8 +2236,9 @@ class ViewCirclesWidget:
             h12,
             int(now.minute),
             int(now.second),
-            9,  # chrome pipeline — preferences zone widgets
+            10,  # chrome pipeline — settings theme colors
             zone_widgets,
+            np_theme_from_settings().cache_key,
         )
 
     def _render_svg_base(self, now: datetime) -> np.ndarray:
@@ -2129,6 +2252,7 @@ class ViewCirclesWidget:
                 content_mode=self.content_mode,
                 paused=bool(self._state.paused),
                 now=now,
+                theme=np_theme_from_settings(),
             )
         except Exception:
             base = _fallback_base_bgra()
@@ -2294,7 +2418,7 @@ class ViewCirclesWidget:
                 y=_BAR_T,
                 w=elapsed_w,
                 h=_BAR_H,
-                fill_bgr=_COLOR_ACCENT_BGR,
+                fill_bgr=np_theme_from_settings().ui_bgr,
                 radius=_BAR_RX,
                 stroke_bgr=_COLOR_CHROME_BGR,
                 stroke=_ACCENT_STROKE_PX,
@@ -2307,7 +2431,7 @@ class ViewCirclesWidget:
         cti_x = _BAR_L + min(elapsed_w, _BAR_W) - _CTI_W // 2
         cti_x = max(_BAR_L, min(_BAR_R - _CTI_W, cti_x))
         cti = np.zeros((_CTI_H, _CTI_W, 4), dtype=np.uint8)
-        cti[:, :, :3] = _COLOR_CHROME_BGR
+        cti[:, :, :3] = np_theme_from_settings().ui_bgr
         cti[:, :, 3] = 255
         _paste_patch_bgra(out, cti, cti_x, _CTI_Y)
 
@@ -2386,23 +2510,24 @@ class ViewCirclesWidget:
         if align is None:
             return
         key = str(align or _ZONE0_DATE_ALIGN_DEFAULT).strip().lower()
-        if key not in _ZONE0_DATE_BASELINE:
+        if key not in _ZONE0_DATE_CENTER_X:
             key = _ZONE0_DATE_ALIGN_DEFAULT
-        x_base, y_base = _ZONE0_DATE_BASELINE[key]
+        cx = float(_ZONE0_DATE_CENTER_X[key])
+        y_base = float(_ZONE0_DATE_BASELINE_Y)
         label = _format_zone0_date(now)
         font = _load_sharp_light_italic(_ZONE0_DATE_SIZE_PX)
-        # Measure for baseline-aligned paste (SVG text origin = left baseline).
+        # Center on the zone column; baseline matches prior SVG header Y.
         pad = 2
         probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
         draw = ImageDraw.Draw(probe)
         _l, t, _r, _b = draw.textbbox((0, 0), label, font=font)
-        patch, _pw, _ph = _text_patch_font(
+        patch, pw, _ph = _text_patch_font(
             label,
             font=font,
             fill_rgb=(255, 255, 255),
         )
         # Patch left edge is at ``pad``; baseline in patch is ``pad - t``.
-        paste_x = int(round(x_base - pad))
+        paste_x = int(round(cx - (pw / 2.0)))
         paste_y = int(round(y_base - (pad - t)))
         _paste_patch_bgra(out, patch, paste_x, paste_y)
 
@@ -2505,6 +2630,7 @@ class ViewCirclesWidget:
             cy=cy,
             fraction=pf,
             show_accent=pf > 1e-6,
+            theme=np_theme_from_settings(),
         )
         time_p, _, _ = _text_patch_digital7(
             _clock_hhmm(now),
@@ -2554,6 +2680,7 @@ class ViewCirclesWidget:
         now = self._clock_now_for_display()
         out = _fallback_base_bgra()
         assignments = _default_zone_widget_assignments()
+        theme = np_theme_from_settings()
         if (
             self._poster_bgra is not None
             and self._poster_bgra.size > 0
@@ -2581,6 +2708,7 @@ class ViewCirclesWidget:
                 cy=cy,
                 fraction=vol_frac,
                 show_accent=vol_frac > 1e-6,
+                theme=theme,
             )
         for z in (1, 2, 3):
             if assignments[z - 1] != "now_playing":
