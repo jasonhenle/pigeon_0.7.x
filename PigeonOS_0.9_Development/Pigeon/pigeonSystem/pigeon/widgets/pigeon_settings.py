@@ -1,9 +1,10 @@
 """
 Pigeon device settings — 12-tile grid (settings home).
 
-Opened from main settings box1 (device panel). Pure black stage + white tile
-chrome; focused tile fills with the settings UI color. Existing destinations:
-GENERAL → preferences, COLORS → color page, UPDATE → update popup.
+Opened from main settings box1 (device panel). Shared settings theme background
+under a 6×2 grid of filled, rounded tiles. Focused tile uses the settings UI
+color. Existing destinations: GENERAL → preferences, COLORS → color page,
+UPDATE → update popup.
 """
 
 from __future__ import annotations
@@ -211,6 +212,28 @@ def _hex_to_bgr(hex_color: str) -> tuple[int, int, int]:
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=16)
+def _rounded_rect_mask(w: int, h: int, radius: int) -> np.ndarray:
+    """Opaque=255 mask for a rounded rectangle (tile / icon clip)."""
+    from PIL import Image, ImageDraw
+
+    ww, hh = max(1, int(w)), max(1, int(h))
+    r = max(0, min(int(radius), ww // 2, hh // 2))
+    img = Image.new("L", (ww, hh), 0)
+    ImageDraw.Draw(img).rounded_rectangle((0, 0, ww - 1, hh - 1), radius=r, fill=255)
+    return np.asarray(img, dtype=np.uint8)
+
+
+def _apply_rounded_mask(cell: np.ndarray, radius: int) -> None:
+    """Zero alpha outside the rounded tile so icons respect corner masks."""
+    h, w = cell.shape[:2]
+    mask = _rounded_rect_mask(w, h, radius)
+    if cell.shape[2] >= 4:
+        cell[:, :, 3] = np.minimum(cell[:, :, 3], mask)
+    else:
+        cell[mask == 0] = 0
+
+
 def _draw_rounded_rect_outline(
     bgra: np.ndarray,
     *,
@@ -226,27 +249,12 @@ def _draw_rounded_rect_outline(
 
     if w < 2 or h < 2:
         return
-    r = max(1, min(int(radius), w // 2, h // 2))
     t = max(1, int(thickness))
-    # Outer rounded mask minus inset → stroke ring.
-    outer = np.zeros((h, w), dtype=np.uint8)
-    cv2.rectangle(outer, (r, 0), (w - r - 1, h - 1), 255, -1)
-    cv2.rectangle(outer, (0, r), (w - 1, h - r - 1), 255, -1)
-    cv2.circle(outer, (r, r), r, 255, -1, lineType=cv2.LINE_AA)
-    cv2.circle(outer, (w - r - 1, r), r, 255, -1, lineType=cv2.LINE_AA)
-    cv2.circle(outer, (r, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
-    cv2.circle(outer, (w - r - 1, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
-    inner = np.zeros((h, w), dtype=np.uint8)
+    outer = _rounded_rect_mask(w, h, radius)
+    inner = np.zeros_like(outer)
     if w > 2 * t and h > 2 * t:
-        ir = max(1, r - t)
-        cv2.rectangle(inner, (ir + t, t), (w - ir - t - 1, h - t - 1), 255, -1)
-        cv2.rectangle(inner, (t, ir + t), (w - t - 1, h - ir - t - 1), 255, -1)
-        cv2.circle(inner, (t + ir, t + ir), ir, 255, -1, lineType=cv2.LINE_AA)
-        cv2.circle(inner, (w - t - ir - 1, t + ir), ir, 255, -1, lineType=cv2.LINE_AA)
-        cv2.circle(inner, (t + ir, h - t - ir - 1), ir, 255, -1, lineType=cv2.LINE_AA)
-        cv2.circle(
-            inner, (w - t - ir - 1, h - t - ir - 1), ir, 255, -1, lineType=cv2.LINE_AA
-        )
+        inset = _rounded_rect_mask(w - 2 * t, h - 2 * t, max(0, int(radius) - t))
+        inner[t : t + inset.shape[0], t : t + inset.shape[1]] = inset
     ring = cv2.subtract(outer, inner)
     ys, xs = np.where(ring > 0)
     if not ys.size:
@@ -276,22 +284,21 @@ def _draw_rounded_rect_fill(
     radius: int,
     color_bgr: tuple[int, int, int],
 ) -> None:
-    import cv2
-
     if w < 2 or h < 2:
         return
-    r = max(1, min(radius, w // 2, h // 2))
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.rectangle(mask, (r, 0), (w - r - 1, h - 1), 255, -1)
-    cv2.rectangle(mask, (0, r), (w - 1, h - r - 1), 255, -1)
-    cv2.circle(mask, (r, r), r, 255, -1, lineType=cv2.LINE_AA)
-    cv2.circle(mask, (w - r - 1, r), r, 255, -1, lineType=cv2.LINE_AA)
-    cv2.circle(mask, (r, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
-    cv2.circle(mask, (w - r - 1, h - r - 1), r, 255, -1, lineType=cv2.LINE_AA)
-    roi = bgra[y : y + h, x : x + w]
-    if roi.shape[0] != h or roi.shape[1] != w:
+    mask = _rounded_rect_mask(w, h, radius)
+    y0, x0 = int(y), int(x)
+    y1, x1 = y0 + h, x0 + w
+    if y0 >= bgra.shape[0] or x0 >= bgra.shape[1] or y1 <= 0 or x1 <= 0:
         return
-    m = mask > 0
+    sy0 = max(0, -y0)
+    sx0 = max(0, -x0)
+    dy0 = max(0, y0)
+    dx0 = max(0, x0)
+    dy1 = min(bgra.shape[0], y1)
+    dx1 = min(bgra.shape[1], x1)
+    m = mask[sy0 : sy0 + (dy1 - dy0), sx0 : sx0 + (dx1 - dx0)] > 0
+    roi = bgra[dy0:dy1, dx0:dx1]
     roi[m, 0] = color_bgr[0]
     roi[m, 1] = color_bgr[1]
     roi[m, 2] = color_bgr[2]
@@ -510,14 +517,26 @@ def render_pigeon_settings_bgra(
     svg_path: Path | str | None = None,
     assets_dir: Path | str | None = None,
 ) -> np.ndarray:
-    del svg_path, assets_dir
+    del svg_path
     st = state if state is not None else MainSettingsState()
     focused = normalize_pigeon_focus_id(st.pigeon_focused_id)
-    ui_bgr = _hex_to_bgr(getattr(st.theme, "ui", "#ff0013"))
+    ui_hex = str(getattr(st.theme, "ui", "#ff0013") or "#ff0013")
+    # Button / deselected swatch — solid fill for every tile face.
+    fill_hex = str(getattr(st.theme, "deselected", "#202020") or "#202020")
+    ui_bgr = _hex_to_bgr(ui_hex)
+    fill_bgr = _hex_to_bgr(fill_hex)
     white = (255, 255, 255)
 
     out = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     out[:, :, 3] = 255
+    # Same slanted theme plate used by main / preferences / color settings.
+    from pigeon.widgets.main_settings import _draw_container_background_bgra
+
+    _draw_container_background_bgra(
+        out,
+        ui_hex=ui_hex,
+        assets_dir=assets_dir,
+    )
 
     # Header: SETTINGS / Pigeon (left), version meta (right).
     settings_p, sw, sh = _text_patch(
@@ -558,25 +577,26 @@ def render_pigeon_settings_bgra(
     for i, tile in enumerate(_TILES):
         x, y = _tile_origin(i)
         selected = focused == tile.focus_id
-        # Cell buffer for icon compositing.
-        cell = np.zeros((_TILE, _TILE, 4), dtype=np.uint8)
+        face_bgr = ui_bgr if selected else fill_bgr
+        icon_color = white
         if selected:
-            _draw_rounded_rect_fill(
-                cell,
-                x=0,
-                y=0,
-                w=_TILE,
-                h=_TILE,
-                radius=_CORNER,
-                color_bgr=ui_bgr,
-            )
-            icon_color = white
             label_rgba = (*ui_bgr[::-1], 255)  # BGR→RGB for Pillow fill
         else:
-            icon_color = white
             label_rgba = (255, 255, 255, 255)
 
+        # Cell buffer: filled rounded face + icon, then mask corners.
+        cell = np.zeros((_TILE, _TILE, 4), dtype=np.uint8)
+        _draw_rounded_rect_fill(
+            cell,
+            x=0,
+            y=0,
+            w=_TILE,
+            h=_TILE,
+            radius=_CORNER,
+            color_bgr=face_bgr,
+        )
         _draw_tile_icon(cell, tile.icon, icon_color)
+        _apply_rounded_mask(cell, _CORNER)
         _paste_bgra(out, cell, x, y)
 
         border = ui_bgr if selected else white
