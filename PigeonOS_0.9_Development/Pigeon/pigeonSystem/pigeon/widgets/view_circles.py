@@ -28,6 +28,7 @@ from pigeon.compositing import alpha_blend_bgra_over_bgr, cv_resize_interp
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.font_paths import (
     resolve_digital7_font,
+    resolve_ui_font_extrabold,
     resolve_ui_font_extrabold_italic,
     resolve_ui_font_light_italic,
 )
@@ -175,7 +176,7 @@ _ARTWORK_BG_OPACITY = 0.24
 _ARTWORK_BG_BLUR_DOWNSCALE = 4
 _ARTWORK_BG_BLUR_SIGMA = 6.0
 
-# Soft white halo behind active circular zone widgets (clock / volume).
+# Soft white halo behind active clock widgets only (volume has no glow).
 _ZONE_HALO_R = _CLOCK_EXTERIOR_ACCENT_R
 _ZONE_HALO_OPACITY = 0.36  # 10% more transparent than 0.40
 _ZONE_HALO_BLUR_SIGMA = 3.0  # slight soft edge only
@@ -189,9 +190,6 @@ _ZONE_CIRCLE_HALO_KEYS: tuple[tuple[str, float, float], ...] = (
     ("zone1_clock_group", _ZONE1_CX, _ZONE1_CY),
     ("zone2_clock_group", _ZONE2_CX, _ZONE2_CY),
     ("zone3_clock_group", _ZONE3_CX, _ZONE3_CY),
-    ("zone1_volume_group", _ZONE1_CX, _ZONE1_CY),
-    ("zone2_volume_group", _ZONE2_CX, _ZONE2_CY),
-    ("zone3_volume_group", _ZONE3_CX, _ZONE3_CY),
 )
 
 _ACCENT_OPACITY = 0.70
@@ -233,17 +231,17 @@ _MIN_ELAPSED_W = 4
 _ELAPSED_REMAINING_GAP_PX = 16
 _SERVICE_FADE_PROGRESS = 0.12
 
-# Short rule between volume + audio config; Y matches digital clock center.
-_AUDIO_SEP_CY = _ZONE1_CY
-_AUDIO_SEP_HALF_W = 22
-_AUDIO_SEP_THICKNESS = 2
-# Equal clear gap from separator edge → volume bottom / config top.
-_AUDIO_STACK_GAP = 10.0
+# Volume readout centered in volume_container; audio config sits above the ring.
 _VOLUME_CX = _ZONE3_CX
 _AUDIO_CFG_CX = _ZONE3_CX
-_VOLUME_SIZE_PX = 32
-_AUDIO_CFG_SIZE_PX = 21
+_VOLUME_SIZE_PX = 72
+_AUDIO_CFG_SIZE_PX = 30
 _CLOCK_DIGITAL_SIZE = 42
+# Date / audio-config baselines sit this many px above the widget exterior top.
+_WIDGET_LABEL_BASELINE_GAP_PX = 20.0
+_CLOCK_DATE_SIZE_PX = 32
+# Keep volume readout inside ``volume_container`` (inner ring).
+_VOLUME_TEXT_INNER_FIT = 0.78
 
 # Audio-levels channel labels (PyMuPDF can't paint Digital-7 — redrawn in Pillow).
 _AUDIO_LEVEL_LABEL_SIZE = 33
@@ -273,13 +271,21 @@ _AUDIO_LEVEL_LABELS_BY_ZONE: dict[int, tuple[tuple[str, float], ...]] = {
     ),
 }
 
-# Zone4 cast columns (actor / character).
-_CAST_COLS: tuple[tuple[float, int, int], ...] = (
-    (152.0, 336, 356),
-    (400.0, 336, 356),
-    (650.0, 336, 356),
+# Zone4 cast columns (center x, actor baseline y, character baseline y) — SVG geometry.
+_CAST_COLS_Z4: tuple[tuple[float, float, float], ...] = (
+    (_ZONE1_CX, 351.08, 369.08),
+    (_ZONE2_CX, 351.08, 369.08),
+    (_ZONE3_CX, 351.08, 369.08),
 )
-_CAST_COL_W = 220
+# Zone5 expanded cast strip (same columns, lower baselines).
+_CAST_COLS_Z5: tuple[tuple[float, float, float], ...] = (
+    (_ZONE1_CX, 405.73, 423.61),
+    (_ZONE2_CX, 406.08, 423.61),
+    (_ZONE3_CX, 405.73, 423.61),
+)
+_CAST_COLS = _CAST_COLS_Z4  # back-compat alias
+_CAST_COL_W = 200
+_CAST_TEXT_PAD = 2
 
 _ELAPSED_TEXT_Y = 460
 _REMAINING_TEXT_Y = 460
@@ -312,7 +318,10 @@ _STRIP_OR_HIDE_NAMES: tuple[str, ...] = (
     "zone3_volume_text",
     "zone3_voume_audio_config_text",
     "zone2_volume_text",
+    "zone2_voume_audio_config_text",
     "zone1_volume_text",
+    "zone1_voume_audio_config_text",
+    "zone1_voume_audio_config_text-2",
     "zone5_now_playing_remaining_text",
     "zone5_now_playing_elapsed_text",
     "zone5_now_playing_service_text",
@@ -341,10 +350,9 @@ _STRIP_OR_HIDE_NAMES: tuple[str, ...] = (
     "zone1_volume_container",
 )
 
-# Zone0 date header (SVG left/center/right; default = left).
-# Centers align with zone1 / zone2 / zone3 widget columns.
+# Legacy zone0 date header (removed from live NP; prefs still hides the SVG group).
 _ZONE0_DATE_ALIGN_DEFAULT = "left"
-_ZONE0_DATE_SIZE_PX = 14
+_ZONE0_DATE_SIZE_PX = _CLOCK_DATE_SIZE_PX
 _ZONE0_DATE_BASELINE_Y = 19.94
 _ZONE0_DATE_CENTER_X: dict[str, float] = {
     "left": _ZONE1_CX,
@@ -758,8 +766,8 @@ def _zone_widget_visibility(
         "zone5_locations_group": False,
         "zone5_cast_group": _is(5, "cast_info"),
         "zone5_now_playing_paused_text": False,  # redrawn with Sharp Sans
-        # zone0 — date header (text redrawn; placement from poster occupancy)
-        "zone0_header_group": _zone0_date_align(assignments) is not None,
+        # zone0 — retired; date now lives above the clock widget
+        "zone0_header_group": False,
     }
     return vis
 
@@ -786,8 +794,42 @@ def _ordinal_day(day: int) -> str:
 
 
 def _format_zone0_date(now: datetime) -> str:
-    """``Wednesday, August 5th`` — matches Illustrator zone0 sample."""
-    return f"{now.strftime('%A')}, {now.strftime('%B')} {_ordinal_day(now.day)}"
+    """``Friday, Aug 14`` — clock-widget date line (abbreviated month)."""
+    return f"{now.strftime('%A')}, {now.strftime('%b')} {int(now.day)}"
+
+
+def _clock_date_baseline_y(cy: float) -> float:
+    """Baseline for the date line: 20px above the clock exterior top."""
+    return float(cy) - float(_CLOCK_EXTERIOR_ACCENT_R) - float(_WIDGET_LABEL_BASELINE_GAP_PX)
+
+
+def _volume_audio_cfg_baseline_y(cy: float) -> float:
+    """Baseline for audio-config: 20px above the volume ring exterior top."""
+    return float(cy) - float(_RING_OUTER_R) - float(_WIDGET_LABEL_BASELINE_GAP_PX)
+
+
+def _volume_readout_patch(
+    text: str,
+    *,
+    inner_r: float = _RING_INNER_R,
+    max_size_px: int = _VOLUME_SIZE_PX,
+) -> tuple[np.ndarray, int, int]:
+    """Digital-7 volume line fitted inside the volume_container disc."""
+    label = str(text or "").strip()
+    if not label:
+        return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
+    max_box = max(24, int(round(2.0 * float(inner_r) * float(_VOLUME_TEXT_INNER_FIT))))
+    pad = 2  # matches ``_text_patch_digital7``
+    start = max(18, int(max_size_px))
+    best: tuple[np.ndarray, int, int] | None = None
+    for size in range(start, 15, -1):
+        patch, w, h = _text_patch_digital7(label, size_px=size)
+        best = (patch, w, h)
+        # Transparent pad does not count toward circle overflow.
+        if (w - 2 * pad) <= max_box and (h - 2 * pad) <= max_box:
+            return patch, w, h
+    assert best is not None
+    return best
 
 
 def _apply_zone_visibility(root: ET.Element, vis: dict[str, bool]) -> None:
@@ -1190,11 +1232,16 @@ def apply_view_circles_svg_state(
                 "zone2_character",
                 "zone3_actor",
                 "zone3_character",
+                "zone4_actor",
+                "zone4_character",
                 "zone5_actor",
                 "zone5_character",
                 "zone5character",
             )
         ):
+            pending.append(el)
+            continue
+        if "voume_audio_config" in key or key.endswith("audio_config_text"):
             pending.append(el)
             continue
         if el.tag.endswith("text") and "audio_levels" in key:
@@ -1284,6 +1331,18 @@ def _load_digital7(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         except OSError:
             continue
     return ImageFont.load_default()
+
+
+@lru_cache(maxsize=8)
+def _load_sharp_extrabold(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    px = max(6, int(size))
+    path = resolve_ui_font_extrabold()
+    if path:
+        try:
+            return ImageFont.truetype(path, px)
+        except OSError:
+            pass
+    return _load_sharp_italic(px)
 
 
 @lru_cache(maxsize=8)
@@ -1518,6 +1577,60 @@ def _paste_centered(canvas: np.ndarray, patch: np.ndarray, cx: float, cy: float)
     _paste_patch_bgra(canvas, patch, int(round(cx - pw / 2.0)), int(round(cy - ph / 2.0)))
 
 
+def _paste_baseline_centered(
+    canvas: np.ndarray,
+    patch: np.ndarray,
+    cx: float,
+    baseline_y: float,
+    *,
+    bbox_top: float,
+    pad: int = 2,
+) -> None:
+    """Paste a text patch so its typographic baseline sits on ``baseline_y``.
+
+    Patches from :func:`_text_patch_font` / :func:`_text_patch_digital7` are built
+    with Pillow's default (non-``ls``) metrics. For those, the ink bottom is the
+    practical baseline for caps-only strings — place the patch so its bottom edge
+    lands on ``baseline_y`` (keeps labels clear of circular widgets).
+    """
+    if patch is None or patch.size == 0:
+        return
+    ph, pw = patch.shape[:2]
+    paste_x = int(round(cx - pw / 2.0))
+    # Default Pillow metrics (SharpSans/Digital-7): positive bbox top means the
+    # old ``pad - t`` baseline formula pushed ink into the widget. Prefer ink
+    # bottom == baseline for label clearance above rings.
+    if float(bbox_top) >= 0:
+        paste_y = int(round(float(baseline_y) - float(ph)))
+    else:
+        paste_y = int(round(float(baseline_y) - (float(pad) - float(bbox_top))))
+    _paste_patch_bgra(canvas, patch, paste_x, paste_y)
+
+
+def _paste_label_above_widget(
+    canvas: np.ndarray,
+    patch: np.ndarray,
+    cx: float,
+    *,
+    widget_top_y: float,
+    gap_px: float = _WIDGET_LABEL_BASELINE_GAP_PX,
+) -> None:
+    """Paste so the patch bottom (≈ baseline) is ``gap_px`` above the widget top."""
+    if patch is None or patch.size == 0:
+        return
+    ph, pw = patch.shape[:2]
+    paste_x = int(round(cx - pw / 2.0))
+    paste_y = int(round(float(widget_top_y) - float(gap_px) - float(ph)))
+    _paste_patch_bgra(canvas, patch, paste_x, paste_y)
+
+
+def _font_bbox_top(text: str, font: ImageFont.ImageFont) -> float:
+    probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(probe)
+    _l, t, _r, _b = draw.textbbox((0, 0), str(text or ""), font=font)
+    return float(t)
+
+
 def _rounded_rect_mask(w: int, h: int, radius: int) -> np.ndarray:
     if w < 1 or h < 1:
         return np.zeros((max(0, h), max(0, w)), dtype=np.uint8)
@@ -1666,7 +1779,7 @@ def _zone_circle_halo_patch(
 
 
 def _draw_zone_halos(bgra: np.ndarray, *, content_mode: str, paused: bool = False) -> None:
-    """Gentle white glow behind active circular widgets (clock / volume)."""
+    """Gentle white glow behind active clock widgets (not volume)."""
     vis = _zone_widget_visibility(content_mode=content_mode, paused=paused)
     circle = _zone_circle_halo_patch()
     ch, cw = circle.shape[:2]
@@ -2497,8 +2610,36 @@ class ViewCirclesWidget:
         if clock_zone is None:
             return
         cx, cy = _zone_clock_center(int(clock_zone))
+        self._draw_clock_date_above(out, cx=cx, cy=cy, now=now)
         time_p, _, _ = _text_patch_digital7(_clock_hhmm(now), size_px=_CLOCK_DIGITAL_SIZE)
         _paste_centered(out, time_p, cx, cy)
+
+    def _draw_clock_date_above(
+        self,
+        out: np.ndarray,
+        *,
+        cx: float,
+        cy: float,
+        now: datetime,
+    ) -> None:
+        """SharpSans Extrabold date; baseline 20px above clock exterior top."""
+        label = _format_zone0_date(now)
+        if not label:
+            return
+        font = _load_sharp_extrabold(_CLOCK_DATE_SIZE_PX)
+        patch, _pw, _ph = _text_patch_font(
+            label,
+            font=font,
+            fill_rgb=(255, 255, 255),
+        )
+        widget_top = float(cy) - float(_CLOCK_EXTERIOR_ACCENT_R)
+        _paste_label_above_widget(
+            out,
+            patch,
+            cx,
+            widget_top_y=widget_top,
+            gap_px=_WIDGET_LABEL_BASELINE_GAP_PX,
+        )
 
     def _draw_zone0_date(
         self,
@@ -2507,60 +2648,18 @@ class ViewCirclesWidget:
         *,
         align: str | None = None,
     ) -> None:
-        """Live date in zone0; placement follows poster occupancy in zones 1–3."""
-        if align is None:
-            align = _zone0_date_align(_default_zone_widget_assignments())
-        if align is None:
-            return
-        key = str(align or _ZONE0_DATE_ALIGN_DEFAULT).strip().lower()
-        if key not in _ZONE0_DATE_CENTER_X:
-            key = _ZONE0_DATE_ALIGN_DEFAULT
-        cx = float(_ZONE0_DATE_CENTER_X[key])
-        y_base = float(_ZONE0_DATE_BASELINE_Y)
-        label = _format_zone0_date(now)
-        font = _load_sharp_light_italic(_ZONE0_DATE_SIZE_PX)
-        # Center on the zone column; baseline matches prior SVG header Y.
-        pad = 2
-        probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(probe)
-        _l, t, _r, _b = draw.textbbox((0, 0), label, font=font)
-        patch, pw, _ph = _text_patch_font(
-            label,
-            font=font,
-            fill_rgb=(255, 255, 255),
-        )
-        # Patch left edge is at ``pad``; baseline in patch is ``pad - t``.
-        paste_x = int(round(cx - (pw / 2.0)))
-        paste_y = int(round(y_base - (pad - t)))
-        _paste_patch_bgra(out, patch, paste_x, paste_y)
+        """Deprecated zone0 header path — no-op (date draws with the clock)."""
+        return
 
     def _draw_audio_sep_line(
         self,
         out: np.ndarray,
         *,
         cx: float = _ZONE3_CX,
-        cy: float = _AUDIO_SEP_CY,
+        cy: float = _ZONE1_CY,
     ) -> None:
-        """Short chrome rule at digital-clock Y, centered in the volume zone."""
-        cy_i = int(round(cy))
-        cx_i = int(round(cx))
-        x0 = cx_i - _AUDIO_SEP_HALF_W
-        x1 = cx_i + _AUDIO_SEP_HALF_W
-        y0 = cy_i - max(0, _AUDIO_SEP_THICKNESS // 2)
-        y1 = y0 + max(1, _AUDIO_SEP_THICKNESS)
-        h, w = out.shape[:2]
-        x0 = max(0, min(w, x0))
-        x1 = max(0, min(w, x1))
-        y0 = max(0, min(h, y0))
-        y1 = max(0, min(h, y1))
-        if x1 <= x0 or y1 <= y0:
-            return
-        b, g, r = _COLOR_CHROME_BGR
-        out[y0:y1, x0:x1, 0] = b
-        out[y0:y1, x0:x1, 1] = g
-        out[y0:y1, x0:x1, 2] = r
-        if out.shape[2] >= 4:
-            out[y0:y1, x0:x1, 3] = 255
+        """Deprecated separator between in-ring volume/config — no-op."""
+        return
 
     def _draw_audio_level_labels(self, out: np.ndarray) -> None:
         """Paint sl/l/c/r/sr under each meter column in Digital-7."""
@@ -2588,30 +2687,42 @@ class ViewCirclesWidget:
         out: np.ndarray,
         *,
         cx: float = _ZONE3_CX,
-        cy: float = _AUDIO_SEP_CY,
+        cy: float = _ZONE1_CY,
     ) -> None:
+        """Volume dB centered in the ring; audio config baseline above the exterior."""
         st = self._state
         vol = _receiver_volume_display_line(st.volume)
         show_vol = bool(vol) and vol.strip().lower() not in ("mute", "muted")
         cfg = receiver_audio_config_display_line(st.incoming, st.config)
-        sep = float(cy)
-        half_t = max(1, _AUDIO_SEP_THICKNESS) / 2.0
-        gap = float(_AUDIO_STACK_GAP)
         if show_vol:
-            # Smaller than before so it can sit higher with even stack spacing.
-            vol_p, _, vh = _text_patch_digital7(vol, size_px=_VOLUME_SIZE_PX)
-            vol_cy = sep - half_t - gap - (vh / 2.0)
-            _paste_centered(out, vol_p, cx, vol_cy)
+            vol_p, _, _ = _volume_readout_patch(vol, inner_r=_RING_INNER_R)
+            _paste_centered(out, vol_p, cx, cy)
         if cfg:
-            cfg_p, _, ch = _text_patch_digital7(
-                cfg.upper(),
-                size_px=_AUDIO_CFG_SIZE_PX,
-                max_width_px=200,
+            cfg_label = cfg.upper()
+            # Keep config inside the design frame for zone1/zone3 columns.
+            max_w = int(
+                max(
+                    80,
+                    min(
+                        240,
+                        2.0 * min(float(cx), float(DESIGN_W) - float(cx)) - 8.0,
+                    ),
+                )
             )
-            cfg_cy = sep + half_t + gap + (ch / 2.0)
-            _paste_centered(out, cfg_p, cx, cfg_cy)
-        if show_vol and cfg:
-            self._draw_audio_sep_line(out, cx=cx, cy=cy)
+            cfg_p, _cw, _ch = _text_patch_digital7(
+                cfg_label,
+                size_px=_AUDIO_CFG_SIZE_PX,
+                max_width_px=max_w,
+                fill_rgb=(255, 255, 255),
+            )
+            widget_top = float(cy) - float(_RING_OUTER_R)
+            _paste_label_above_widget(
+                out,
+                cfg_p,
+                cx,
+                widget_top_y=widget_top,
+                gap_px=_WIDGET_LABEL_BASELINE_GAP_PX,
+            )
 
     def _draw_circular_now_playing(
         self,
@@ -2641,26 +2752,57 @@ class ViewCirclesWidget:
         )
         _paste_centered(out, time_p, cx, cy)
 
-    def _draw_cast(self, out: np.ndarray) -> None:
+    def _draw_cast(self, out: np.ndarray, *, cast_zone: int = 4) -> None:
         cast = list(self._state.cast or [])
         while len(cast) < 3:
             cast.append(("", ""))
-        for i, (center_x, actor_y, char_y) in enumerate(_CAST_COLS):
-            actor, character = cast[i]
+        cols = _CAST_COLS_Z5 if int(cast_zone) == 5 else _CAST_COLS_Z4
+        font_actor = _load_digital7(24)
+        font_char = _load_digital7(18)
+        for i, (center_x, actor_y, char_y) in enumerate(cols):
+            actor, character = cast[i] if i < len(cast) else ("", "")
+            actor = str(actor or "").strip()
+            character = str(character or "").strip()
+            # Keep each column inside the frame (zone3 column is near the right edge).
+            max_w = int(
+                max(
+                    80,
+                    min(
+                        float(_CAST_COL_W),
+                        2.0 * min(float(center_x), float(DESIGN_W) - float(center_x)) - 8.0,
+                    ),
+                )
+            )
             if actor:
-                ap, aw, _ah = _text_patch_digital7(
-                    actor.upper(),
+                label = actor.upper()
+                ap, _aw, _ah = _text_patch_digital7(
+                    label,
                     size_px=24,
-                    max_width_px=_CAST_COL_W,
+                    max_width_px=max_w,
                 )
-                _paste_patch_bgra(out, ap, int(round(center_x - aw / 2.0)), actor_y)
+                _paste_baseline_centered(
+                    out,
+                    ap,
+                    center_x,
+                    float(actor_y),
+                    bbox_top=_font_bbox_top(label, font_actor),
+                    pad=_CAST_TEXT_PAD,
+                )
             if character:
-                cp, cw, _ch = _text_patch_digital7(
-                    character.upper(),
+                label = character.upper()
+                cp, _cw, _ch = _text_patch_digital7(
+                    label,
                     size_px=18,
-                    max_width_px=_CAST_COL_W,
+                    max_width_px=max_w,
                 )
-                _paste_patch_bgra(out, cp, int(round(center_x - cw / 2.0)), char_y)
+                _paste_baseline_centered(
+                    out,
+                    cp,
+                    center_x,
+                    float(char_y),
+                    bbox_top=_font_bbox_top(label, font_char),
+                    pad=_CAST_TEXT_PAD,
+                )
 
     def _draw_track_titles(self, out: np.ndarray) -> None:
         st = self._state
@@ -2720,7 +2862,6 @@ class ViewCirclesWidget:
             self._draw_circular_now_playing(out, cx=ncx, cy=ncy, now=now)
         if assignments[4] == "now_playing":
             self._draw_status_bar(out)
-        self._draw_zone0_date(out, datetime.now())
         self._draw_clock_digital(out, now)
         self._draw_audio_level_labels(out)
         if vol_zone is not None:
@@ -2731,11 +2872,9 @@ class ViewCirclesWidget:
                 self._draw_track_titles(out)
         else:
             # Zone4 (and zone5 expanded cast) get the live cast redraw.
-            if (
-                _zone_for_widget(assignments, "cast_info") == 4
-                or _zone_for_widget(assignments, "cast_info") == 5
-            ):
-                self._draw_cast(out)
+            cast_zone = _zone_for_widget(assignments, "cast_info")
+            if cast_zone in (4, 5):
+                self._draw_cast(out, cast_zone=int(cast_zone))
         return out
 
     def bgra_frame(self) -> np.ndarray | None:

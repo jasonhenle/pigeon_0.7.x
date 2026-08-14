@@ -1841,6 +1841,7 @@ def _episode_title_series_fallback(
     Order:
       1. Disk-cached kids/PBS episode index (same data PBS Kids uses)
       2. Local ``episode_series_hints.json`` / built-ins → TMDb TV search for that series
+      3. Wikidata unambiguous episode → series (Peacock / general streamers)
 
     Used when normal TMDb title search misses or only yields a weak title match.
     """
@@ -1857,12 +1858,20 @@ def _episode_title_series_fallback(
         if not require_poster or detail.get("poster_path"):
             return detail, "tv"
 
+    hinted: str | None = None
     try:
         from pigeon.episode_series_hints import series_name_for_episode_title_hint
 
         hinted = series_name_for_episode_title_hint(q)
     except Exception:
         hinted = None
+    if not hinted:
+        try:
+            from pigeon.wikidata_episode import series_name_from_wikidata_episode_title
+
+            hinted = series_name_from_wikidata_episode_title(q)
+        except Exception:
+            hinted = None
     if hinted and not is_degenerate_tmdb_query(hinted):
         if require_poster:
             hit = search_tv_best_with_poster(hinted, forgiving=True, kids_bias=False)

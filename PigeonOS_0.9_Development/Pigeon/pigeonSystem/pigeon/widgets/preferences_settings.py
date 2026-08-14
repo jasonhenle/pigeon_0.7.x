@@ -1074,21 +1074,21 @@ _PREFS_NP_TIME_SIZE_PX = 48
 # Static volume preview: −22.5 dB on a −80..0 scale ≈ 72% of the ring.
 _PREFS_VOLUME_DEMO_DB = "-22.5"
 _PREFS_VOLUME_DEMO_CFG = "multi-in > auro3d"
-_PREFS_VOLUME_SIZE_PX = 28
-_PREFS_AUDIO_CFG_SIZE_PX = 16
-_PREFS_AUDIO_STACK_GAP = 8.0
+_PREFS_VOLUME_SIZE_PX = 72
+_PREFS_AUDIO_CFG_SIZE_PX = 30
 # Cast columns in design space (prefs artboard after viewBox crop).
-_PREFS_CAST_COLS_Z4: tuple[tuple[float, int, int], ...] = (
-    (230.0, 332, 352),
-    (399.0, 332, 352),
-    (570.0, 332, 352),
+# Centers align with zone1/2/3 clock exteriors; baselines from SVG actor/character.
+_PREFS_CAST_COLS_Z4: tuple[tuple[float, float, float], ...] = (
+    (252.62, 347.53, 359.59),
+    (419.72, 347.53, 359.59),
+    (586.31, 347.53, 359.59),
 )
-_PREFS_CAST_COLS_Z5: tuple[tuple[float, int, int], ...] = (
-    (230.0, 368, 388),
-    (399.0, 368, 388),
-    (570.0, 368, 388),
+_PREFS_CAST_COLS_Z5: tuple[tuple[float, float, float], ...] = (
+    (252.62, 383.53, 395.59),
+    (419.72, 383.53, 395.59),
+    (586.31, 383.53, 395.59),
 )
-_PREFS_CAST_COL_W = 150
+_PREFS_CAST_COL_W = 160
 # Zone5 now-playing bar (design space from SVG remaining-icon bbox).
 _PREFS_BAR_L = 196
 _PREFS_BAR_R = 636
@@ -1231,7 +1231,7 @@ def _draw_preferences_clock_digitals_bgra(
     *,
     now: datetime | None = None,
 ) -> None:
-    """Live HH:MM overlay for clock zones (structure bitmap keeps ticks frozen)."""
+    """Live HH:MM + date overlay for clock zones (structure bitmap keeps ticks frozen)."""
     from pigeon.widgets import view_circles as vc
 
     if not centers:
@@ -1239,11 +1239,30 @@ def _draw_preferences_clock_digitals_bgra(
     vb_x, vb_y, vb_w, vb_h = _PREFS_VIEWBOX
     sx = DESIGN_W / max(vb_w, 1.0)
     sy = DESIGN_H / max(vb_h, 1.0)
-    hhmm = vc._clock_hhmm(now)
+    when = now or datetime.now()
+    hhmm = vc._clock_hhmm(when)
     time_p, _, _ = vc._text_patch_digital7(hhmm, size_px=_PREFS_NP_TIME_SIZE_PX)
+    # Scale NP exterior radius into prefs design space for the date baseline.
+    clock_r = float(vc._CLOCK_EXTERIOR_ACCENT_R) * min(sx, sy)
     for _zone, center in centers.items():
         cx = (center[0] - vb_x) * sx
         cy = (center[1] - vb_y) * sy
+        # Date: SharpSans Extrabold, baseline 20px above exterior top.
+        label = vc._format_zone0_date(when)
+        if label:
+            font = vc._load_sharp_extrabold(vc._CLOCK_DATE_SIZE_PX)
+            date_p, _, _ = vc._text_patch_font(
+                label,
+                font=font,
+                fill_rgb=(255, 255, 255),
+            )
+            vc._paste_label_above_widget(
+                bgra,
+                date_p,
+                cx,
+                widget_top_y=cy - clock_r,
+                gap_px=float(vc._WIDGET_LABEL_BASELINE_GAP_PX),
+            )
         vc._paste_centered(bgra, time_p, cx, cy)
 
 
@@ -1326,7 +1345,7 @@ def _draw_preferences_volume_bgra(
     centers: dict[int, tuple[float, float]],
     state: MainSettingsState | None = None,
 ) -> None:
-    """Zones 1–3 volume: UI-color level pie + dB / audio-config readout."""
+    """Zones 1–3 volume: UI-color level pie + centered dB; audio config above ring."""
     from pigeon.widgets import view_circles as vc
 
     if not centers:
@@ -1336,12 +1355,11 @@ def _draw_preferences_volume_bgra(
     vb_x, vb_y, vb_w, vb_h = _PREFS_VIEWBOX
     sx = DESIGN_W / max(vb_w, 1.0)
     sy = DESIGN_H / max(vb_h, 1.0)
-    outer_r = float(_PREFS_NP_RING_OUTER_R) * min(sx, sy)
-    inner_r = float(_PREFS_NP_RING_INNER_R) * min(sx, sy)
+    scale = min(sx, sy)
+    outer_r = float(_PREFS_NP_RING_OUTER_R) * scale
+    inner_r = float(_PREFS_NP_RING_INNER_R) * scale
     vol, cfg = _preferences_volume_lines(st)
     np_th = vc.np_theme_from_settings()
-    half_t = 1.0
-    gap = float(_PREFS_AUDIO_STACK_GAP)
 
     for _zone, center in centers.items():
         cx = (center[0] - vb_x) * sx
@@ -1393,31 +1411,36 @@ def _draw_preferences_volume_bgra(
             fill_opacity=1.0,
         )
         if vol:
-            vol_p, _, vh = vc._text_patch_digital7(vol, size_px=_PREFS_VOLUME_SIZE_PX)
-            vc._paste_centered(bgra, vol_p, cx, cy - half_t - gap - (vh / 2.0))
-        if cfg:
-            cfg_p, _, ch = vc._text_patch_digital7(
-                cfg.upper(),
-                size_px=_PREFS_AUDIO_CFG_SIZE_PX,
-                max_width_px=int(round(inner_r * 1.7)),
+            vol_p, _, _ = vc._volume_readout_patch(
+                vol,
+                inner_r=inner_r,
+                max_size_px=_PREFS_VOLUME_SIZE_PX,
             )
-            vc._paste_centered(bgra, cfg_p, cx, cy + half_t + gap + (ch / 2.0))
-        if vol and cfg:
-            # Short chrome rule between the two readouts.
-            cy_i = int(round(cy))
-            cx_i = int(round(cx))
-            half_w = 16
-            y0 = cy_i
-            y1 = y0 + 2
-            x0 = max(0, cx_i - half_w)
-            x1 = min(int(bgra.shape[1]), cx_i + half_w)
-            if x1 > x0 and 0 <= y0 < bgra.shape[0]:
-                b, g, r = vc._COLOR_CHROME_BGR
-                bgra[y0:y1, x0:x1, 0] = b
-                bgra[y0:y1, x0:x1, 1] = g
-                bgra[y0:y1, x0:x1, 2] = r
-                if bgra.shape[2] >= 4:
-                    bgra[y0:y1, x0:x1, 3] = 255
+            vc._paste_centered(bgra, vol_p, cx, cy)
+        if cfg:
+            cfg_label = cfg.upper()
+            max_w = int(
+                max(
+                    80,
+                    min(
+                        240,
+                        2.0 * min(float(cx), float(DESIGN_W) - float(cx)) - 8.0,
+                    ),
+                )
+            )
+            cfg_p, _, _ = vc._text_patch_digital7(
+                cfg_label,
+                size_px=_PREFS_AUDIO_CFG_SIZE_PX,
+                max_width_px=max_w,
+                fill_rgb=(255, 255, 255),
+            )
+            vc._paste_label_above_widget(
+                bgra,
+                cfg_p,
+                cx,
+                widget_top_y=cy - outer_r,
+                gap_px=float(vc._WIDGET_LABEL_BASELINE_GAP_PX),
+            )
 
 
 def _prefs_poster_patch_for_zone(
@@ -1561,27 +1584,50 @@ def _draw_preferences_cast_bgra(
     while len(cast) < 3:
         cast.append(("", ""))
     cols = _PREFS_CAST_COLS_Z5 if cast_zone == 5 else _PREFS_CAST_COLS_Z4
+    font_actor = vc._load_digital7(18)
+    font_char = vc._load_digital7(14)
     for i, (center_x, actor_y, char_y) in enumerate(cols):
         actor, character = cast[i] if i < len(cast) else ("", "")
         actor = str(actor or "").strip()
         character = str(character or "").strip()
-        if actor:
-            ap, aw, _ah = vc._text_patch_digital7(
-                actor.upper(),
-                size_px=18,
-                max_width_px=_PREFS_CAST_COL_W,
+        max_w = int(
+            max(
+                60,
+                min(
+                    float(_PREFS_CAST_COL_W),
+                    2.0 * min(float(center_x), float(DESIGN_W) - float(center_x)) - 8.0,
+                ),
             )
-            vc._paste_patch_bgra(
-                bgra, ap, int(round(center_x - aw / 2.0)), int(actor_y)
+        )
+        if actor:
+            label = actor.upper()
+            ap, _aw, _ah = vc._text_patch_digital7(
+                label,
+                size_px=18,
+                max_width_px=max_w,
+            )
+            vc._paste_baseline_centered(
+                bgra,
+                ap,
+                center_x,
+                float(actor_y),
+                bbox_top=vc._font_bbox_top(label, font_actor),
+                pad=2,
             )
         if character:
-            cp, cw, _ch = vc._text_patch_digital7(
-                character.upper(),
+            label = character.upper()
+            cp, _cw, _ch = vc._text_patch_digital7(
+                label,
                 size_px=14,
-                max_width_px=_PREFS_CAST_COL_W,
+                max_width_px=max_w,
             )
-            vc._paste_patch_bgra(
-                bgra, cp, int(round(center_x - cw / 2.0)), int(char_y)
+            vc._paste_baseline_centered(
+                bgra,
+                cp,
+                center_x,
+                float(char_y),
+                bbox_top=vc._font_bbox_top(label, font_char),
+                pad=2,
             )
 
 
