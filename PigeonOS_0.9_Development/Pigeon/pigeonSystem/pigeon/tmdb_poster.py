@@ -13,6 +13,8 @@ Query hints (optional):
     :func:`search_best_media` so kids apps (PBS Kids, …) prefer TV, try
     ``Title Service`` queries, demote adult substring matches, and fall back to a
     cached episode-title → series index when Apple TV sends only an episode line.
+    That episode→series fallback also runs system-wide (Peacock, etc.) whenever
+    normal TMDb title search is missing or weakly aligned.
 
 Title matching (env):
   - ``PIGEON_TMDB_MATCH_MODE=literal`` (default) — use now-playing strings as-is where possible; only
@@ -1828,27 +1830,52 @@ def _search_best_media_with_poster_one(
     return (t, "tv") if t else (None, None)
 
 
-def _kids_episode_index_series_fallback(
+def _episode_title_series_fallback(
     query: str,
     *,
     require_poster: bool,
 ) -> tuple[dict | None, MediaKind | None]:
     """
-    Kids apps: map an episode-only title to its parent series via the disk-cached index.
+    Map an episode-only title to its parent series (system-wide, not kids-only).
 
-    Used when normal TMDb search misses or only yields a weak title match.
+    Order:
+      1. Disk-cached kids/PBS episode index (same data PBS Kids uses)
+      2. Local ``episode_series_hints.json`` / built-ins → TMDb TV search for that series
+
+    Used when normal TMDb title search misses or only yields a weak title match.
     """
+    q = (query or "").strip()
+    if not q:
+        return None, None
     try:
         from pigeon.tmdb_episode_index import resolve_kids_series_from_episode_title
 
-        detail = resolve_kids_series_from_episode_title(query)
+        detail = resolve_kids_series_from_episode_title(q)
     except Exception:
-        return None, None
-    if detail is None or detail.get("id") is None:
-        return None, None
-    if require_poster and not detail.get("poster_path"):
-        return None, None
-    return detail, "tv"
+        detail = None
+    if detail is not None and detail.get("id") is not None:
+        if not require_poster or detail.get("poster_path"):
+            return detail, "tv"
+
+    try:
+        from pigeon.episode_series_hints import series_name_for_episode_title_hint
+
+        hinted = series_name_for_episode_title_hint(q)
+    except Exception:
+        hinted = None
+    if hinted and not is_degenerate_tmdb_query(hinted):
+        if require_poster:
+            hit = search_tv_best_with_poster(hinted, forgiving=True, kids_bias=False)
+        else:
+            hit = search_tv_best(hinted, forgiving=True, kids_bias=False)
+        if hit is not None and hit.get("id") is not None:
+            if not require_poster or hit.get("poster_path"):
+                return hit, "tv"
+    return None, None
+
+
+# Back-compat alias (older call sites / docs).
+_kids_episode_index_series_fallback = _episode_title_series_fallback
 
 
 def _tmdb_hit_is_weak_for_query(
@@ -1877,8 +1904,10 @@ def search_best_media_with_poster(
     ``auto`` takes the best movie result first; only if none is found uses the TV catalogue.
 
     When ``app_name`` / ``app_id`` (or ``service_hint`` / ``kids_bias``) indicate a kids
-    streaming app, prefer TV and bias ranking away from adult substring matches. If search
-    still fails (or only a weak hit), resolve episode-only titles via the kids episode index.
+    streaming app, prefer TV and bias ranking away from adult substring matches.
+
+    When search still fails (or only a weak hit), resolve episode-only titles via the
+    episode→series index (same path PBS Kids uses) — **system-wide**, not kids-only.
     """
     fg = tmdb_match_forgiving(override=forgiving)
     raw = (query or "").strip()
@@ -1902,8 +1931,8 @@ def search_best_media_with_poster(
         if hit[0] is not None:
             best = hit
             break
-    if kids and _tmdb_hit_is_weak_for_query(raw, best[0], require_poster=True):
-        ep = _kids_episode_index_series_fallback(raw, require_poster=True)
+    if _tmdb_hit_is_weak_for_query(raw, best[0], require_poster=True):
+        ep = _episode_title_series_fallback(raw, require_poster=True)
         if ep[0] is not None:
             return ep
     return best
@@ -1921,8 +1950,8 @@ def search_best_media(
 ) -> tuple[dict | None, MediaKind | None]:
     """Pick one movie or TV hit; ``auto`` tries movies first, then TV if no movie match.
 
-    Kids streaming apps also fall back to the episode-title → series index when search
-    misses or only returns a weak title alignment.
+    Episode-only titles fall back to the episode→series index when search misses or only
+    returns a weak title alignment (system-wide; not limited to kids apps).
     """
     fg = tmdb_match_forgiving(override=forgiving)
     raw = (query or "").strip()
@@ -1946,8 +1975,8 @@ def search_best_media(
         if hit[0] is not None:
             best = hit
             break
-    if kids and _tmdb_hit_is_weak_for_query(raw, best[0]):
-        ep = _kids_episode_index_series_fallback(raw, require_poster=False)
+    if _tmdb_hit_is_weak_for_query(raw, best[0]):
+        ep = _episode_title_series_fallback(raw, require_poster=False)
         if ep[0] is not None:
             return ep
     return best

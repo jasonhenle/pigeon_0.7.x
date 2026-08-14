@@ -160,14 +160,29 @@ ensure_venv_pip "$PY"
 PY="${VENV_BIN}/python3"
 [[ -x "$PY" ]] || PY="${VENV_BIN}/python"
 
-if ! "$PY" -m pip install --upgrade pip >/dev/null 2>&1; then
-  rebuild_venv "pip-install-failed"
-  PY="${VENV_BIN}/python3"
-  [[ -x "$PY" ]] || PY="${VENV_BIN}/python"
-  ensure_venv_pip "$PY"
-  "$PY" -m pip install --upgrade pip >/dev/null
+# Fast path: if core deps already import, skip network pip (avoids lock hangs when
+# another launcher/pip is already running — common “Pigeon not loading” on Mac).
+deps_ok=0
+if "$PY" -c "import cv2, PIL, numpy, pyatv, numbers_parser, fitz, serial" >/dev/null 2>&1; then
+  deps_ok=1
 fi
-"$PY" -m pip install -r "${SYSTEM_DIR}/requirements.txt"
+
+if [[ "${deps_ok}" -ne 1 ]]; then
+  if ! "$PY" -m pip install --upgrade pip >/dev/null 2>&1; then
+    rebuild_venv "pip-install-failed"
+    PY="${VENV_BIN}/python3"
+    [[ -x "$PY" ]] || PY="${VENV_BIN}/python"
+    ensure_venv_pip "$PY"
+    "$PY" -m pip install --upgrade pip >/dev/null
+  fi
+  echo "pigeon: installing Python dependencies…" >&2
+  if ! "$PY" -m pip install -r "${SYSTEM_DIR}/requirements.txt"; then
+    echo "pigeon: pip install failed; see messages above." >&2
+    exit 1
+  fi
+else
+  echo "pigeon: dependencies already present — skipping pip." >&2
+fi
 
 if [[ -n "${VENV_REBUILD_REASON}" ]]; then
   echo "pigeon: python environment ready (${VENV_REBUILD_REASON})." >&2
