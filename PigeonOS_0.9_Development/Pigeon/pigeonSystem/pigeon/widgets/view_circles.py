@@ -31,6 +31,7 @@ from pigeon.font_paths import (
     resolve_ui_font_extrabold,
     resolve_ui_font_extrabold_italic,
     resolve_ui_font_light_italic,
+    resolve_ui_font_semibold,
 )
 from pigeon.widgets.playback_overlay import (
     _receiver_volume_display_line,
@@ -1343,6 +1344,18 @@ def _load_sharp_extrabold(size: int) -> ImageFont.FreeTypeFont | ImageFont.Image
         except OSError:
             pass
     return _load_sharp_italic(px)
+
+
+@lru_cache(maxsize=8)
+def _load_sharp_semibold(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    px = max(6, int(size))
+    path = resolve_ui_font_semibold()
+    if path:
+        try:
+            return ImageFont.truetype(path, px)
+        except OSError:
+            pass
+    return _load_sharp_extrabold(px)
 
 
 @lru_cache(maxsize=8)
@@ -2728,11 +2741,11 @@ class ViewCirclesWidget:
         cy: float,
         now: datetime,
     ) -> None:
-        """SharpSans Extrabold date; curved baseline matching the clock exterior."""
+        """Sharp Sans Semibold date; curved baseline matching the clock exterior."""
         label = _format_zone0_date(now)
         if not label:
             return
-        font = _load_sharp_extrabold(_CLOCK_DATE_SIZE_PX)
+        font = _load_sharp_semibold(_CLOCK_DATE_SIZE_PX)
         patch, _pw, _ph = _text_patch_font(
             label,
             font=font,

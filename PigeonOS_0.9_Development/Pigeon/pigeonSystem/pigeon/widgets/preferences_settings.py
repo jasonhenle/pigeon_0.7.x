@@ -1247,10 +1247,10 @@ def _draw_preferences_clock_digitals_bgra(
     for _zone, center in centers.items():
         cx = (center[0] - vb_x) * sx
         cy = (center[1] - vb_y) * sy
-        # Date: SharpSans Extrabold, curved baseline matching the clock exterior.
+        # Date: Sharp Sans Semibold, curved baseline matching the clock exterior.
         label = vc._format_zone0_date(when)
         if label:
-            font = vc._load_sharp_extrabold(vc._CLOCK_DATE_SIZE_PX)
+            font = vc._load_sharp_semibold(vc._CLOCK_DATE_SIZE_PX)
             date_p, _, _ = vc._text_patch_font(
                 label,
                 font=font,
