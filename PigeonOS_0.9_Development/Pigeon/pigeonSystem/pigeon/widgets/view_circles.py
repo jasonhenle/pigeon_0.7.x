@@ -235,7 +235,7 @@ _SERVICE_FADE_PROGRESS = 0.12
 _VOLUME_CX = _ZONE3_CX
 _AUDIO_CFG_CX = _ZONE3_CX
 _VOLUME_SIZE_PX = 72
-_AUDIO_CFG_SIZE_PX = 30
+_AUDIO_CFG_SIZE_PX = 42
 _CLOCK_DIGITAL_SIZE = 42
 # Date / audio-config baselines sit this many px above the widget exterior top.
 _WIDGET_LABEL_BASELINE_GAP_PX = 20.0
@@ -1624,6 +1624,112 @@ def _paste_label_above_widget(
     _paste_patch_bgra(canvas, patch, paste_x, paste_y)
 
 
+def _paste_label_above_circle_curved(
+    canvas: np.ndarray,
+    patch: np.ndarray,
+    cx: float,
+    *,
+    widget_cy: float,
+    widget_r: float,
+    gap_px: float = _WIDGET_LABEL_BASELINE_GAP_PX,
+) -> None:
+    """Paste label in a flat-top / curved-bottom envelope above a circular widget.
+
+    Same width and topline as the flat paste. Each column is scaled uniformly so
+    the bottom edge rides the concentric arc ``widget_r + gap`` (Illustrator-style
+    envelope distort — not a bottom-only stretch, which causes spike artifacts).
+    """
+    if patch is None or patch.size == 0 or canvas is None or canvas.size == 0:
+        return
+    src_full = np.asarray(patch)
+    if src_full.ndim != 3 or src_full.shape[2] < 4:
+        return
+
+    # Tight-crop to opaque ink so the glyph body fills the cap (pad would
+    # leave the curved baseline sitting in empty space).
+    alpha = src_full[:, :, 3]
+    rows = np.where(alpha.max(axis=1) > 8)[0]
+    cols = np.where(alpha.max(axis=0) > 8)[0]
+    if rows.size < 1 or cols.size < 1:
+        return
+    r0, r1 = int(rows[0]), int(rows[-1]) + 1
+    c0, c1 = int(cols[0]), int(cols[-1]) + 1
+    src = np.ascontiguousarray(src_full[r0:r1, c0:c1])
+    ph, pw = int(src.shape[0]), int(src.shape[1])
+    if ph < 1 or pw < 1:
+        return
+
+    full_h, full_w = int(src_full.shape[0]), int(src_full.shape[1])
+    r_arc = float(widget_r) + float(gap_px)
+    if r_arc <= 1.0:
+        _paste_label_above_widget(
+            canvas,
+            src_full,
+            cx,
+            widget_top_y=float(widget_cy) - float(widget_r),
+            gap_px=gap_px,
+        )
+        return
+
+    widget_top = float(widget_cy) - float(widget_r)
+    # Match the previous flat paste's ink topline (skip transparent pad above glyphs).
+    top_y = widget_top - float(gap_px) - float(full_h) + float(r0)
+    x0_full = float(cx) - float(full_w) / 2.0
+    x0 = x0_full + float(c0)
+
+    xs = (x0 + 0.5) + np.arange(pw, dtype=np.float64)
+    dx = xs - float(cx)
+    inside = np.abs(dx) < (r_arc - 1e-3)
+    # Default to a rectangular bottom; replace with the circle arc where valid.
+    bottoms = np.full(pw, top_y + float(ph), dtype=np.float64)
+    bottoms[inside] = float(widget_cy) - np.sqrt(
+        np.maximum(0.0, r_arc * r_arc - dx[inside] * dx[inside])
+    )
+    # Never crush below the natural glyph height (keeps center from squashing).
+    heights = np.maximum(bottoms - top_y, float(ph))
+    dest_h = int(math.ceil(float(np.max(heights)))) + 1
+    if dest_h < 1:
+        return
+
+    yy = np.arange(dest_h, dtype=np.float64)[:, None]
+    xx = np.arange(pw, dtype=np.float64)[None, :]
+    valid = yy < heights[None, :]
+
+    # Uniform vertical envelope: each column maps [0, h) → full source [0, ph).
+    h = np.maximum(heights[None, :], 1e-3)
+    if ph <= 1:
+        v_src = np.zeros((dest_h, pw), dtype=np.float64)
+    else:
+        v_src = (yy + 0.5) / h * float(ph) - 0.5
+        v_src = np.clip(v_src, 0.0, float(ph - 1))
+
+    map_x = np.broadcast_to(xx.astype(np.float32), (dest_h, pw)).copy()
+    map_y = v_src.astype(np.float32)
+    map_x = np.where(valid, map_x, np.float32(-1.0))
+    map_y = np.where(valid, map_y, np.float32(-1.0))
+
+    warped = cv2.remap(
+        src,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0),
+    )
+    if warped.dtype != np.uint8:
+        warped = np.clip(warped, 0, 255).astype(np.uint8)
+    warped = np.ascontiguousarray(warped)
+    if warped.shape[2] >= 4:
+        warped[~valid, :] = 0
+
+    _paste_patch_bgra(
+        canvas,
+        warped,
+        int(round(x0)),
+        int(round(top_y)),
+    )
+
+
 def _font_bbox_top(text: str, font: ImageFont.ImageFont) -> float:
     probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
@@ -2622,7 +2728,7 @@ class ViewCirclesWidget:
         cy: float,
         now: datetime,
     ) -> None:
-        """SharpSans Extrabold date; baseline 20px above clock exterior top."""
+        """SharpSans Extrabold date; curved baseline matching the clock exterior."""
         label = _format_zone0_date(now)
         if not label:
             return
@@ -2632,12 +2738,12 @@ class ViewCirclesWidget:
             font=font,
             fill_rgb=(255, 255, 255),
         )
-        widget_top = float(cy) - float(_CLOCK_EXTERIOR_ACCENT_R)
-        _paste_label_above_widget(
+        _paste_label_above_circle_curved(
             out,
             patch,
             cx,
-            widget_top_y=widget_top,
+            widget_cy=float(cy),
+            widget_r=float(_CLOCK_EXTERIOR_ACCENT_R),
             gap_px=_WIDGET_LABEL_BASELINE_GAP_PX,
         )
 
@@ -2715,12 +2821,12 @@ class ViewCirclesWidget:
                 max_width_px=max_w,
                 fill_rgb=(255, 255, 255),
             )
-            widget_top = float(cy) - float(_RING_OUTER_R)
-            _paste_label_above_widget(
+            _paste_label_above_circle_curved(
                 out,
                 cfg_p,
                 cx,
-                widget_top_y=widget_top,
+                widget_cy=float(cy),
+                widget_r=float(_RING_OUTER_R),
                 gap_px=_WIDGET_LABEL_BASELINE_GAP_PX,
             )
 

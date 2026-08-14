@@ -1075,7 +1075,7 @@ _PREFS_NP_TIME_SIZE_PX = 48
 _PREFS_VOLUME_DEMO_DB = "-22.5"
 _PREFS_VOLUME_DEMO_CFG = "multi-in > auro3d"
 _PREFS_VOLUME_SIZE_PX = 72
-_PREFS_AUDIO_CFG_SIZE_PX = 30
+_PREFS_AUDIO_CFG_SIZE_PX = 42
 # Cast columns in design space (prefs artboard after viewBox crop).
 # Centers align with zone1/2/3 clock exteriors; baselines from SVG actor/character.
 _PREFS_CAST_COLS_Z4: tuple[tuple[float, float, float], ...] = (
@@ -1247,7 +1247,7 @@ def _draw_preferences_clock_digitals_bgra(
     for _zone, center in centers.items():
         cx = (center[0] - vb_x) * sx
         cy = (center[1] - vb_y) * sy
-        # Date: SharpSans Extrabold, baseline 20px above exterior top.
+        # Date: SharpSans Extrabold, curved baseline matching the clock exterior.
         label = vc._format_zone0_date(when)
         if label:
             font = vc._load_sharp_extrabold(vc._CLOCK_DATE_SIZE_PX)
@@ -1256,11 +1256,12 @@ def _draw_preferences_clock_digitals_bgra(
                 font=font,
                 fill_rgb=(255, 255, 255),
             )
-            vc._paste_label_above_widget(
+            vc._paste_label_above_circle_curved(
                 bgra,
                 date_p,
                 cx,
-                widget_top_y=cy - clock_r,
+                widget_cy=cy,
+                widget_r=clock_r,
                 gap_px=float(vc._WIDGET_LABEL_BASELINE_GAP_PX),
             )
         vc._paste_centered(bgra, time_p, cx, cy)
@@ -1434,11 +1435,12 @@ def _draw_preferences_volume_bgra(
                 max_width_px=max_w,
                 fill_rgb=(255, 255, 255),
             )
-            vc._paste_label_above_widget(
+            vc._paste_label_above_circle_curved(
                 bgra,
                 cfg_p,
                 cx,
-                widget_top_y=cy - outer_r,
+                widget_cy=cy,
+                widget_r=outer_r,
                 gap_px=float(vc._WIDGET_LABEL_BASELINE_GAP_PX),
             )
 
