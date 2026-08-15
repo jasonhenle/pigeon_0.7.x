@@ -254,8 +254,8 @@ def draw_settings_theme_background_bgra(
         plate[sel, 2] = r
         plate[sel, 3] = 255
 
-    if len(_PLATE_CACHE) >= 12:
-        _PLATE_CACHE.clear()
+    while len(_PLATE_CACHE) >= 12:
+        _PLATE_CACHE.pop(next(iter(_PLATE_CACHE)))
     _PLATE_CACHE[cache_key] = plate.copy()
     bgra[:] = plate
 

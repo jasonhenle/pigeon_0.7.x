@@ -15,24 +15,47 @@ def state_file() -> Path:
     return pigeon_state_dir() / "state.json"
 
 
+# (mtime_ns, size, raw_text) — read_app_state is called from poll/render hot
+# paths (~60 call sites); stat-validated text cache skips the disk read+decode.
+_STATE_TEXT_CACHE: tuple[int, int, str] | None = None
+
+
 def read_app_state() -> dict[str, Any]:
+    global _STATE_TEXT_CACHE
     p = state_file()
-    if not p.is_file():
-        return {}
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        st = p.stat()
+    except OSError:
+        _STATE_TEXT_CACHE = None
+        return {}
+    sig = (st.st_mtime_ns, st.st_size)
+    cached = _STATE_TEXT_CACHE
+    if cached is not None and (cached[0], cached[1]) == sig:
+        text = cached[2]
+    else:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:
+            _STATE_TEXT_CACHE = None
+            return {}
+        _STATE_TEXT_CACHE = (sig[0], sig[1], text)
+    try:
+        # Parse per call so every caller gets private objects (safe to mutate).
+        data = json.loads(text)
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
 def _atomic_write_state(cur: dict[str, Any]) -> None:
+    global _STATE_TEXT_CACHE
     try:
         p = state_file()
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(cur, indent=2) + "\n", encoding="utf-8")
         tmp.replace(p)
+        _STATE_TEXT_CACHE = None
     except Exception:
         pass
 
@@ -41,6 +64,16 @@ def write_app_state(**updates: Any) -> None:
     """Merge updates into existing JSON and atomically replace the file."""
     try:
         cur = read_app_state()
+        if not cur:
+            # Empty merge base but a sizable file on disk means the read failed
+            # (corrupt/partial JSON). Keep a recovery copy before overwriting so
+            # one bad read cannot silently wipe pairings and settings.
+            try:
+                p = state_file()
+                if p.is_file() and p.stat().st_size > 2:
+                    p.replace(p.with_suffix(".bad"))
+            except OSError:
+                pass
         cur.update(updates)
         _atomic_write_state(cur)
     except Exception:
@@ -1158,9 +1191,17 @@ def read_delegation_active_indices(loc_id: str) -> dict[str, int]:
 
 
 def append_delegation_log_line(loc_id: str, feature_id: str, line: str) -> None:
+    append_delegation_log_lines(loc_id, [(feature_id, line)])
+
+
+def append_delegation_log_lines(loc_id: str, entries: list[tuple[str, str]]) -> None:
+    """Append several (feature_id, line) pairs in one state read/write.
+
+    The poll-failure path logs to every feature at once; batching keeps that to
+    a single state.json rewrite instead of one per feature.
+    """
     lid = str(loc_id or "").strip()
-    fid = str(feature_id or "").strip()
-    if not lid or not fid:
+    if not lid or not entries:
         return
     cur = read_app_state()
     fd = _load_feature_delegation(cur)
@@ -1170,14 +1211,21 @@ def append_delegation_log_line(loc_id: str, feature_id: str, line: str) -> None:
     if not isinstance(sub, dict):
         sub = {}
         fd["log"][lid] = sub
-    bucket = sub.setdefault(fid, [])
-    if not isinstance(bucket, list):
-        bucket = []
-        sub[fid] = bucket
-    bucket.append(str(line)[:500])
-    if len(bucket) > 80:
-        del bucket[:-80]
-    write_app_state(feature_delegation_v1=fd)
+    wrote = False
+    for feature_id, line in entries:
+        fid = str(feature_id or "").strip()
+        if not fid:
+            continue
+        bucket = sub.setdefault(fid, [])
+        if not isinstance(bucket, list):
+            bucket = []
+            sub[fid] = bucket
+        bucket.append(str(line)[:500])
+        if len(bucket) > 80:
+            del bucket[:-80]
+        wrote = True
+    if wrote:
+        write_app_state(feature_delegation_v1=fd)
 
 
 def advance_delegation_active(loc_id: str, feature_id: str, n_slots: int) -> None:

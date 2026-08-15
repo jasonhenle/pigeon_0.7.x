@@ -552,6 +552,7 @@ def _selector_pill_center(path_el: ET.Element | None) -> tuple[float, float] | N
     return ((left + right) / 2.0, (top + bottom) / 2.0)
 
 
+@lru_cache(maxsize=8)
 def _selector_label_font(size_px: int = 15):
     from PIL import ImageFont
 
@@ -911,8 +912,8 @@ def _prefs_color_gradient_master(svg_path: Path) -> np.ndarray | None:
     mask = np.asarray(pil_mask, dtype=np.uint8)
     out = bgra.copy()
     out[:, :, 3] = np.minimum(out[:, :, 3], mask)
-    if len(_COLOR_BTN_IMAGE_CACHE) >= 4:
-        _COLOR_BTN_IMAGE_CACHE.clear()
+    while len(_COLOR_BTN_IMAGE_CACHE) >= 4:
+        _COLOR_BTN_IMAGE_CACHE.pop(next(iter(_COLOR_BTN_IMAGE_CACHE)))
     _COLOR_BTN_IMAGE_CACHE[key] = out
     return out
 
@@ -1058,8 +1059,8 @@ def _prefs_poster_masters(svg_path: Path) -> dict[int, np.ndarray]:
             if bgra is not None:
                 out[zone] = bgra
                 break
-    if len(_PREFS_POSTER_MASTER_CACHE) >= 4:
-        _PREFS_POSTER_MASTER_CACHE.clear()
+    while len(_PREFS_POSTER_MASTER_CACHE) >= 4:
+        _PREFS_POSTER_MASTER_CACHE.pop(next(iter(_PREFS_POSTER_MASTER_CACHE)))
     _PREFS_POSTER_MASTER_CACHE[key] = out
     return out
 
@@ -1495,8 +1496,8 @@ def _prefs_poster_patch_for_zone(
     mask = _rounded_rect_mask(tw, th, rx)
     patch = crop.copy()
     patch[:, :, 3] = np.minimum(patch[:, :, 3], mask)
-    if len(_PREFS_POSTER_PATCH_CACHE) >= _PREFS_POSTER_PATCH_CACHE_MAX:
-        _PREFS_POSTER_PATCH_CACHE.clear()
+    while len(_PREFS_POSTER_PATCH_CACHE) >= _PREFS_POSTER_PATCH_CACHE_MAX:
+        _PREFS_POSTER_PATCH_CACHE.pop(next(iter(_PREFS_POSTER_PATCH_CACHE)))
     _PREFS_POSTER_PATCH_CACHE[cache_key] = patch
     return patch, x, y
 
@@ -2202,8 +2203,8 @@ def _prefs_dimmed_theme_bgra(
     dimmed[:, :, :3] = np.clip(
         dimmed[:, :, :3].astype(np.float32) * keep, 0, 255
     ).astype(np.uint8)
-    if len(_PREFS_DIMMED_BG_CACHE) >= _PREFS_DIMMED_BG_CACHE_MAX:
-        _PREFS_DIMMED_BG_CACHE.clear()
+    while len(_PREFS_DIMMED_BG_CACHE) >= _PREFS_DIMMED_BG_CACHE_MAX:
+        _PREFS_DIMMED_BG_CACHE.pop(next(iter(_PREFS_DIMMED_BG_CACHE)))
     _PREFS_DIMMED_BG_CACHE[key] = dimmed
     return dimmed
 

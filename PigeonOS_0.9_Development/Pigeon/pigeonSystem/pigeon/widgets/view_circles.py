@@ -9,6 +9,7 @@ bar, poster/album art) are drawn on top with Pillow / OpenCV.
 
 from __future__ import annotations
 
+import copy
 import io
 import math
 import os
@@ -575,13 +576,29 @@ def _remove_by_key(root: ET.Element, name: str) -> bool:
     return removed
 
 
+# (path, mtime_ns) → parsed template. Chrome rasters miss every second, so
+# without this the SVG is re-read and re-parsed from disk once per tick.
+_SVG_TEMPLATE_CACHE: dict[tuple[str, int], ET.Element] = {}
+
+
 def _svg_tree_from_path(path: Path) -> ET.Element:
-    tree = ET.parse(path)
-    root = tree.getroot()
-    root.set("viewBox", f"0 0 {int(_SVG_W)} {int(_SVG_H)}")
-    root.set("width", str(int(_SVG_W)))
-    root.set("height", str(int(_SVG_H)))
-    return root
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = -1
+    key = (str(path), mtime)
+    template = _SVG_TEMPLATE_CACHE.get(key)
+    if template is None:
+        tree = ET.parse(path)
+        template = tree.getroot()
+        template.set("viewBox", f"0 0 {int(_SVG_W)} {int(_SVG_H)}")
+        template.set("width", str(int(_SVG_W)))
+        template.set("height", str(int(_SVG_H)))
+        while len(_SVG_TEMPLATE_CACHE) >= 4:  # a couple of mode variants at most
+            _SVG_TEMPLATE_CACHE.pop(next(iter(_SVG_TEMPLATE_CACHE)))
+        _SVG_TEMPLATE_CACHE[key] = template
+    # Callers mutate the tree (strip layers, set text), so hand out a copy.
+    return copy.deepcopy(template)
 
 
 def _scale_raster_to_design(bgra: np.ndarray, src_w: int, src_h: int) -> np.ndarray:
@@ -2564,8 +2581,9 @@ class ViewCirclesWidget:
             base = _fallback_base_bgra()
         # Keep a full minute of second-states (and a bit more) so the Pi doesn't
         # re-rasterize every tick — slow rasters were causing the second hand to skip.
-        if len(self._svg_chrome_by_key) > 96:
-            self._svg_chrome_by_key.clear()
+        # Evict oldest instead of wiping: a wipe forced a full minute of re-rasters.
+        while len(self._svg_chrome_by_key) > 96:
+            self._svg_chrome_by_key.pop(next(iter(self._svg_chrome_by_key)))
         self._svg_chrome_by_key[key] = base
         return base
 

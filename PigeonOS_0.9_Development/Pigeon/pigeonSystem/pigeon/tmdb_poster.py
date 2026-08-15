@@ -2173,6 +2173,9 @@ def cache_tmdb_cast_for_title(title_key_s: str, cast: list[tuple[str, str]]) -> 
     if not tk:
         return
     rows = [(str(a or ""), str(c or "")) for a, c in cast[:9]]
+    # Bound the cache: long sessions cycle through many titles; evict oldest.
+    while len(_CAST_CACHE) >= 64:
+        _CAST_CACHE.pop(next(iter(_CAST_CACHE)))
     _CAST_CACHE[tk] = rows
     cleaned, _year = split_query_and_year(tk)
     cleaned = (cleaned or "").strip()
