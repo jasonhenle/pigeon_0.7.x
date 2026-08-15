@@ -9959,6 +9959,8 @@ def main() -> int:
             else:
                 query = pyatv_q
             if not query:
+                query = str(metadata.get("ocr_title") or "").strip()
+            if not query:
                 return None
             prefer = _tmdb_pref_from_metadata(metadata)
             title = str(metadata.get("title") or "").strip()
@@ -10644,7 +10646,10 @@ def main() -> int:
 
         def _on_hdmi_ocr_clues(clues) -> None:
             """Merge HDMI OCR into last_metadata. Spawn TMDb only when clues add a title."""
-            from pigeon.hdmi_ocr import apply_clues_to_metadata
+            root.after(0, lambda c=clues: _apply_hdmi_ocr_clues(c))
+
+        def _apply_hdmi_ocr_clues(clues) -> None:
+            from pigeon.hdmi_ocr import apply_clues_to_metadata, apply_ocr_title_as_identity
             from pigeon.tmdb_poster import is_degenerate_tmdb_query
 
             apple_tv_auto_state["ocr_in_flight"] = False
@@ -10653,23 +10658,40 @@ def main() -> int:
 
                 if not source_enabled("hdmi"):
                     return
+                metadata_on = source_enabled("metadata")
             except Exception:
-                pass
+                metadata_on = True
             md = apple_tv_auto_state.get("last_metadata")
             if not isinstance(md, dict):
                 md = {}
+            had_query = bool(str(md.get("query") or "").strip())
             merged = apply_clues_to_metadata(md, clues)
+            apply_ocr_title_as_identity(merged)
+            merged["content_key"] = _content_key_from_metadata(merged)
             apple_tv_auto_state["last_metadata"] = merged
             agrees = bool(merged.get("ocr_agrees"))
             guess = str(clues.title_guess or "").strip()
             reason = str(clues.reason or "")
-            if reason == "pause" and (agrees or not guess):
+            # Pause/confirm that already matches Apple TV metadata: leave TMDb alone.
+            # If there is no pyatv query (Netflix, or METADATA off), OCR *is* the title.
+            if metadata_on and had_query and reason == "pause" and agrees:
                 return
-            if reason == "confirm" and agrees:
+            if metadata_on and had_query and reason == "confirm" and agrees:
                 return
             if guess and not is_degenerate_tmdb_query(guess):
-                if reason == "no_metadata" or (reason == "pause" and not agrees):
+                need_fetch = (
+                    (not metadata_on)
+                    or (not had_query)
+                    or reason == "no_metadata"
+                    or (reason == "pause" and not agrees)
+                )
+                if need_fetch:
+                    apple_tv_auto_state["query"] = guess
                     spawn_tmdb_poster_fetch(guess, prefer="auto", force=True)
+            try:
+                _sync_now_playing_screen_state()
+            except Exception:
+                pass
 
         def _schedule_hdmi_ocr_from_poll(metadata: dict[str, object]) -> None:
             """OCR when pyatv is empty, once per new title, or on pause (max 1/min)."""
@@ -10933,13 +10955,23 @@ def main() -> int:
                         )
                         try:
                             from pigeon.source_toggles import source_enabled
-                            from pigeon.hdmi_ocr import clear_ocr_fields, copy_ocr_fields
+                            from pigeon.hdmi_ocr import (
+                                apply_ocr_title_as_identity,
+                                clear_ocr_fields,
+                                copy_ocr_fields,
+                            )
 
                             if source_enabled("hdmi"):
-                                if prev_ocr_key and prev_ocr_key == str(
-                                    merged_md.get("content_key") or ""
+
+                                new_key = str(merged_md.get("content_key") or "")
+                                if not new_key or (
+                                    prev_ocr_key and prev_ocr_key == new_key
                                 ):
                                     copy_ocr_fields(prev_ocr_md, merged_md)
+                                if apply_ocr_title_as_identity(merged_md):
+                                    merged_md["content_key"] = _content_key_from_metadata(
+                                        merged_md
+                                    )
                             else:
                                 clear_ocr_fields(merged_md)
                         except Exception:

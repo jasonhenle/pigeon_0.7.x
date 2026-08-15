@@ -64,9 +64,14 @@ def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = No
         if content_key and content_key != _schedule.last_confirm_key:
             _schedule.last_confirm_key = content_key
             return "confirm"
+    # Playing or paused with no Apple TV/Roku title: keep reading HDMI until OCR
+    # has a title. Pause used to be rising-edge only, so a still pause screen
+    # never retried and never reached TMDb.
+    active = paused or "playing" in ds
     if (
         not has_query
-        and "playing" in ds
+        and active
+        and not idle
         and not str(md.get("ocr_title") or "").strip()
     ):
         return "no_metadata"
@@ -124,6 +129,21 @@ def apply_clues_to_metadata(
     out["ocr_agrees"] = clues_agree_with_metadata(clues, metadata)
     out["ocr_at"] = time.time()
     return out
+
+
+def apply_ocr_title_as_identity(metadata: dict[str, Any]) -> bool:
+    """Fill empty query/title from OCR so now-playing and TMDb have an identity."""
+    guess = str(metadata.get("ocr_title") or "").strip()
+    if not guess:
+        return False
+    changed = False
+    if not str(metadata.get("query") or "").strip():
+        metadata["query"] = guess
+        changed = True
+    if not str(metadata.get("title") or "").strip():
+        metadata["title"] = guess
+        changed = True
+    return changed
 
 
 _OCR_FIELD_KEYS = (
