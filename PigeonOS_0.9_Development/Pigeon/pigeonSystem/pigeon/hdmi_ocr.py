@@ -460,20 +460,26 @@ def probe_hdmi_presence(*, force: bool = False) -> bool:
         or _hdmi_probe_mono <= 0.0
         or (now - _hdmi_probe_mono) >= _HDMI_PROBE_TTL_S
     )
-    if stale and not _hdmi_probe_in_flight:
-        _hdmi_probe_in_flight = True
-        threading.Thread(
-            target=_hdmi_probe_worker, name="hdmi-probe", daemon=True
-        ).start()
+    if stale:
+        with _lock:
+            start = not _hdmi_probe_in_flight
+            if start:
+                _hdmi_probe_in_flight = True
+        if start:
+            threading.Thread(
+                target=_hdmi_probe_worker, name="hdmi-probe", daemon=True
+            ).start()
     return hdmi_capture_available()
 
 
 def _hdmi_probe_worker() -> None:
     global _hdmi_present, _hdmi_probe_in_flight, _hdmi_probe_mono, _av_devices_cache
     try:
-        _av_devices_cache = None
         present = False
         if sys.platform == "darwin":
+            # Enumerate into a fresh list; only replace the cache on success so a
+            # failed Swift run cannot leave other readers with no device names.
+            _av_devices_cache = None
             named = _avfoundation_devices()
             present = any(_is_hdmi_camera(name, dtype) for _i, name, dtype in named)
         elif sys.platform.startswith("linux"):
@@ -488,7 +494,8 @@ def _hdmi_probe_worker() -> None:
         _hdmi_present = present
         _hdmi_probe_mono = time.monotonic()
     finally:
-        _hdmi_probe_in_flight = False
+        with _lock:
+            _hdmi_probe_in_flight = False
 
 
 def _avfoundation_devices() -> list[tuple[int, str, str]]:
@@ -615,7 +622,7 @@ def _open_capture_at(index: int):
 
 
 def _grab_frame():
-    global _cap, _cap_index
+    global _cap, _cap_index, _av_devices_cache
     try:
         import cv2  # noqa: F401
     except ImportError:

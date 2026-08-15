@@ -552,6 +552,7 @@ def _selector_pill_center(path_el: ET.Element | None) -> tuple[float, float] | N
     return ((left + right) / 2.0, (top + bottom) / 2.0)
 
 
+@lru_cache(maxsize=8)
 def _selector_label_font(size_px: int = 15):
     from PIL import ImageFont
 
@@ -911,8 +912,8 @@ def _prefs_color_gradient_master(svg_path: Path) -> np.ndarray | None:
     mask = np.asarray(pil_mask, dtype=np.uint8)
     out = bgra.copy()
     out[:, :, 3] = np.minimum(out[:, :, 3], mask)
-    if len(_COLOR_BTN_IMAGE_CACHE) >= 4:
-        _COLOR_BTN_IMAGE_CACHE.clear()
+    while len(_COLOR_BTN_IMAGE_CACHE) >= 4:
+        _COLOR_BTN_IMAGE_CACHE.pop(next(iter(_COLOR_BTN_IMAGE_CACHE)))
     _COLOR_BTN_IMAGE_CACHE[key] = out
     return out
 
@@ -1058,8 +1059,8 @@ def _prefs_poster_masters(svg_path: Path) -> dict[int, np.ndarray]:
             if bgra is not None:
                 out[zone] = bgra
                 break
-    if len(_PREFS_POSTER_MASTER_CACHE) >= 4:
-        _PREFS_POSTER_MASTER_CACHE.clear()
+    while len(_PREFS_POSTER_MASTER_CACHE) >= 4:
+        _PREFS_POSTER_MASTER_CACHE.pop(next(iter(_PREFS_POSTER_MASTER_CACHE)))
     _PREFS_POSTER_MASTER_CACHE[key] = out
     return out
 
@@ -1242,28 +1243,10 @@ def _draw_preferences_clock_digitals_bgra(
     when = now or datetime.now()
     hhmm = vc._clock_hhmm(when)
     time_p, _, _ = vc._text_patch_digital7(hhmm, size_px=_PREFS_NP_TIME_SIZE_PX)
-    # Scale NP exterior radius into prefs design space for the date baseline.
-    clock_r = float(vc._CLOCK_EXTERIOR_ACCENT_R) * min(sx, sy)
+    # No curved date on the preferences page — live now-playing keeps it.
     for _zone, center in centers.items():
         cx = (center[0] - vb_x) * sx
         cy = (center[1] - vb_y) * sy
-        # Date: Sharp Sans Semibold, curved baseline matching the clock exterior.
-        label = vc._format_zone0_date(when)
-        if label:
-            font = vc._load_sharp_semibold(vc._CLOCK_DATE_SIZE_PX)
-            date_p, _, _ = vc._text_patch_font(
-                label,
-                font=font,
-                fill_rgb=(255, 255, 255),
-            )
-            vc._paste_label_above_circle_curved(
-                bgra,
-                date_p,
-                cx,
-                widget_cy=cy,
-                widget_r=clock_r,
-                gap_px=float(vc._WIDGET_LABEL_BASELINE_GAP_PX),
-            )
         vc._paste_centered(bgra, time_p, cx, cy)
 
 
@@ -1346,7 +1329,7 @@ def _draw_preferences_volume_bgra(
     centers: dict[int, tuple[float, float]],
     state: MainSettingsState | None = None,
 ) -> None:
-    """Zones 1–3 volume: UI-color level pie + centered dB; audio config above ring."""
+    """Zones 1–3 volume: UI-color level pie + centered dB (no config label here)."""
     from pigeon.widgets import view_circles as vc
 
     if not centers:
@@ -1359,7 +1342,7 @@ def _draw_preferences_volume_bgra(
     scale = min(sx, sy)
     outer_r = float(_PREFS_NP_RING_OUTER_R) * scale
     inner_r = float(_PREFS_NP_RING_INNER_R) * scale
-    vol, cfg = _preferences_volume_lines(st)
+    vol, _cfg = _preferences_volume_lines(st)
     np_th = vc.np_theme_from_settings()
 
     for _zone, center in centers.items():
@@ -1418,31 +1401,8 @@ def _draw_preferences_volume_bgra(
                 max_size_px=_PREFS_VOLUME_SIZE_PX,
             )
             vc._paste_centered(bgra, vol_p, cx, cy)
-        if cfg:
-            cfg_label = cfg.upper()
-            max_w = int(
-                max(
-                    80,
-                    min(
-                        240,
-                        2.0 * min(float(cx), float(DESIGN_W) - float(cx)) - 8.0,
-                    ),
-                )
-            )
-            cfg_p, _, _ = vc._text_patch_digital7(
-                cfg_label,
-                size_px=_PREFS_AUDIO_CFG_SIZE_PX,
-                max_width_px=max_w,
-                fill_rgb=(255, 255, 255),
-            )
-            vc._paste_label_above_circle_curved(
-                bgra,
-                cfg_p,
-                cx,
-                widget_cy=cy,
-                widget_r=outer_r,
-                gap_px=float(vc._WIDGET_LABEL_BASELINE_GAP_PX),
-            )
+        # No curved audio-config label on the preferences page — live
+        # now-playing keeps it.
 
 
 def _prefs_poster_patch_for_zone(
@@ -1495,8 +1455,8 @@ def _prefs_poster_patch_for_zone(
     mask = _rounded_rect_mask(tw, th, rx)
     patch = crop.copy()
     patch[:, :, 3] = np.minimum(patch[:, :, 3], mask)
-    if len(_PREFS_POSTER_PATCH_CACHE) >= _PREFS_POSTER_PATCH_CACHE_MAX:
-        _PREFS_POSTER_PATCH_CACHE.clear()
+    while len(_PREFS_POSTER_PATCH_CACHE) >= _PREFS_POSTER_PATCH_CACHE_MAX:
+        _PREFS_POSTER_PATCH_CACHE.pop(next(iter(_PREFS_POSTER_PATCH_CACHE)))
     _PREFS_POSTER_PATCH_CACHE[cache_key] = patch
     return patch, x, y
 
@@ -2202,8 +2162,8 @@ def _prefs_dimmed_theme_bgra(
     dimmed[:, :, :3] = np.clip(
         dimmed[:, :, :3].astype(np.float32) * keep, 0, 255
     ).astype(np.uint8)
-    if len(_PREFS_DIMMED_BG_CACHE) >= _PREFS_DIMMED_BG_CACHE_MAX:
-        _PREFS_DIMMED_BG_CACHE.clear()
+    while len(_PREFS_DIMMED_BG_CACHE) >= _PREFS_DIMMED_BG_CACHE_MAX:
+        _PREFS_DIMMED_BG_CACHE.pop(next(iter(_PREFS_DIMMED_BG_CACHE)))
     _PREFS_DIMMED_BG_CACHE[key] = dimmed
     return dimmed
 

@@ -93,7 +93,7 @@ from pigeon.app_state import (
     write_saved_streaming_device,
     write_location_wifi,
     advance_delegation_active,
-    append_delegation_log_line,
+    append_delegation_log_lines,
 )
 from pigeon.media_folders import (
     consolidate_legacy_pigeondata_media_folders,
@@ -10899,7 +10899,11 @@ def main() -> int:
 
         def _on_hdmi_ocr_clues(clues) -> None:
             """Merge HDMI OCR into last_metadata. Spawn TMDb only when clues add a title."""
-            root.after(0, lambda c=clues: _apply_hdmi_ocr_clues(c))
+            try:
+                root.after(0, lambda c=clues: _apply_hdmi_ocr_clues(c))
+            except Exception:
+                # Tk gone / shutdown: clear the gate so OCR is not stuck off forever.
+                apple_tv_auto_state["ocr_in_flight"] = False
 
         def _apply_hdmi_ocr_clues(clues) -> None:
             from pigeon.display_confidence import ocr_is_in_charge
@@ -11111,16 +11115,15 @@ def main() -> int:
 
                                     lid_log = str(read_current_location_id() or "").strip()
                                     if lid_log:
-                                        for _fn, fid in _delegation_feature_rows:
-                                            _poll_log = (
-                                                f"{_fn}: player poll failed ({cf}\u00d7) while using this "
-                                                f"delegation chain \u2014 {str(msg_w or '')[:120]}"
-                                            )
-                                            append_delegation_log_line(
-                                                lid_log,
+                                        _poll_entries = [
+                                            (
                                                 str(fid),
-                                                _poll_log,
+                                                f"{_fn}: player poll failed ({cf}\u00d7) while using this "
+                                                f"delegation chain \u2014 {str(msg_w or '')[:120]}",
                                             )
+                                            for _fn, fid in _delegation_feature_rows
+                                        ]
+                                        append_delegation_log_lines(lid_log, _poll_entries)
                                         ndev = len(_adv_dev_cols())
                                         if ndev > 1:
                                             advance_delegation_active(lid_log, "title", ndev)

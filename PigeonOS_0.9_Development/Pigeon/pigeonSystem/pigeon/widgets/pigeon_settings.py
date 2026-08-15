@@ -390,7 +390,7 @@ def _sync_info_label(root: ET.Element) -> None:
         _set_text_content(text, "NOW PLAY")
     widgets = _find_by_logical_id(root, "settings_pigeon_03_general_text")
     if widgets is not None:
-        _set_text_content(widgets, "WIDGETS")
+        _set_text_content(widgets, "PREFERENCES")
 
 
 def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
@@ -553,8 +553,8 @@ def _load_color_gradient_bgra(svg_path: Path) -> np.ndarray | None:
         bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
     else:
         bgra = bgr
-    if len(_COLOR_GRAD_CACHE) >= 4:
-        _COLOR_GRAD_CACHE.clear()
+    while len(_COLOR_GRAD_CACHE) >= 4:
+        _COLOR_GRAD_CACHE.pop(next(iter(_COLOR_GRAD_CACHE)))
     _COLOR_GRAD_CACHE[key] = bgra
     return bgra.copy()
 
@@ -808,8 +808,8 @@ def _full_theme_bgra(
     bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
     bg_bgra[:, :, 3] = 255
     _draw_container_background_bgra(bg_bgra, ui_hex=ui_hex, assets_dir=adir)
-    if len(_THEME_BG_CACHE) >= _THEME_BG_CACHE_MAX:
-        _THEME_BG_CACHE.clear()
+    while len(_THEME_BG_CACHE) >= _THEME_BG_CACHE_MAX:
+        _THEME_BG_CACHE.pop(next(iter(_THEME_BG_CACHE)))
     _THEME_BG_CACHE[key] = bg_bgra
     return bg_bgra
 
