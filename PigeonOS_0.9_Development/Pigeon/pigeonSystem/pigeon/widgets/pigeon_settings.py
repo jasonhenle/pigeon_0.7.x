@@ -232,19 +232,41 @@ def _sync_selectable_tile(
     *,
     selected: bool,
     source_on: bool = True,
+    dimmed: bool = False,
 ) -> None:
     for fid, _tg, button_id, text_id in _SELECTABLE_TILES:
         if fid != focus_id:
             continue
         button = _find_by_logical_id(root, button_id)
         text = _find_by_logical_id(root, text_id)
+        label_dimmed = dimmed or not source_on
         if selected:
             _paint_button(button, fill=_COLOR_WHITE, stroke=_COLOR_BLACK)
-            _paint_text(text, _COLOR_BLACK)
+            _paint_text(text, _COLOR_TEXT_OFF if label_dimmed else _COLOR_BLACK)
         else:
             _paint_button(button, fill=_COLOR_BLACK, stroke=_COLOR_BLACK)
-            _paint_text(text, _COLOR_WHITE if source_on else _COLOR_TEXT_OFF)
+            _paint_text(text, _COLOR_TEXT_OFF if label_dimmed else _COLOR_WHITE)
         return
+
+
+def _sync_hdmi_icon(root: ET.Element, *, dimmed: bool) -> None:
+    """Gray the HDMI plug glyph when the dongle is missing or the source is off."""
+    group = _find_by_logical_id(root, "settings_pigeon_08_hdmi_icon_group")
+    if group is None:
+        return
+    color = _COLOR_TEXT_OFF if dimmed else _COLOR_WHITE
+    for el in group.iter():
+        lid = str(el.get("id") or "").lower()
+        if "button" in lid:
+            continue
+        if not el.tag.endswith(("path", "rect", "circle", "polygon")):
+            continue
+        fill = (el.get("fill") or "").strip().lower()
+        if fill in ("none",):
+            if el.get("stroke"):
+                _set_paint(el, stroke=color)
+            continue
+        _set_paint(el, fill=color)
 
 
 def _source_on(state: MainSettingsState, kind: str) -> bool:
@@ -273,9 +295,23 @@ def _metadata_status_ok(state: MainSettingsState) -> bool:
         return False
 
 
+def _hdmi_device_present(state: MainSettingsState) -> bool:
+    """True when the HDMI capture dongle is plugged in."""
+    try:
+        from pigeon.hdmi_ocr import hdmi_capture_available
+
+        present = hdmi_capture_available()
+        state.pigeon_hdmi_ok = present
+        return present
+    except Exception:
+        return bool(getattr(state, "pigeon_hdmi_ok", False))
+
+
 def _hdmi_status_ok(state: MainSettingsState) -> bool:
-    """Green when HDMI OCR is allowed (capture path is wired)."""
-    return _source_on(state, "hdmi")
+    """Green when HDMI is enabled and the capture dongle is present."""
+    if not _source_on(state, "hdmi"):
+        return False
+    return _hdmi_device_present(state)
 
 
 def _audio_status_ok(state: MainSettingsState) -> bool:
@@ -348,26 +384,40 @@ def _sync_version_text(root: ET.Element, state: MainSettingsState) -> None:
 
 
 def _sync_info_label(root: ET.Element) -> None:
-    """Tile label is now-playing prefs — keep SVG text in sync if art is re-exported."""
+    """Keep tile 02/03 labels in sync if art is re-exported (0814 wording)."""
     text = _find_by_logical_id(root, "settings_pigeon_02_info_text")
-    if text is None:
-        return
-    _set_text_content(text, "NOW PLAYING")
+    if text is not None:
+        _set_text_content(text, "NOW PLAY")
+    widgets = _find_by_logical_id(root, "settings_pigeon_03_general_text")
+    if widgets is not None:
+        _set_text_content(widgets, "WIDGETS")
 
 
 def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
     focused = normalize_pigeon_focus_id(state.pigeon_focused_id)
     _sync_back_button(root, selected=(focused == "pigeon_back"))
+    hdmi_present = _hdmi_device_present(state)
     for fid, _tg, _b, _t in _SELECTABLE_TILES:
         kind = _SOURCE_TILE_KINDS.get(fid)
         source_on = _source_on(state, kind) if kind else True
+        dimmed = kind == "hdmi" and (not source_on or not hdmi_present)
         _sync_selectable_tile(
-            root, fid, selected=(focused == fid), source_on=source_on
+            root,
+            fid,
+            selected=(focused == fid),
+            source_on=source_on,
+            dimmed=dimmed,
         )
+    _sync_hdmi_icon(root, dimmed=(not _source_on(state, "hdmi") or not hdmi_present))
     _sync_info_label(root)
     _sync_status_icons(root, state)
     _sync_update_badge(root, state)
     _sync_version_text(root, state)
+    # Re-exports sometimes give the color tile a solid black fill that
+    # covers the rainbow; the accent is a stroke-only rounded frame.
+    accent = _find_by_logical_id(root, "settings_pigeon_01_color_box_accent")
+    if accent is not None:
+        _set_paint(accent, fill="none")
 
 
 def _svg_to_px(x: float, y: float) -> tuple[float, float]:
@@ -380,14 +430,20 @@ def _svg_len_to_px(v: float) -> float:
     return float(v) * DESIGN_W / vb_w
 
 
-def _hide_pymupdf_clip_victims(root: ET.Element) -> None:
-    """Hide layers that rely on clip-path — PyMuPDF ignores those clips."""
-    # Color rainbow <image> (+ center disc; both redrawn after rasterize).
+def _hide_color_gradient_image(root: ET.Element) -> None:
+    """Hide the rainbow <image> only when we will redraw it clipped."""
     grad = _find_by_logical_id(root, "settings_pigeon_01_color_box_gradient")
-    if grad is not None:
-        for el in grad.iter():
-            if el.tag.endswith("image"):
-                _set_visible(el, False)
+    if grad is None:
+        return
+    for el in grad.iter():
+        if el.tag.endswith("image"):
+            _set_visible(el, False)
+
+
+def _hide_pymupdf_clip_victims(root: ET.Element, *, hide_color_image: bool) -> None:
+    """Hide layers that rely on clip-path — PyMuPDF ignores those clips."""
+    if hide_color_image:
+        _hide_color_gradient_image(root)
     dot = _find_by_logical_id(root, "settings_pigeon_01_color_icon_black_dot")
     if dot is not None:
         _set_visible(dot, False)
@@ -503,11 +559,86 @@ def _load_color_gradient_bgra(svg_path: Path) -> np.ndarray | None:
     return bgra.copy()
 
 
-def _draw_color_icon_clipped(bgra: np.ndarray, svg_path: Path) -> None:
+def _parse_translate_scale(transform: str) -> tuple[float, float, float, float]:
+    """SVG ``translate(tx ty) scale(s)`` → (sx, sy, tx, ty)."""
+    import re
+
+    tx = ty = 0.0
+    sx = sy = 1.0
+    tm = re.search(
+        r"translate\(\s*([-\d.]+)(?:[,\s]+([-\d.]+))?\s*\)",
+        transform or "",
+        re.IGNORECASE,
+    )
+    if tm:
+        tx = float(tm.group(1))
+        ty = float(tm.group(2) or 0.0)
+    sm = re.search(
+        r"scale\(\s*([-\d.]+)(?:[,\s]+([-\d.]+))?\s*\)",
+        transform or "",
+        re.IGNORECASE,
+    )
+    if sm:
+        sx = float(sm.group(1))
+        sy = float(sm.group(2) or sx)
+    return sx, sy, tx, ty
+
+
+def _color_clip_from_root(root: ET.Element) -> tuple[float, float, float, float, float]:
+    accent = _find_by_logical_id(root, "settings_pigeon_01_color_box_accent")
+    if accent is not None:
+        try:
+            return (
+                float(accent.get("x") or _COLOR_CLIP_SVG[0]),
+                float(accent.get("y") or _COLOR_CLIP_SVG[1]),
+                float(accent.get("width") or _COLOR_CLIP_SVG[2]),
+                float(accent.get("height") or _COLOR_CLIP_SVG[3]),
+                float(accent.get("rx") or accent.get("ry") or _COLOR_CLIP_SVG[4]),
+            )
+        except ValueError:
+            pass
+    return _COLOR_CLIP_SVG
+
+
+def _color_image_placement_from_root(
+    root: ET.Element,
+) -> tuple[float, float, float, float, float, float]:
+    """Return (sx, sy, tx, ty, img_w, img_h) from the live SVG image."""
+    sx, sy, tx, ty = _COLOR_IMG_TRANSFORM_SVG
+    img_w, img_h = _COLOR_IMG_SIZE_SVG
+    grad = _find_by_logical_id(root, "settings_pigeon_01_color_box_gradient")
+    if grad is None:
+        return sx, sy, tx, ty, img_w, img_h
+    for el in grad.iter():
+        if not el.tag.endswith("image"):
+            continue
+        try:
+            img_w = float(el.get("width") or img_w)
+            img_h = float(el.get("height") or img_h)
+        except ValueError:
+            pass
+        parsed = _parse_translate_scale(el.get("transform") or "")
+        if parsed != (1.0, 1.0, 0.0, 0.0) or el.get("transform"):
+            sx, sy, tx, ty = parsed
+        break
+    return sx, sy, tx, ty, img_w, img_h
+
+
+def _draw_color_icon_clipped(
+    bgra: np.ndarray,
+    svg_path: Path,
+    root: ET.Element | None = None,
+    master: np.ndarray | None = None,
+) -> None:
     """Paint the rainbow tile with a rounded-rect clip (PyMuPDF can't)."""
     import cv2
 
-    cx, cy, cw, ch, crx = _COLOR_CLIP_SVG
+    if root is None:
+        try:
+            root = ET.parse(svg_path).getroot()
+        except Exception:
+            root = ET.Element("svg")
+    cx, cy, cw, ch, crx = _color_clip_from_root(root)
     clip_x0, clip_y0 = _svg_to_px(cx, cy)
     clip_x1, clip_y1 = _svg_to_px(cx + cw, cy + ch)
     clip_w = max(1, int(round(clip_x1 - clip_x0)))
@@ -515,17 +646,11 @@ def _draw_color_icon_clipped(bgra: np.ndarray, svg_path: Path) -> None:
     radius = max(1, int(round(_svg_len_to_px(crx))))
     mask = _rounded_rect_mask(clip_w, clip_h, radius)
 
-    # Opaque rounded face under the gradient (matches other icon buttons).
-    face = np.zeros((clip_h, clip_w, 4), dtype=np.uint8)
-    face[:, :, 0:3] = (0x42, 0x42, 0x42)
-    face[:, :, 3] = mask
-    _paste_bgra(bgra, face, int(round(clip_x0)), int(round(clip_y0)))
-
-    master = _load_color_gradient_bgra(svg_path)
+    if master is None:
+        master = _load_color_gradient_bgra(svg_path)
     if master is None:
         return
-    sx, sy, tx, ty = _COLOR_IMG_TRANSFORM_SVG
-    img_w, img_h = _COLOR_IMG_SIZE_SVG
+    sx, sy, tx, ty, img_w, img_h = _color_image_placement_from_root(root)
     dest_x0, dest_y0 = tx, ty
     dest_w, dest_h = img_w * sx, img_h * sy
     x0, y0 = _svg_to_px(dest_x0, dest_y0)
@@ -537,8 +662,8 @@ def _draw_color_icon_clipped(bgra: np.ndarray, svg_path: Path) -> None:
         scaled = cv2.cvtColor(scaled, cv2.COLOR_GRAY2BGRA)
     elif scaled.shape[2] == 3:
         scaled = cv2.cvtColor(scaled, cv2.COLOR_BGR2BGRA)
-    scaled = scaled.copy()
-    scaled[:, :, 3] = 255
+    # Keep the PNG's own alpha. Forcing 255 flattened Illustrator's
+    # transparent-on-black pixels into an opaque black tile.
 
     ix0 = int(round(clip_x0 - x0))
     iy0 = int(round(clip_y0 - y0))
@@ -551,7 +676,7 @@ def _draw_color_icon_clipped(bgra: np.ndarray, svg_path: Path) -> None:
     dh = min(clip_h - dy0, scaled.shape[0] - sy0)
     if dw > 0 and dh > 0:
         cell[dy0 : dy0 + dh, dx0 : dx0 + dw] = scaled[sy0 : sy0 + dh, sx0 : sx0 + dw]
-    cell[:, :, 3] = mask
+    cell[:, :, 3] = np.minimum(cell[:, :, 3], mask)
     cell[mask == 0, :3] = 0
     _paste_bgra(bgra, cell, int(round(clip_x0)), int(round(clip_y0)))
 
@@ -701,7 +826,8 @@ def render_pigeon_settings_bgra(
     st = state if state is not None else MainSettingsState()
     root = _svg_tree_from_path(path)
     apply_pigeon_settings_svg_state(root, st)
-    _hide_pymupdf_clip_victims(root)
+    color_master = _load_color_gradient_bgra(path)
+    _hide_pymupdf_clip_victims(root, hide_color_image=color_master is not None)
     _disable_embedded_settings_background_layers(root)
     _prune_display_none(root)
     from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
@@ -712,7 +838,7 @@ def render_pigeon_settings_bgra(
         height=DESIGN_H,
         font_mode="preferences",
     )
-    _draw_color_icon_clipped(ui_bgra, path)
+    _draw_color_icon_clipped(ui_bgra, path, root=root, master=color_master)
     _draw_wifi_icon_clipped(ui_bgra)
     _draw_update_icon_clipped(ui_bgra)
     bg = _full_theme_bgra(st, assets_dir=assets_dir, path=path)

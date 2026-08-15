@@ -2183,9 +2183,19 @@ def main() -> int:
             return "netflix" in an or "netflix" in bid or "netflix" in bid2
 
         def _atv_metadata_is_content_idle(metadata: dict[str, object]) -> bool:
-            # Netflix often omits title/query; keep UI "active" while the app is foreground.
-            if _metadata_is_netflix_app(metadata):
-                return False
+            try:
+                from pigeon.display_confidence import content_should_stay_active
+                from pigeon.hdmi_ocr import hdmi_capture_available
+                from pigeon.source_toggles import source_enabled
+
+                if content_should_stay_active(
+                    metadata,
+                    hdmi_on=bool(source_enabled("hdmi")),
+                    hdmi_present=hdmi_capture_available(),
+                ):
+                    return False
+            except Exception:
+                pass
             ds = str(metadata.get("device_state") or "")
             if "Idle" in ds or "Stopped" in ds:
                 return True
@@ -3337,6 +3347,12 @@ def main() -> int:
             nonlocal skip_cache
             if view_circles_widget is None:
                 return
+            try:
+                from pigeon.hdmi_ocr import probe_hdmi_presence
+
+                probe_hdmi_presence()
+            except Exception:
+                pass
             prog = _playback_progress_fraction_for_bar()
             progress = float(prog) if prog is not None else 0.0
             remaining_text = ""
@@ -5170,6 +5186,7 @@ def main() -> int:
                 if key == "ocr_reason":
                     mapped = {
                         "no_metadata": "no_pyatv_title",
+                        "watch": "stay_alert",
                         "pause": "pause",
                         "confirm": "confirm",
                     }
@@ -5226,6 +5243,40 @@ def main() -> int:
             if isinstance(lm_rt, dict):
                 for ocr_line in _collect_view_four_ocr_lines(lm_rt):
                     _ln(ocr_line)
+                try:
+                    from pigeon.display_confidence import scores_for_metadata
+                    from pigeon.hdmi_ocr import hdmi_capture_available
+                    from pigeon.source_toggles import source_enabled
+
+                    clk = apple_tv_playback_clock
+                    advancing = bool(clk.get("has_sync") and clk.get("playing"))
+                    tmdb_ok = bool(_tmdb_info_current_and_available())
+
+                    scores = scores_for_metadata(
+                        lm_rt,
+                        position_advancing=advancing,
+                        tmdb_matches=tmdb_ok,
+                        hdmi_on=bool(source_enabled("hdmi")),
+                        hdmi_present=hdmi_capture_available(),
+                    )
+                    src = str(lm_rt.get("identity_source") or "").strip()
+                    if src:
+                        _ln(f"identity.source={src!r}")
+                    pending = str(lm_rt.get("ocr_pending_title") or "").strip()
+                    if pending:
+                        _ln(f"identity.pending={pending!r}")
+                        hits = lm_rt.get("ocr_pending_hits")
+                        if hits is not None:
+                            _ln(f"identity.pending_hits={hits!r}")
+                    for key in ("identity", "position", "art", "app"):
+                        val = scores.get(key)
+                        if val is None:
+                            continue
+                        _ln(f"confidence.{key}={float(val):.2f}")
+                    if scores.get("ocr_charge"):
+                        _ln("ocr.charge=true")
+                except Exception:
+                    pass
             if metadata_on:
                 _svc_label = str(streaming_badge_state.get("label") or "").strip()
                 _svc_app = (
@@ -10851,7 +10902,12 @@ def main() -> int:
             root.after(0, lambda c=clues: _apply_hdmi_ocr_clues(c))
 
         def _apply_hdmi_ocr_clues(clues) -> None:
-            from pigeon.hdmi_ocr import apply_clues_to_metadata, apply_ocr_title_as_identity
+            from pigeon.display_confidence import ocr_is_in_charge
+            from pigeon.hdmi_ocr import (
+                apply_clues_to_metadata,
+                apply_ocr_title_as_identity,
+                hdmi_capture_available,
+            )
             from pigeon.tmdb_poster import is_degenerate_tmdb_query
 
             apple_tv_auto_state["ocr_in_flight"] = False
@@ -10861,43 +10917,44 @@ def main() -> int:
                 if not source_enabled("hdmi"):
                     return
                 metadata_on = source_enabled("metadata")
+                hdmi_on = True
             except Exception:
                 metadata_on = True
+                hdmi_on = True
             md = apple_tv_auto_state.get("last_metadata")
             if not isinstance(md, dict):
                 md = {}
             raw_query = str(md.get("query") or "").strip()
             had_query = bool(raw_query) and not is_degenerate_tmdb_query(raw_query)
             merged = apply_clues_to_metadata(md, clues)
-            apply_ocr_title_as_identity(merged)
+            identity_changed = apply_ocr_title_as_identity(merged)
             merged["content_key"] = _content_key_from_metadata(merged)
             apple_tv_auto_state["last_metadata"] = merged
             agrees = bool(merged.get("ocr_agrees"))
             guess = str(clues.title_guess or "").strip()
             reason = str(clues.reason or "")
-            # Pause/confirm that already matches Apple TV metadata: leave TMDb alone.
-            # If there is no pyatv query (Netflix, or METADATA off), OCR *is* the title.
-            if metadata_on and had_query and reason == "pause" and agrees:
+            ocr_owns = ocr_is_in_charge(
+                merged,
+                hdmi_on=hdmi_on,
+                hdmi_present=hdmi_capture_available(),
+            ) or (not metadata_on)
+            # Player still owns a real title: OCR watches, but does not replace art.
+            if metadata_on and had_query and not ocr_owns and reason in ("pause", "confirm", "watch") and agrees:
+                try:
+                    _sync_now_playing_screen_state()
+                except Exception:
+                    pass
                 return
-            if metadata_on and had_query and reason == "confirm" and agrees:
-                return
-            if guess and not is_degenerate_tmdb_query(guess):
-                need_fetch = (
-                    (not metadata_on)
-                    or (not had_query)
-                    or reason == "no_metadata"
-                    or (reason == "pause" and not agrees)
-                )
-                if need_fetch:
-                    apple_tv_auto_state["query"] = guess
-                    spawn_tmdb_poster_fetch(guess, prefer="auto", force=True)
+            if guess and not is_degenerate_tmdb_query(guess) and ocr_owns and identity_changed:
+                apple_tv_auto_state["query"] = guess
+                spawn_tmdb_poster_fetch(guess, prefer="auto", force=True)
             try:
                 _sync_now_playing_screen_state()
             except Exception:
                 pass
 
         def _schedule_hdmi_ocr_from_poll(metadata: dict[str, object]) -> None:
-            """OCR when pyatv is empty, once per new title, or on pause (max 1/min)."""
+            """OCR when the player has no title, playback is stalled, or on pause."""
             try:
                 from pigeon.source_toggles import source_enabled
 
@@ -11152,6 +11209,12 @@ def main() -> int:
                         md_for_spawn = merged_md
                         prev_ocr_md = apple_tv_auto_state.get("last_metadata")
                         try:
+                            from pigeon.display_confidence import (
+                                PYATV_IDENTITY,
+                                mark_identity,
+                                mark_stale,
+                                player_metadata_adequate,
+                            )
                             from pigeon.source_toggles import source_enabled
                             from pigeon.hdmi_ocr import (
                                 apply_ocr_title_as_identity,
@@ -11160,6 +11223,22 @@ def main() -> int:
                                 ocr_session_anchor,
                             )
 
+                            prev_app = ""
+                            if isinstance(prev_ocr_md, dict):
+                                prev_app = str(
+                                    prev_ocr_md.get("app_id")
+                                    or prev_ocr_md.get("app_name")
+                                    or ""
+                                ).strip().casefold()
+                            new_app = str(
+                                merged_md.get("app_id") or merged_md.get("app_name") or ""
+                            ).strip().casefold()
+                            app_changed = bool(prev_app and new_app and prev_app != new_app)
+                            player_ok = player_metadata_adequate(merged_md)
+                            if player_ok:
+                                mark_identity(
+                                    merged_md, source="pyatv", confidence=PYATV_IDENTITY
+                                )
                             if source_enabled("hdmi"):
                                 # content_key includes the OCR-filled query, so it
                                 # changes on the next poll and used to drop clues.
@@ -11171,8 +11250,27 @@ def main() -> int:
                                     if isinstance(prev_ocr_md, dict)
                                     else ""
                                 )
-                                if not prev_session or prev_session == session:
+                                if app_changed and not player_ok:
+                                    # Metadata-rich app → no-meta app: drop stale
+                                    # identity/art; OCR will refill what it can.
+                                    mark_stale(merged_md)
+                                    _clear_displayed_tmdb_art_for_content_change()
+                                elif not prev_session or prev_session == session:
                                     copy_ocr_fields(prev_ocr_md, merged_md)
+                                    if (
+                                        not player_ok
+                                        and isinstance(prev_ocr_md, dict)
+                                        and str(prev_ocr_md.get("identity_source") or "")
+                                        == "ocr"
+                                    ):
+                                        mark_identity(
+                                            merged_md,
+                                            source="ocr",
+                                            confidence=float(
+                                                prev_ocr_md.get("identity_confidence")
+                                                or 0.65
+                                            ),
+                                        )
                                 merged_md["ocr_session"] = session
                                 if apply_ocr_title_as_identity(merged_md):
                                     merged_md["content_key"] = _content_key_from_metadata(

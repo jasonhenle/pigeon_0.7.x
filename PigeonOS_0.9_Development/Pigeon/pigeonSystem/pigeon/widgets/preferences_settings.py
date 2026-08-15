@@ -1574,10 +1574,14 @@ def _draw_preferences_cast_bgra(
         getattr(state, "preferences_zone_widgets", None) or DEFAULT_ZONE_WIDGETS
     )
     live = bool(getattr(state, "preferences_live_content", False))
-    if live and getattr(state, "preferences_np_progress", None) is None and assignments[4] == "now_playing":
-        assignments = (assignments[0], assignments[1], assignments[2], assignments[3], "cast_info")
     if live:
         all_cast = list(getattr(state, "preferences_cast", None) or ())
+        named = sum(1 for actor, _role in all_cast if str(actor or "").strip())
+        assignments = vc._effective_zone_widgets(
+            has_position=getattr(state, "preferences_np_progress", None) is not None,
+            cast_count=named,
+            zone_widgets=assignments,
+        )
     else:
         all_cast = list(_PREFS_DEMO_CAST)
     font_actor = vc._load_digital7(18)
@@ -2046,8 +2050,16 @@ def apply_preferences_svg_state(root: ET.Element, state: MainSettingsState) -> N
         getattr(state, "preferences_zone_widgets", None) or DEFAULT_ZONE_WIDGETS
     )
     live = bool(getattr(state, "preferences_live_content", False))
-    if live and getattr(state, "preferences_np_progress", None) is None and assignments[4] == "now_playing":
-        assignments = (assignments[0], assignments[1], assignments[2], assignments[3], "cast_info")
+    if live:
+        all_cast = list(getattr(state, "preferences_cast", None) or ())
+        named = sum(1 for actor, _role in all_cast if str(actor or "").strip())
+        from pigeon.widgets.view_circles import _effective_zone_widgets
+
+        assignments = _effective_zone_widgets(
+            has_position=getattr(state, "preferences_np_progress", None) is not None,
+            cast_count=named,
+            zone_widgets=assignments,
+        )
     focused = str(getattr(state, "preferences_focused_id", "") or "")
 
     # Zone preview layers follow current assignments (live while browsing widgets).

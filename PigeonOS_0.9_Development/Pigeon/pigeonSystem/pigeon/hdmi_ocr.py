@@ -22,6 +22,9 @@ PREFERRED_WIDTH = 1920
 PREFERRED_HEIGHT = 1080
 PAUSE_OCR_MIN_INTERVAL_S = 60.0
 NO_METADATA_RETRY_S = 5.0
+POSITION_STALL_S = 5.0
+POSITION_ADVANCE_EPS = 0.2
+OCR_TITLE_CONFIRM_HITS = 2
 TITLE_MIN_HEIGHT = 40
 TOP_RIGHT_X, TOP_RIGHT_Y, TOP_RIGHT_W, TOP_RIGHT_H = 0.52, 0.0, 0.48, 0.30
 
@@ -58,20 +61,47 @@ class OcrSchedule:
     last_no_meta_ocr_mono: float = 0.0
     last_content_key: str | None = None
     last_confirm_key: str | None = None
+    last_position: float | None = None
+    last_position_change_mono: float = 0.0
     in_flight: bool = False
 
 
 _schedule = OcrSchedule()
+
+
+def reset_ocr_schedule() -> None:
+    """Clear cadence / position memory (tests, HDMI off)."""
+    global _schedule
+    _schedule = OcrSchedule()
+
+
+def _position_is_advancing(md: Mapping[str, Any], now: float) -> bool:
+    """Track reported position; False when missing or unchanged past the stall window."""
+    from pigeon.display_confidence import parse_position
+
+    pos = parse_position(md)
+    if pos is None:
+        return False
+    prev = _schedule.last_position
+    if prev is None or abs(pos - prev) >= POSITION_ADVANCE_EPS:
+        _schedule.last_position = pos
+        _schedule.last_position_change_mono = now
+        return True
+    return (now - _schedule.last_position_change_mono) < POSITION_STALL_S
 _lock = threading.Lock()
 _cap = None
 _cap_index: int | None = None
 _last_capture_label = ""
 _tesseract_ready = False
 _av_devices_cache: list[tuple[int, str, str]] | None = None
+_hdmi_present: bool | None = None
+_hdmi_probe_mono: float = 0.0
+_hdmi_probe_in_flight: bool = False
+_HDMI_PROBE_TTL_S = 8.0
 
 
 def _can_pass_to_tmdb(md: Mapping[str, Any]) -> bool:
-    """True when we already have a title TMDb will accept (stop the idle scan)."""
+    """True when we already have a title TMDb will accept."""
     try:
         from pigeon.tmdb_poster import is_degenerate_tmdb_query
     except ImportError:
@@ -89,15 +119,28 @@ def _can_pass_to_tmdb(md: Mapping[str, Any]) -> bool:
 
 
 def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = None) -> str | None:
-    """When should we look at HDMI? ``no_metadata`` | ``confirm`` | ``pause`` | None."""
+    """When should we look at HDMI?
+
+    ``no_metadata`` — player title is missing; OCR is in charge.
+    ``watch`` — playback undetected or position stalled; stay alert for the next card.
+    ``confirm`` — content key changed and we already have a title.
+    ``pause`` — rising pause edge (at most once a minute).
+    """
     now = time.monotonic() if now is None else now
     md = metadata if isinstance(metadata, dict) else {}
     ds = str(md.get("device_state") or "").lower()
     paused = "paused" in ds or ds.endswith("pause")
-    query = str(md.get("query") or "").strip()
     content_key = str(md.get("content_key") or "") or None
-    has_query = bool(query)
     tmdb_ready = _can_pass_to_tmdb(md)
+    from pigeon.display_confidence import ocr_is_in_charge, playback_detected
+
+    ocr_owns = ocr_is_in_charge(md, hdmi_present=hdmi_capture_available())
+    advancing = _position_is_advancing(md, now)
+    stay_alert = (not playback_detected(md)) or (not advancing)
+
+    key_changed = content_key != _schedule.last_content_key
+    if key_changed:
+        _schedule.last_content_key = content_key
 
     rising_pause = paused and not _schedule.was_paused
     _schedule.was_paused = paused
@@ -105,19 +148,23 @@ def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = No
         _schedule.last_pause_ocr_mono = now
         return "pause"
 
-    if content_key != _schedule.last_content_key:
-        _schedule.last_content_key = content_key
-        if not tmdb_ready:
+    if key_changed:
+        if not tmdb_ready or ocr_owns:
             _schedule.last_no_meta_ocr_mono = now
             return "no_metadata"
         if content_key and content_key != _schedule.last_confirm_key:
             _schedule.last_confirm_key = content_key
             return "confirm"
-    # No known title yet: keep reading HDMI until a non-degenerate string
-    # can be sent to TMDb (Disney+ / Netflix idle title cards included).
-    if not tmdb_ready and (now - _schedule.last_no_meta_ocr_mono) >= NO_METADATA_RETRY_S:
+
+    due = (now - _schedule.last_no_meta_ocr_mono) >= NO_METADATA_RETRY_S
+    if not due:
+        return None
+    if ocr_owns or not tmdb_ready:
         _schedule.last_no_meta_ocr_mono = now
         return "no_metadata"
+    if stay_alert:
+        _schedule.last_no_meta_ocr_mono = now
+        return "watch"
     return None
 
 
@@ -130,6 +177,8 @@ def request_ocr(reason: str, on_done: OnClues) -> bool:
             return False
     except Exception:
         pass
+    if not hdmi_capture_available():
+        return False
     with _lock:
         if _schedule.in_flight:
             return False
@@ -206,24 +255,9 @@ def apply_clues_to_metadata(
 
 
 def _identity_is_placeholder(value: str) -> bool:
-    text = str(value or "").strip()
-    if not text:
-        return True
-    try:
-        from pigeon.tmdb_poster import is_degenerate_tmdb_query
+    from pigeon.display_confidence import is_placeholder_identity
 
-        if is_degenerate_tmdb_query(text):
-            return True
-    except ImportError:
-        pass
-    try:
-        from pigeon.ocr_clues import looks_like_ocr_junk
-
-        if looks_like_ocr_junk(text):
-            return True
-    except ImportError:
-        pass
-    return False
+    return is_placeholder_identity(value)
 
 
 def ocr_session_anchor(metadata: Mapping[str, Any] | None) -> str:
@@ -237,18 +271,54 @@ def ocr_session_anchor(metadata: Mapping[str, Any] | None) -> str:
 
 
 def apply_ocr_title_as_identity(metadata: dict[str, Any]) -> bool:
-    """Fill empty or placeholder query/title from OCR so TMDb has an identity."""
+    """Fill or replace identity from OCR when the player did not supply a title.
+
+    First good read fills an empty identity. A different title (next card, or a
+    service that just lost pyatv metadata) must match twice before it takes over.
+    Player-owned titles are left alone.
+    """
+    from pigeon.display_confidence import (
+        OCR_IDENTITY,
+        mark_identity,
+        player_metadata_adequate,
+    )
+
     guess = str(metadata.get("ocr_title") or "").strip()
     if not guess or _identity_is_placeholder(guess):
         return False
-    changed = False
-    if _identity_is_placeholder(str(metadata.get("query") or "")):
+    if player_metadata_adequate(metadata):
+        return False
+    current = str(metadata.get("query") or "").strip()
+    if _identity_is_placeholder(current):
         metadata["query"] = guess
-        changed = True
-    if _identity_is_placeholder(str(metadata.get("title") or "")):
-        metadata["title"] = guess
-        changed = True
-    return changed
+        if _identity_is_placeholder(str(metadata.get("title") or "")):
+            metadata["title"] = guess
+        mark_identity(metadata, source="ocr", confidence=OCR_IDENTITY)
+        metadata["ocr_pending_title"] = ""
+        metadata["ocr_pending_hits"] = 0
+        return True
+    if current.casefold() == guess.casefold():
+        mark_identity(metadata, source="ocr", confidence=OCR_IDENTITY)
+        metadata["ocr_pending_title"] = ""
+        metadata["ocr_pending_hits"] = 0
+        return False
+    pending = str(metadata.get("ocr_pending_title") or "").strip()
+    hits = int(metadata.get("ocr_pending_hits") or 0)
+    if pending.casefold() == guess.casefold():
+        hits += 1
+    else:
+        pending = guess
+        hits = 1
+    metadata["ocr_pending_title"] = pending
+    metadata["ocr_pending_hits"] = hits
+    if hits < OCR_TITLE_CONFIRM_HITS:
+        return False
+    metadata["query"] = guess
+    metadata["title"] = guess
+    mark_identity(metadata, source="ocr", confidence=OCR_IDENTITY)
+    metadata["ocr_pending_title"] = ""
+    metadata["ocr_pending_hits"] = 0
+    return True
 
 
 _OCR_FIELD_KEYS = (
@@ -264,6 +334,8 @@ _OCR_FIELD_KEYS = (
     "ocr_at",
     "ocr_status",
     "ocr_capture",
+    "ocr_pending_title",
+    "ocr_pending_hits",
 )
 
 
@@ -285,6 +357,7 @@ def clear_ocr_fields(dest: dict[str, Any]) -> None:
 def release_capture() -> None:
     """Free the HDMI capture device so another process can use it."""
     global _cap, _cap_index
+    reset_ocr_schedule()
     with _lock:
         cap = _cap
         _cap = None
@@ -352,6 +425,70 @@ def _is_hdmi_camera(name: str, dtype: str = "") -> bool:
         return False
     low = name.lower()
     return any(hint in low for hint in _HDMI_NAME_HINTS)
+
+
+def note_hdmi_present(present: bool) -> None:
+    """Remember whether the HDMI dongle is plugged in (settings LED)."""
+    global _hdmi_present
+    _hdmi_present = bool(present)
+
+
+def hdmi_capture_available() -> bool:
+    """Non-blocking: True when a capture device is open or last seen."""
+    global _hdmi_present
+    if _cap is not None:
+        try:
+            if _cap.isOpened():
+                _hdmi_present = True
+                return True
+        except Exception:
+            pass
+    if _hdmi_present is not None:
+        return bool(_hdmi_present)
+    cached = _av_devices_cache
+    if cached is not None:
+        return any(_is_hdmi_camera(name, dtype) for _i, name, dtype in cached)
+    return False
+
+
+def probe_hdmi_presence(*, force: bool = False) -> bool:
+    """Return last known presence; refresh the device list in the background."""
+    global _hdmi_probe_in_flight, _hdmi_probe_mono
+    now = time.monotonic()
+    stale = (
+        force
+        or _hdmi_probe_mono <= 0.0
+        or (now - _hdmi_probe_mono) >= _HDMI_PROBE_TTL_S
+    )
+    if stale and not _hdmi_probe_in_flight:
+        _hdmi_probe_in_flight = True
+        threading.Thread(
+            target=_hdmi_probe_worker, name="hdmi-probe", daemon=True
+        ).start()
+    return hdmi_capture_available()
+
+
+def _hdmi_probe_worker() -> None:
+    global _hdmi_present, _hdmi_probe_in_flight, _hdmi_probe_mono, _av_devices_cache
+    try:
+        _av_devices_cache = None
+        present = False
+        if sys.platform == "darwin":
+            named = _avfoundation_devices()
+            present = any(_is_hdmi_camera(name, dtype) for _i, name, dtype in named)
+        elif sys.platform.startswith("linux"):
+            import glob
+
+            present = bool(glob.glob("/dev/video*"))
+        if not present and _cap is not None:
+            try:
+                present = bool(_cap.isOpened())
+            except Exception:
+                present = False
+        _hdmi_present = present
+        _hdmi_probe_mono = time.monotonic()
+    finally:
+        _hdmi_probe_in_flight = False
 
 
 def _avfoundation_devices() -> list[tuple[int, str, str]]:
@@ -503,10 +640,20 @@ def _grab_frame():
                 _cap_index = index
                 break
         if _cap is None:
+            note_hdmi_present(False)
             return None
     ok, frame = _cap.read()
     if not ok or frame is None or not getattr(frame, "size", 0):
+        note_hdmi_present(False)
+        try:
+            _cap.release()
+        except Exception:
+            pass
+        _cap = None
+        _cap_index = None
+        _av_devices_cache = None
         return None
+    note_hdmi_present(True)
     return frame
 
 

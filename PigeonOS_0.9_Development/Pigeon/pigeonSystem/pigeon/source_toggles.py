@@ -63,8 +63,13 @@ def apply_toggles_to_settings_state(state: Any) -> None:
     state.source_metadata_on = flags["metadata"]
     state.source_hdmi_on = flags["hdmi"]
     state.source_audio_on = flags["audio"]
-    # Keep legacy LED fields in sync so older render paths stay consistent.
-    state.pigeon_hdmi_ok = flags["hdmi"]
+    # HDMI LED follows the dongle, not the toggle.
+    try:
+        from pigeon.hdmi_ocr import hdmi_capture_available
+
+        state.pigeon_hdmi_ok = hdmi_capture_available()
+    except Exception:
+        pass
     state.pigeon_audio_ok = flags["audio"]
 
 

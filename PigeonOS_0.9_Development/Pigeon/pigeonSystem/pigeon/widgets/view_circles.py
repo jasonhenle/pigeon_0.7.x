@@ -703,17 +703,47 @@ def _default_zone_widget_assignments() -> tuple[str, str, str, str, str]:
         return ("clock", "poster", "volume", "cast_info", "now_playing")
 
 
+_CAST_NAMES_PER_ZONE = 3
+
+
 def _effective_zone_widgets(
     *,
     has_position: bool,
+    cast_count: int = 0,
     zone_widgets: tuple[str, str, str, str, str] | None = None,
 ) -> tuple[str, str, str, str, str]:
-    """Zone 5 status bar needs position; without it, use that zone's cast info."""
+    """Show only widgets we have content for; never two copies of the same one.
+
+    Status bar needs a live position. Without it, that zone can show the next
+    unused cast names. A second cast strip is kept only when more names remain.
+    Any other repeated widget is dropped so the layout does not duplicate.
+    """
     zones = list(zone_widgets or _default_zone_widget_assignments())
     if len(zones) < 5:
         return _default_zone_widget_assignments()
-    if not has_position and zones[4] == "now_playing":
-        zones[4] = "cast_info"
+    named = max(0, int(cast_count))
+    if not has_position:
+        for i, widget in enumerate(zones):
+            if widget == "now_playing":
+                zones[i] = "cast_info"
+    seen: set[str] = set()
+    cast_used = 0
+    for i, widget in enumerate(zones):
+        key = str(widget or "").strip()
+        if not key:
+            zones[i] = ""
+            continue
+        if key == "cast_info":
+            remaining = named - cast_used
+            if remaining <= 0:
+                zones[i] = ""
+                continue
+            cast_used += _CAST_NAMES_PER_ZONE
+            continue
+        if key in seen:
+            zones[i] = ""
+            continue
+        seen.add(key)
     return (zones[0], zones[1], zones[2], zones[3], zones[4])
 
 
@@ -2440,7 +2470,11 @@ class ViewCirclesWidget:
         return self._search_frames
 
     def _assignments(self) -> tuple[str, str, str, str, str]:
-        return _effective_zone_widgets(has_position=bool(self._state.has_position))
+        named = sum(1 for actor, _role in (self._state.cast or []) if str(actor or "").strip())
+        return _effective_zone_widgets(
+            has_position=bool(self._state.has_position),
+            cast_count=named,
+        )
 
     def _cache_sig(self) -> tuple[object, ...]:
         st = self._state
@@ -2457,7 +2491,7 @@ class ViewCirclesWidget:
         zone_widgets = self._assignments()
         theme_key = np_theme_from_settings().cache_key
         return (
-            30,  # cache schema — zone5 cast fallback when no position
+            31,  # cache schema — zone adapt / no duplicate widgets
             st.content_mode,
             st.has_position,
             round(st.progress, 6),
