@@ -5063,6 +5063,27 @@ def main() -> int:
                 return False
             return True
 
+        def _view_four_display_metadata() -> dict[str, object] | None:
+            """last_metadata with disabled METADATA / HDMI sources removed."""
+            md = apple_tv_auto_state.get("last_metadata")
+            if not isinstance(md, dict):
+                return None
+            try:
+                from pigeon.source_toggles import redact_disabled_source_fields
+
+                redacted = redact_disabled_source_fields(md)
+            except Exception:
+                redacted = dict(md)
+            return redacted if isinstance(redacted, dict) else dict(md)
+
+        def _view_four_metadata_source_on() -> bool:
+            try:
+                from pigeon.source_toggles import source_enabled
+
+                return bool(source_enabled("metadata"))
+            except Exception:
+                return True
+
         def _collect_view_four_ocr_lines(md: dict[str, object]) -> list[str]:
             """HDMI OCR clues for View 4 Title Info; omit empty fields."""
             pairs = (
@@ -5100,7 +5121,8 @@ def main() -> int:
                     return
                 rows.append((s, False))
 
-            lm_rt = apple_tv_auto_state.get("last_metadata")
+            lm_rt = _view_four_display_metadata()
+            metadata_on = _view_four_metadata_source_on()
             _svc_label = str(streaming_badge_state.get("label") or "").strip()
             _svc_app = str(lm_rt.get("app_name") or "").strip() if isinstance(lm_rt, dict) else ""
             if _svc_label:
@@ -5111,54 +5133,67 @@ def main() -> int:
             if not isinstance(lm_rt, dict):
                 _ln("rawTitle: (no last_metadata dict)")
             else:
-                try:
-                    from pigeon.raw_title import raw_title_from_metadata_dict
+                if metadata_on:
+                    try:
+                        from pigeon.raw_title import raw_title_from_metadata_dict
 
-                    rt = raw_title_from_metadata_dict(lm_rt)
-                    if _view_four_has_value(rt.source):
-                        _ln(f"rawTitle.source={rt.source!r}")
-                    for fn in (
-                        "raw_title",
-                        "raw_series_name",
-                        "raw_artist",
-                        "raw_album",
-                        "raw_episode_title",
-                        "raw_query",
-                        "season_index",
-                        "episode_index",
-                        "layer_series_title",
-                        "layer_series_number",
-                        "layer_episode_number",
-                        "layer_episode_title",
-                        "media_type_label",
-                    ):
-                        val = getattr(rt, fn, None)
-                        if _view_four_has_value(val):
-                            _ln(f"rawTitle.{fn}={val!r}")
-                    if rt.notes:
-                        _ln(f"rawTitle.notes={rt.notes!r}")
-                    sig = rt.training_signature_normalized()
-                    if sig:
-                        _ln(f"rawTitle.training_signature_normalized={sig!r}")
-                except Exception as e:
-                    _ln(f"rawTitle err={e}")
+                        rt = raw_title_from_metadata_dict(lm_rt)
+                        if _view_four_has_value(rt.source):
+                            _ln(f"rawTitle.source={rt.source!r}")
+                        for fn in (
+                            "raw_title",
+                            "raw_series_name",
+                            "raw_artist",
+                            "raw_album",
+                            "raw_episode_title",
+                            "raw_query",
+                            "season_index",
+                            "episode_index",
+                            "layer_series_title",
+                            "layer_series_number",
+                            "layer_episode_number",
+                            "layer_episode_title",
+                            "media_type_label",
+                        ):
+                            val = getattr(rt, fn, None)
+                            if _view_four_has_value(val):
+                                _ln(f"rawTitle.{fn}={val!r}")
+                        if rt.notes:
+                            _ln(f"rawTitle.notes={rt.notes!r}")
+                        sig = rt.training_signature_normalized()
+                        if sig:
+                            _ln(f"rawTitle.training_signature_normalized={sig!r}")
+                    except Exception as e:
+                        _ln(f"rawTitle err={e}")
                 for ocr_line in _collect_view_four_ocr_lines(lm_rt):
                     _ln(ocr_line)
-            if isinstance(lm_rt, dict):
+            if metadata_on and isinstance(lm_rt, dict):
                 _pp = str(lm_rt.get("prefer_pyatv_media") or "").strip().lower()
                 if _pp in ("auto", "tv", "movie"):
                     _ln(f"metadata.prefer_pyatv_media={_pp!r}")
                 _ip = str(lm_rt.get("inferred_prefer") or "").strip().lower()
                 if _ip in ("auto", "tv", "movie"):
                     _ln(f"metadata.prefer_tmdb={_ip!r}")
+            ocr_guess = (
+                str(lm_rt.get("ocr_title") or "").strip().casefold()
+                if isinstance(lm_rt, dict)
+                else ""
+            )
+
+            def _tmdb_row_allowed(q: object) -> bool:
+                if metadata_on:
+                    return True
+                t = str(q or "").strip().casefold()
+                return bool(t and ocr_guess and (t == ocr_guess or t in ocr_guess or ocr_guess in t))
+
             _ti = apple_tv_auto_state.get("last_tmdb_fetch_input")
             _tr = apple_tv_auto_state.get("last_tmdb_fetch_refined")
             _tp = apple_tv_auto_state.get("last_tmdb_fetch_prefer")
-            if _ti is not None and str(_ti).strip():
+            if _ti is not None and str(_ti).strip() and _tmdb_row_allowed(_ti):
                 _ln(f"tmdbFetch.input_query={str(_ti)!r}")
-            if _tr is not None and str(_tr).strip():
+            if _tr is not None and str(_tr).strip() and _tmdb_row_allowed(_tr):
                 _ln(f"tmdbFetch.refined_query={str(_tr)!r}")
-            if _tp is not None and str(_tp).strip():
+            if _tp is not None and str(_tp).strip() and (_tmdb_row_allowed(_ti) or _tmdb_row_allowed(_tr)):
                 _ln(f"tmdbFetch.prefer={str(_tp)!r}")
             rx_dbg = receiver_telnet_debug_holder[0] if receiver_telnet_debug_holder else {}
             if isinstance(rx_dbg, dict) and rx_dbg:
@@ -5213,7 +5248,7 @@ def main() -> int:
                 g = gcd(wi, hi)
                 return f"{wi // g}:{hi // g}"
 
-            md = apple_tv_auto_state.get("last_metadata")
+            md = _view_four_display_metadata()
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
             rx_blob = f"{inc} {cfg}".strip()
@@ -5376,7 +5411,7 @@ def main() -> int:
                 and not str(k).startswith("_")
                 and _view_four_has_value(md.get(k))
             ]
-            if extra_keys:
+            if extra_keys and _view_four_metadata_source_on():
                 _ln("other metadata keys", False)
                 for k in extra_keys[:36]:
                     try:
@@ -5399,7 +5434,7 @@ def main() -> int:
                     return
                 rows.append((s, bold))
 
-            md_raw = apple_tv_auto_state.get("last_metadata")
+            md_raw = _view_four_display_metadata()
             md = md_raw if isinstance(md_raw, dict) else None
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
