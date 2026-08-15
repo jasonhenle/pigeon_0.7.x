@@ -96,9 +96,11 @@ _METADATA_DISPLAY_KEYS = _IDENTITY_KEYS + (
 
 
 def strip_streaming_identity(metadata: dict[str, Any]) -> None:
-    """Drop Apple TV / Roku title fields when the metadata source is off."""
+    """Drop Apple TV / Roku title and position when the metadata source is off."""
     for key in _IDENTITY_KEYS:
         metadata[key] = ""
+    metadata["position"] = None
+    metadata["total_time"] = None
 
 
 def redact_disabled_source_fields(metadata: dict[str, Any]) -> dict[str, Any]:

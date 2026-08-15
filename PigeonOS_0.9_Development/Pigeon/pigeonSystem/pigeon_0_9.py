@@ -5045,7 +5045,13 @@ def main() -> int:
                 t = t[:-1].rstrip()
             if not t:
                 return True
-            return t.upper().endswith("NONE") or t.endswith("-") or t.endswith("—")
+            up = t.upper()
+            return (
+                up.endswith("NONE")
+                or up.endswith("UNKNOWN")
+                or t.endswith("-")
+                or t.endswith("—")
+            )
 
         def _view_four_has_value(v: object) -> bool:
             """True when a View 4 debug field should be listed (skip None / empty / NONE / -)."""

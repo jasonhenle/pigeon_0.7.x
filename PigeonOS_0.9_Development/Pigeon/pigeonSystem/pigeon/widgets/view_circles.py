@@ -795,8 +795,8 @@ def _ordinal_day(day: int) -> str:
 
 
 def _format_zone0_date(now: datetime) -> str:
-    """``Friday, Aug 14`` — clock-widget date line (abbreviated month)."""
-    return f"{now.strftime('%A')}, {now.strftime('%b')} {int(now.day)}"
+    """``SAT, AUG 15`` — abbreviated weekday and month, all caps."""
+    return f"{now.strftime('%a')}, {now.strftime('%b')} {int(now.day)}".upper()
 
 
 def _clock_date_baseline_y(cy: float) -> float:

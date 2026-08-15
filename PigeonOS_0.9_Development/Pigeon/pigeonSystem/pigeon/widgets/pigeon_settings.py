@@ -279,8 +279,8 @@ def _hdmi_status_ok(state: MainSettingsState) -> bool:
 
 
 def _audio_status_ok(state: MainSettingsState) -> bool:
-    """Green when audio ID is allowed. Recognizer is still reserved."""
-    return _source_on(state, "audio")
+    """Audio recognizer is not wired — LED stays red even when the tile is on."""
+    return False
 
 
 def _status_ok_for(kind: str, state: MainSettingsState) -> bool:
