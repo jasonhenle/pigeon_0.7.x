@@ -17,6 +17,9 @@ P0.5_App/pigeonPulledMedia/
 P0.5_App/pigeonReFormattedMedia/
 P0.5_App/pigeonData/
 
+# HDMI OCR diagnostic stills (local capture tests)
+tools/ocr_test_frames/
+
 # Nested venvs
 **/testingEnvironments/.venv/
 

@@ -192,16 +192,16 @@ def _date_bgra_clock_widget_rect(
     inner_h = max(1, h - 2 * pad)
     f_date = _fit_font_in_box(date_text, medium_path, inner_w, inner_h, draw, min_sz=6)
 
-    x_right = w - pad
-    baseline_y = h // 2
-    bb = draw.textbbox((x_right, baseline_y), date_text, font=f_date, anchor="rm")
-    cy = (bb[1] + bb[3]) // 2
-    baseline_y += h // 2 - cy
-    bb = draw.textbbox((x_right, baseline_y), date_text, font=f_date, anchor="rm")
+    cx = w // 2
+    cy = h // 2
+    bb = draw.textbbox((cx, cy), date_text, font=f_date, anchor="mm")
+    # Nudge vertically so the glyph box sits in the cell (font metrics ≠ visual center).
+    cy += h // 2 - (bb[1] + bb[3]) // 2
+    bb = draw.textbbox((cx, cy), date_text, font=f_date, anchor="mm")
     if bb[3] > h - pad:
-        baseline_y -= bb[3] - (h - pad)
+        cy -= bb[3] - (h - pad)
     if bb[1] < pad:
-        baseline_y += pad - bb[1]
+        cy += pad - bb[1]
 
     b_bgr, g_bgr, r_bgr = (
         shadow_bgr
@@ -213,18 +213,18 @@ def _date_bgra_clock_widget_rect(
     off = max(1, int(round(min(w, h) * 0.018)))
 
     draw.text(
-        (x_right + off, baseline_y + off),
+        (cx + off, cy + off),
         date_text,
         font=f_date,
         fill=shadow_fill,
-        anchor="rm",
+        anchor="mm",
     )
     draw.text(
-        (x_right, baseline_y),
+        (cx, cy),
         date_text,
         font=f_date,
         fill=_TEXT_WHITE,
-        anchor="rm",
+        anchor="mm",
         stroke_width=_DATE_STROKE_W,
         stroke_fill=_DATE_STROKE_RGBA,
     )

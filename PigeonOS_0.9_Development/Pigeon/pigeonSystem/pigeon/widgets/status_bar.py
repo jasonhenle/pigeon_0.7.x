@@ -4,8 +4,8 @@ The black strip is a **single** unbroken capsule (e.g. cols 3–17). A hole matc
 bar’s pill mask (same geometry as :func:`pill_alpha_mask`) is punched through it so the backdrop
 shows there; the semi-transparent bar draws on top in the same footprint.
 
-The bar track is ~60% gray. Progress is a contrasting accent fill (left → right) sampled
-from the TMDb backdrop (vivid / saturated region). No separate CTI knob.
+The bar track is ~60% gray. Progress fill uses the settings UI color (color page);
+backdrop sampling remains available as a fallback accent for other chrome.
 """
 
 from __future__ import annotations
@@ -271,7 +271,29 @@ class StatusBarWidget:
 
     @property
     def accent_bgr(self) -> tuple[int, int, int]:
-        """BGR tint used for the progress bar (sampled from backdrop, or fallback)."""
+        """BGR tint used for ambient chrome (sampled from backdrop, or fallback)."""
+        return self._accent_bgr
+
+    def _progress_fill_bgr(self) -> tuple[int, int, int]:
+        """Settings UI color for the elapsed bar; backdrop accent as fallback."""
+        try:
+            from pigeon.widgets.ui_color_settings import (
+                hex_for_color_key,
+                read_ui_color_keys,
+            )
+
+            keys = read_ui_color_keys()
+            hex_color = hex_for_color_key("ui", keys.get("ui", "red"))
+            h = (hex_color or "").strip().lstrip("#")
+            if len(h) == 3:
+                h = f"{h[0]}{h[0]}{h[1]}{h[1]}{h[2]}{h[2]}"
+            if len(h) == 6:
+                r = int(h[0:2], 16)
+                g = int(h[2:4], 16)
+                b = int(h[4:6], 16)
+                return (b, g, r)
+        except Exception:
+            pass
         return self._accent_bgr
 
     def clear_cache(self) -> None:
@@ -497,8 +519,9 @@ class StatusBarWidget:
             self._elapsed_fade_start_mono = None
 
         fade_a = self._elapsed_alpha()
+        fill_bgr = self._progress_fill_bgr()
         sig = (
-            tuple(self._accent_bgr),
+            tuple(fill_bgr),
             round(float(self._progress), 6),
             self._tc_played_text,
             self._tc_remaining_text,
@@ -513,9 +536,9 @@ class StatusBarWidget:
             blits.append(DesignPatch(x=bx, y=by, w=bw, h=bh, bgra=self._bar_asset))
             accent = self._bar_asset.copy()
             amask = accent[:, :, 3] > 0
-            accent[amask, 0] = int(self._accent_bgr[0])
-            accent[amask, 1] = int(self._accent_bgr[1])
-            accent[amask, 2] = int(self._accent_bgr[2])
+            accent[amask, 0] = int(fill_bgr[0])
+            accent[amask, 1] = int(fill_bgr[1])
+            accent[amask, 2] = int(fill_bgr[2])
             elapsed_frac = max(0.0, min(1.0, float(self._progress)))
             elapsed_w = int(round(elapsed_frac * float(bw)))
             elapsed_w = max(0, min(bw, elapsed_w))

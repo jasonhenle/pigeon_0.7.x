@@ -330,7 +330,8 @@ def _query_preference_from_playing(playing) -> str:
     media_type = getattr(playing, "media_type", None)
     sn = getattr(playing, "season_number", None)
     en = getattr(playing, "episode_number", None)
-    episode_like = sn is not None or en is not None
+    episode_title_txt = _tx("episode_title")
+    episode_like = sn is not None or en is not None or bool(episode_title_txt)
     t_t = _tx("title")
     t_a = _tx("artist")
     title_embeds_se = False
@@ -347,6 +348,7 @@ def _query_preference_from_playing(playing) -> str:
         return "tv"
     # Streamers often tag TV episodes as Video; still search TMDb as TV when episodic.
     # Prime Video often embeds ``S01 E01`` only inside ``title`` (no pyatv season/episode fields).
+    # Peacock / others often send only ``episode_title`` with an empty series_name.
     if episode_like or title_embeds_se:
         return "tv"
     t_sn = _tx("series_name")

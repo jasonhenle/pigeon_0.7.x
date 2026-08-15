@@ -13,6 +13,8 @@ Query hints (optional):
     :func:`search_best_media` so kids apps (PBS Kids, …) prefer TV, try
     ``Title Service`` queries, demote adult substring matches, and fall back to a
     cached episode-title → series index when Apple TV sends only an episode line.
+    That episode→series fallback also runs system-wide (Peacock, etc.) whenever
+    normal TMDb title search is missing or weakly aligned.
 
 Title matching (env):
   - ``PIGEON_TMDB_MATCH_MODE=literal`` (default) — use now-playing strings as-is where possible; only
@@ -24,6 +26,12 @@ Runtime: in the app, **+** (Shift+= on US keyboards; numpad +) toggles literal �
 that overrides the env default for the current session.
 
 This product uses the TMDb API but is not endorsed or certified by TMDb.
+
+Language:
+  - Requests use ``language=en-US``. Search ranking prefers ``original_language=en`` on
+    title-tier ties (non-English is never excluded). Poster art prefers English, then
+    language-neutral, then any other language only when English is unavailable. Logos
+    remain English-only (no non-English fallback).
 """
 
 from __future__ import annotations
@@ -64,6 +72,10 @@ from pigeon.media_folders import (
 from pigeon.runtime_paths import pigeon_state_dir as _pigeon_state_dir
 
 TMDB_API_BASE = "https://api.themoviedb.org/3"
+# Primary product language: request English metadata/artwork when TMDb has it.
+# Non-English originals and assets remain available as fallbacks (never hard-excluded).
+TMDB_UI_LANGUAGE = "en-US"
+TMDB_PRIMARY_ISO_639 = "en"
 POSTER_SIZE = "w780"  # good balance before local 1800-wide pipeline
 IMG_BASE = f"https://image.tmdb.org/t/p/{POSTER_SIZE}"
 # English logos: pull at w1280 for sharp logo-only / downscaled title art (see ``LogoEn`` cache).
@@ -1294,6 +1306,13 @@ def _minimal_subprocess_env() -> dict[str, str]:
 
 def _http_get_bytes(url: str, *, timeout_s: float = 60.0, headers: dict[str, str] | None = None) -> bytes:
     """HTTPS GET for TMDb API and image CDN (curl on Linux for reliable Pi SSL)."""
+    try:
+        from pigeon.source_toggles import source_enabled
+
+        if not source_enabled("wifi"):
+            raise OSError("Pigeon is offline (Wi-Fi source is off).")
+    except ImportError:
+        pass
     safe_headers = {
         str(k): "".join(ch for ch in str(v) if ord(ch) < 256) for k, v in (headers or {}).items()
     }
@@ -1403,7 +1422,8 @@ def _best_with_poster_from_results(
         if not with_poster:
             return None
     # Prefer exact / whole-word title matches from the real search query; tie-break by
-    # shorter title, then TMDb popularity. Fall back to full pool only if every rank is 0.
+    # shorter title, then English original_language, then TMDb popularity. Fall back to
+    # the full pool only if every rank is 0.
     scored = [(r, _match_rank(query, r)) for r in with_poster]
     scored = [(r, rk) for r, rk in scored if not _weak_short_acronym_match(query, r, rk)]
     scored = _apply_kids_service_result_bias(scored, kids_bias=kids_bias)
@@ -1419,7 +1439,7 @@ def _best_with_poster_from_results(
             return None
         best_key = max(rk for _, rk in strict)
         pool = [r for r, rk in strict if rk == best_key]
-    return max(pool, key=lambda r: float(r.get("popularity") or 0.0))
+    return max(pool, key=_english_prefer_popularity_key)
 
 
 def _best_from_results(
@@ -1430,7 +1450,7 @@ def _best_from_results(
     forgiving: bool = True,
     kids_bias: bool = False,
 ) -> dict | None:
-    """Highest popularity among dict results (no poster requirement)."""
+    """Best title match among dict results (no poster requirement); English originals preferred."""
     if not isinstance(results, list) or not results:
         return None
     items = [r for r in results if isinstance(r, dict)]
@@ -1462,7 +1482,7 @@ def _best_from_results(
             return None
         best_key = max(rk for _, rk in strict)
         pool = [r for r, rk in strict if rk == best_key]
-    return max(pool, key=lambda r: float(r.get("popularity") or 0.0))
+    return max(pool, key=_english_prefer_popularity_key)
 
 
 def _tmdb_search_get(endpoint: str, query: str, *, year_param: str | None, year: int | None) -> list:
@@ -1470,14 +1490,47 @@ def _tmdb_search_get(endpoint: str, query: str, *, year_param: str | None, year:
 
     Centralizes the "request + pull out results" dance used by the four public search helpers so
     the two-pass "with year filter, then retry without" logic doesn't repeat the HTTP boilerplate.
+
+    Always requests ``language=en-US`` so titles / default ``poster_path`` prefer English when
+    TMDb has a translation — this does not filter out non-English originals.
     """
-    params: dict[str, str] = {"query": query}
+    params: dict[str, str] = {"query": query, "language": TMDB_UI_LANGUAGE}
     if year is not None and year_param:
         params[year_param] = str(int(year))
     url = f"{TMDB_API_BASE}/{endpoint}?{urllib.parse.urlencode(params)}"
     data = _request_json(url)
     results = data.get("results") if isinstance(data, dict) else None
     return results if isinstance(results, list) else []
+
+
+def _is_english_original(item: dict) -> bool:
+    return str((item or {}).get("original_language") or "").strip().lower() == TMDB_PRIMARY_ISO_639
+
+
+def _english_prefer_popularity_key(item: dict) -> tuple[int, float]:
+    """Tie-break: English originals first, then TMDb popularity. Never excludes non-English."""
+    return (1 if _is_english_original(item) else 0, float((item or {}).get("popularity") or 0.0))
+
+
+def _image_iso_639(item: dict) -> str:
+    """Normalized ``iso_639_1`` (``""`` = language-neutral / missing)."""
+    iso = (item or {}).get("iso_639_1")
+    if iso is None:
+        return ""
+    return str(iso).strip().lower()
+
+
+def _prefer_english_image_rows(rows: list[dict]) -> list[dict]:
+    """English → language-neutral → any other language (last resort)."""
+    if not rows:
+        return rows
+    en = [r for r in rows if _image_iso_639(r) == TMDB_PRIMARY_ISO_639]
+    if en:
+        return en
+    neutral = [r for r in rows if _image_iso_639(r) == ""]
+    if neutral:
+        return neutral
+    return rows
 
 
 def search_movie_best_with_poster(
@@ -1603,7 +1656,9 @@ def search_tv_best_with_poster(
 
 def _tmdb_tv_detail(tv_id: int) -> dict | None:
     try:
-        data = _request_json(f"{TMDB_API_BASE}/tv/{int(tv_id)}")
+        data = _request_json(
+            f"{TMDB_API_BASE}/tv/{int(tv_id)}?{urllib.parse.urlencode({'language': TMDB_UI_LANGUAGE})}"
+        )
     except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
         return None
     if not isinstance(data, dict) or data.get("id") is None:
@@ -1613,7 +1668,9 @@ def _tmdb_tv_detail(tv_id: int) -> dict | None:
 
 def _tmdb_movie_detail(movie_id: int) -> dict | None:
     try:
-        data = _request_json(f"{TMDB_API_BASE}/movie/{int(movie_id)}")
+        data = _request_json(
+            f"{TMDB_API_BASE}/movie/{int(movie_id)}?{urllib.parse.urlencode({'language': TMDB_UI_LANGUAGE})}"
+        )
     except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, OSError, ValueError):
         return None
     if not isinstance(data, dict) or data.get("id") is None:
@@ -1780,27 +1837,61 @@ def _search_best_media_with_poster_one(
     return (t, "tv") if t else (None, None)
 
 
-def _kids_episode_index_series_fallback(
+def _episode_title_series_fallback(
     query: str,
     *,
     require_poster: bool,
 ) -> tuple[dict | None, MediaKind | None]:
     """
-    Kids apps: map an episode-only title to its parent series via the disk-cached index.
+    Map an episode-only title to its parent series (system-wide, not kids-only).
 
-    Used when normal TMDb search misses or only yields a weak title match.
+    Order:
+      1. Disk-cached kids/PBS episode index (same data PBS Kids uses)
+      2. Local ``episode_series_hints.json`` / built-ins → TMDb TV search for that series
+      3. Wikidata unambiguous episode → series (Peacock / general streamers)
+
+    Used when normal TMDb title search misses or only yields a weak title match.
     """
+    q = (query or "").strip()
+    if not q:
+        return None, None
     try:
         from pigeon.tmdb_episode_index import resolve_kids_series_from_episode_title
 
-        detail = resolve_kids_series_from_episode_title(query)
+        detail = resolve_kids_series_from_episode_title(q)
     except Exception:
-        return None, None
-    if detail is None or detail.get("id") is None:
-        return None, None
-    if require_poster and not detail.get("poster_path"):
-        return None, None
-    return detail, "tv"
+        detail = None
+    if detail is not None and detail.get("id") is not None:
+        if not require_poster or detail.get("poster_path"):
+            return detail, "tv"
+
+    hinted: str | None = None
+    try:
+        from pigeon.episode_series_hints import series_name_for_episode_title_hint
+
+        hinted = series_name_for_episode_title_hint(q)
+    except Exception:
+        hinted = None
+    if not hinted:
+        try:
+            from pigeon.wikidata_episode import series_name_from_wikidata_episode_title
+
+            hinted = series_name_from_wikidata_episode_title(q)
+        except Exception:
+            hinted = None
+    if hinted and not is_degenerate_tmdb_query(hinted):
+        if require_poster:
+            hit = search_tv_best_with_poster(hinted, forgiving=True, kids_bias=False)
+        else:
+            hit = search_tv_best(hinted, forgiving=True, kids_bias=False)
+        if hit is not None and hit.get("id") is not None:
+            if not require_poster or hit.get("poster_path"):
+                return hit, "tv"
+    return None, None
+
+
+# Back-compat alias (older call sites / docs).
+_kids_episode_index_series_fallback = _episode_title_series_fallback
 
 
 def _tmdb_hit_is_weak_for_query(
@@ -1829,8 +1920,10 @@ def search_best_media_with_poster(
     ``auto`` takes the best movie result first; only if none is found uses the TV catalogue.
 
     When ``app_name`` / ``app_id`` (or ``service_hint`` / ``kids_bias``) indicate a kids
-    streaming app, prefer TV and bias ranking away from adult substring matches. If search
-    still fails (or only a weak hit), resolve episode-only titles via the kids episode index.
+    streaming app, prefer TV and bias ranking away from adult substring matches.
+
+    When search still fails (or only a weak hit), resolve episode-only titles via the
+    episode→series index (same path PBS Kids uses) — **system-wide**, not kids-only.
     """
     fg = tmdb_match_forgiving(override=forgiving)
     raw = (query or "").strip()
@@ -1854,8 +1947,8 @@ def search_best_media_with_poster(
         if hit[0] is not None:
             best = hit
             break
-    if kids and _tmdb_hit_is_weak_for_query(raw, best[0], require_poster=True):
-        ep = _kids_episode_index_series_fallback(raw, require_poster=True)
+    if _tmdb_hit_is_weak_for_query(raw, best[0], require_poster=True):
+        ep = _episode_title_series_fallback(raw, require_poster=True)
         if ep[0] is not None:
             return ep
     return best
@@ -1873,8 +1966,8 @@ def search_best_media(
 ) -> tuple[dict | None, MediaKind | None]:
     """Pick one movie or TV hit; ``auto`` tries movies first, then TV if no movie match.
 
-    Kids streaming apps also fall back to the episode-title → series index when search
-    misses or only returns a weak title alignment.
+    Episode-only titles fall back to the episode→series index when search misses or only
+    returns a weak title alignment (system-wide; not limited to kids apps).
     """
     fg = tmdb_match_forgiving(override=forgiving)
     raw = (query or "").strip()
@@ -1898,8 +1991,8 @@ def search_best_media(
         if hit[0] is not None:
             best = hit
             break
-    if kids and _tmdb_hit_is_weak_for_query(raw, best[0]):
-        ep = _kids_episode_index_series_fallback(raw, require_poster=False)
+    if _tmdb_hit_is_weak_for_query(raw, best[0]):
+        ep = _episode_title_series_fallback(raw, require_poster=False)
         if ep[0] is not None:
             return ep
     return best
@@ -1951,6 +2044,11 @@ def _search_best_media_one(
 
 
 def fetch_media_images(kind: MediaKind, media_id: int) -> dict:
+    """Fetch image lists in all languages; callers prefer English in code.
+
+    Do not pass ``language=en-US`` here — TMDb then returns only English-tagged images
+    and drops Spanish-only posters needed as last-resort fallbacks.
+    """
     if kind == "movie":
         url = f"{TMDB_API_BASE}/movie/{int(media_id)}/images"
     else:
@@ -2081,7 +2179,7 @@ def _logo_path_from_images(images: dict) -> str | None:
         return None
 
     # Always prefer English logos. If none exist, treat as no logo (do not fall back).
-    en = [l for l in logos if str((l or {}).get("iso_639_1") or "").lower() == "en"]
+    en = [l for l in logos if _image_iso_639(l) == TMDB_PRIMARY_ISO_639]
     if not en:
         return None
     best = max(en, key=lambda l: float((l or {}).get("vote_average") or 0.0))
@@ -2112,20 +2210,24 @@ def _random_backdrop_path(images: dict) -> str | None:
 
 
 def _poster_path_from_item_or_images(item: dict, images: dict) -> str | None:
-    """Prefer ``item.poster_path``; fallback to highest-voted poster in image details."""
-    p = str(item.get("poster_path") or "").strip()
-    if p:
-        return p
+    """Prefer English poster art; fall back to neutral, then any language, then ``poster_path``.
+
+    ``item.poster_path`` is TMDb's default for the request language and can still be a
+    non-English asset when that is the only upload — use the images list first so an
+    English alternate wins when it exists.
+    """
     posters = images.get("posters") or []
-    if not isinstance(posters, list):
-        return None
-    rows = [r for r in posters if isinstance(r, dict) and r.get("file_path")]
-    if not rows:
-        return None
-    en = [r for r in rows if str((r or {}).get("iso_639_1") or "").lower() == "en"]
-    pool = en if en else rows
-    best = max(pool, key=lambda r: float((r or {}).get("vote_average") or 0.0))
-    return str((best or {}).get("file_path") or "").strip() or None
+    rows: list[dict] = []
+    if isinstance(posters, list):
+        rows = [r for r in posters if isinstance(r, dict) and r.get("file_path")]
+    if rows:
+        pool = _prefer_english_image_rows(rows)
+        best = max(pool, key=lambda r: float((r or {}).get("vote_average") or 0.0))
+        path = str((best or {}).get("file_path") or "").strip()
+        if path:
+            return path
+    p = str(item.get("poster_path") or "").strip()
+    return p or None
 
 
 def _maybe_delete_pulled(path: Path) -> None:
@@ -2213,6 +2315,24 @@ def download_backdrop_to_pulled(item: dict, kind: MediaKind, file_path: str) -> 
     return True, dest.name, dest
 
 
+def _resolve_preferred_poster_path(item: dict, kind: MediaKind) -> str | None:
+    """English-first poster path for a search/detail hit (images when available)."""
+    try:
+        images = fetch_media_images(kind, int(item["id"]))
+    except (
+        RuntimeError,
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ):
+        images = {}
+    return _poster_path_from_item_or_images(item, images if isinstance(images, dict) else {})
+
+
 def fetch_tmdb_poster_to_pulled(
     query: str,
     *,
@@ -2256,6 +2376,9 @@ def fetch_tmdb_poster_to_pulled(
             "(Show: guest), Pigeon already tried shortened variants.",
             None,
         )
+    pp = _resolve_preferred_poster_path(item, kind)
+    if pp:
+        item = {**item, "poster_path": pp}
     ok_p, msg_p, path_p = download_poster_to_pulled(item, kind)
     if ok_p:
         trim_pulled_media_dir()
