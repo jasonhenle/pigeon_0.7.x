@@ -16,7 +16,8 @@ Transports (both tried):
 
 Optional: ``PIGEON_ROTARY_INVERT=1`` swaps forward/backward.
 Optional: ``PIGEON_ROTARY_SERIAL=0`` disables the whole bridge.
-Optional: ``PIGEON_ROTARY_TCP=0`` disables the UNO Q TCP path only.
+Optional: ``PIGEON_ROTARY_TCP=host:port`` enables the UNO Q TCP path
+(off by default; ``1`` / ``on`` uses ``127.0.0.1:7500``).
 Optional: ``PIGEON_ADB_SERIAL=<serial>`` selects the ADB device when several are present.
 Optional: ``PIGEON_ADB=/path/to/adb`` custom adb binary.
 """
@@ -487,18 +488,23 @@ def _read_loop(
 
 
 def _env_tcp_endpoint() -> tuple[str, int] | None:
-    """Return (host, port) for UNO Q Monitor TCP, or None if disabled."""
+    """Return (host, port) for UNO Q Monitor TCP, or None if disabled.
+
+    Off unless ``PIGEON_ROTARY_TCP`` is set. The UNO Q is not in the
+    current hardware, so startup must not probe ADB or log that it is missing.
+    """
     raw = (os.environ.get("PIGEON_ROTARY_TCP") or "").strip()
-    if raw.lower() in ("0", "false", "off", "no"):
+    if not raw or raw.lower() in ("0", "false", "off", "no"):
         return None
-    if raw and ":" in raw:
+    if raw.lower() in ("1", "true", "on", "yes"):
+        return ("127.0.0.1", _UNO_Q_MONITOR_PORT)
+    if ":" in raw:
         host, _, port_s = raw.rpartition(":")
         try:
             return host.strip() or "127.0.0.1", int(port_s)
         except ValueError:
-            pass
-    # Default: try local ADB-forwarded Monitor port (UNO Q).
-    return ("127.0.0.1", _UNO_Q_MONITOR_PORT)
+            return None
+    return None
 
 
 def _adb_bin() -> str | None:
@@ -731,7 +737,7 @@ def start_rotary_serial_listener(
                 usb_state.emit(
                     "no-ports",
                     "pigeon: rotary_serial: no USB serial ports yet "
-                    f"(retrying in {delay:.0f}s; UNO Q TCP may still work via adb)",
+                    f"(retrying in {delay:.0f}s)",
                 )
                 _interruptible_wait(stop, delay)
                 continue

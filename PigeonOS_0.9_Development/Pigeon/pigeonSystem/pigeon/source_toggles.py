@@ -92,6 +92,12 @@ _METADATA_DISPLAY_KEYS = _IDENTITY_KEYS + (
     "episode_number",
     "season_index",
     "episode_index",
+    "app_name",
+    "app_id",
+    "app",
+    "bundle_identifier",
+    "app_identifier",
+    "bundle_id",
 )
 
 

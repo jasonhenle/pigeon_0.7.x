@@ -32,6 +32,12 @@ _CHROME = {
     "leaving soon",
     "documentaries",
     "comedies",
+    "suggested",
+    "extras",
+    "details",
+    "remaining",
+    "permission",
+    "bts",
 }
 
 _SEASON_EP = re.compile(
@@ -90,8 +96,16 @@ def clues_from_lines(lines: list[str], reason: str = "") -> OcrClues:
     clues.extras = [
         line
         for line in cleaned
-        if line != clues.title_guess and not _is_chrome(line) and not _looks_like_synopsis(line)
+        if (
+            line != clues.title_guess
+            and not _is_chrome(line)
+            and not _looks_like_synopsis(line)
+            and not looks_like_ocr_junk(line)
+        )
     ][:8]
+    extra0 = clues.extras[0] if clues.extras else ""
+    if clues.title_guess and extra0 and extra0.casefold() not in clues.title_guess.casefold():
+        clues.title_guess = f"{clues.title_guess} {extra0}"
     return clues
 
 
@@ -117,17 +131,49 @@ def clues_agree_with_metadata(clues: OcrClues, metadata: Mapping[str, Any] | Non
     return False
 
 
+def _collapse_repeated_words(text: str) -> str:
+    """``TAYLOR TAYLOR SWIFT SWIFT`` → ``TAYLOR SWIFT`` (multi-pass OCR)."""
+    words = text.split()
+    out: list[str] = []
+    for word in words:
+        if out and word.casefold() == out[-1].casefold():
+            continue
+        out.append(word)
+    return " ".join(out)
+
+
+def looks_like_ocr_junk(line: str) -> bool:
+    """True for glyph noise that must not be sent to TMDb (``S S Sh``)."""
+    words = [re.sub(r"[^A-Za-z0-9]", "", w) for w in (line or "").split()]
+    words = [w for w in words if w]
+    if not words:
+        return True
+    tiny = sum(1 for w in words if len(w) <= 2)
+    if tiny >= 2 and tiny >= len(words) * 0.5:
+        return True
+    if len(words) <= 2 and all(len(w) <= 3 for w in words):
+        return True
+    letters = re.sub(r"[^A-Za-z]", "", line or "")
+    return len(letters) < 3
+
+
 def _clean_line(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip())
+    return _collapse_repeated_words(re.sub(r"\s+", " ", (text or "").strip()))
 
 
 def _is_chrome(line: str) -> bool:
     low = line.lower().strip(" .:-")
     if low in _CHROME:
         return True
+    toks = [re.sub(r"[^a-z0-9]+", "", t) for t in low.split()]
+    toks = [t for t in toks if t]
+    if toks and all(t in _CHROME for t in toks):
+        return True
     if "english" in low and "original" in low:
         return True
     if low.startswith("home shows") or "my netflix" in low:
+        return True
+    if any(w in low for w in ("remaining", "ultrahd", "hdr10", "dolbyatmos")):
         return True
     return False
 
@@ -141,7 +187,7 @@ def _looks_like_synopsis(line: str) -> bool:
 def _guess_title(lines: list[str]) -> str | None:
     candidates: list[str] = []
     for line in lines:
-        if _is_chrome(line) or _looks_like_synopsis(line):
+        if _is_chrome(line) or _looks_like_synopsis(line) or looks_like_ocr_junk(line):
             continue
         if _SEASON_EP.search(line) and len(line) > 28:
             # "S1, E7 The Flamekeepers: …" — keep the episode-title side.
@@ -160,17 +206,24 @@ def _guess_title(lines: list[str]) -> str | None:
 
 def _title_score(line: str) -> int:
     n = len(line)
+    words = [w for w in line.split() if len(re.sub(r"[^A-Za-z0-9]", "", w)) >= 3]
     score = 0
     if 6 <= n <= 48:
         score += 20
     elif n <= 64:
         score += 8
+    if 2 <= len(words) <= 8:
+        score += 16
+    elif len(words) == 1 and 4 <= len(words[0]) <= 24:
+        score += 10
     if ":" in line and n <= 50:
         score += 8
     if line[:1].isupper():
         score += 3
     if _SEASON_EP.search(line):
         score -= 15
+    if looks_like_ocr_junk(line):
+        score -= 80
     return score
 
 

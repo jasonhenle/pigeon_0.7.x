@@ -297,6 +297,13 @@ def is_degenerate_tmdb_query(q: str) -> bool:
         return True
     if n.replace(" ", "").isdigit():
         return True
+    try:
+        from pigeon.ocr_clues import looks_like_ocr_junk
+
+        if looks_like_ocr_junk(raw):
+            return True
+    except ImportError:
+        pass
     return False
 
 

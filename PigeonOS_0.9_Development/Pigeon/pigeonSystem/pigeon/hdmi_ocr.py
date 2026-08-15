@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -19,8 +21,32 @@ CAPTURE_INDEX = 0
 PREFERRED_WIDTH = 1920
 PREFERRED_HEIGHT = 1080
 PAUSE_OCR_MIN_INTERVAL_S = 60.0
+NO_METADATA_RETRY_S = 5.0
 TITLE_MIN_HEIGHT = 40
 TOP_RIGHT_X, TOP_RIGHT_Y, TOP_RIGHT_W, TOP_RIGHT_H = 0.52, 0.0, 0.48, 0.30
+
+_HDMI_NAME_HINTS = (
+    "blueavs",
+    "hdmi",
+    "capture",
+    "usb video",
+    "av to usb",
+    "magewell",
+    "elgato",
+    "cam link",
+    "video capture",
+)
+_SKIP_NAME_HINTS = (
+    "facetime",
+    "isight",
+    "iphone",
+    "ipad",
+    "continuity",
+    "studio display",
+    "desk view",
+    "macbook",
+    "built-in",
+)
 
 OnClues = Callable[[OcrClues], None]
 
@@ -29,6 +55,7 @@ OnClues = Callable[[OcrClues], None]
 class OcrSchedule:
     was_paused: bool = False
     last_pause_ocr_mono: float = 0.0
+    last_no_meta_ocr_mono: float = 0.0
     last_content_key: str | None = None
     last_confirm_key: str | None = None
     in_flight: bool = False
@@ -37,7 +64,28 @@ class OcrSchedule:
 _schedule = OcrSchedule()
 _lock = threading.Lock()
 _cap = None
+_cap_index: int | None = None
+_last_capture_label = ""
 _tesseract_ready = False
+_av_devices_cache: list[tuple[int, str, str]] | None = None
+
+
+def _can_pass_to_tmdb(md: Mapping[str, Any]) -> bool:
+    """True when we already have a title TMDb will accept (stop the idle scan)."""
+    try:
+        from pigeon.tmdb_poster import is_degenerate_tmdb_query
+    except ImportError:
+
+        def is_degenerate_tmdb_query(q: str) -> bool:  # type: ignore[misc]
+            return len(str(q or "").strip()) < 2
+
+    from pigeon.ocr_clues import looks_like_ocr_junk
+
+    for key in ("ocr_title", "query"):
+        q = str(md.get(key) or "").strip()
+        if q and not is_degenerate_tmdb_query(q) and not looks_like_ocr_junk(q):
+            return True
+    return False
 
 
 def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = None) -> str | None:
@@ -47,9 +95,9 @@ def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = No
     ds = str(md.get("device_state") or "").lower()
     paused = "paused" in ds or ds.endswith("pause")
     query = str(md.get("query") or "").strip()
-    idle = "idle" in ds or "stopped" in ds
     content_key = str(md.get("content_key") or "") or None
-    has_query = bool(query) and not idle
+    has_query = bool(query)
+    tmdb_ready = _can_pass_to_tmdb(md)
 
     rising_pause = paused and not _schedule.was_paused
     _schedule.was_paused = paused
@@ -59,21 +107,16 @@ def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = No
 
     if content_key != _schedule.last_content_key:
         _schedule.last_content_key = content_key
-        if not has_query:
+        if not tmdb_ready:
+            _schedule.last_no_meta_ocr_mono = now
             return "no_metadata"
         if content_key and content_key != _schedule.last_confirm_key:
             _schedule.last_confirm_key = content_key
             return "confirm"
-    # Playing or paused with no Apple TV/Roku title: keep reading HDMI until OCR
-    # has a title. Pause used to be rising-edge only, so a still pause screen
-    # never retried and never reached TMDb.
-    active = paused or "playing" in ds
-    if (
-        not has_query
-        and active
-        and not idle
-        and not str(md.get("ocr_title") or "").strip()
-    ):
+    # No known title yet: keep reading HDMI until a non-degenerate string
+    # can be sent to TMDb (Disney+ / Netflix idle title cards included).
+    if not tmdb_ready and (now - _schedule.last_no_meta_ocr_mono) >= NO_METADATA_RETRY_S:
+        _schedule.last_no_meta_ocr_mono = now
         return "no_metadata"
     return None
 
@@ -102,14 +145,29 @@ def request_ocr(reason: str, on_done: OnClues) -> bool:
 
 
 def _ocr_worker(reason: str, on_done: OnClues) -> None:
+    global _last_capture_label
     clues = OcrClues(reason=reason)
     try:
         frame = _grab_frame()
-        if frame is not None:
+        if frame is None:
+            _last_capture_label = "none"
+            clues = OcrClues(reason=reason, extras=["capture_unavailable"])
+        elif not _configure_tesseract():
+            h, w = frame.shape[:2]
+            name = _device_name(int(_cap_index)) if _cap_index is not None else ""
+            _last_capture_label = f"{_cap_index} {name} {w}x{h}".strip()
+            clues = OcrClues(
+                reason=reason,
+                extras=[_tesseract_error or "tesseract_unavailable"],
+            )
+        else:
+            h, w = frame.shape[:2]
+            name = _device_name(int(_cap_index)) if _cap_index is not None else ""
+            _last_capture_label = f"{_cap_index} {name} {w}x{h}".strip()
             lines = _ocr_lines(frame)
             clues = clues_from_lines(lines, reason=reason)
     except Exception:
-        clues = OcrClues(reason=reason)
+        clues = OcrClues(reason=reason, extras=["ocr_error"])
     finally:
         with _lock:
             _schedule.in_flight = False
@@ -125,22 +183,69 @@ def apply_clues_to_metadata(
 ) -> dict[str, Any]:
     """Copy OCR clues onto the live metadata dict. Does not drop pyatv fields."""
     out = dict(metadata)
+    prev_title = str(out.get("ocr_title") or "").strip()
     out.update(clues.as_metadata_fields())
+    if not str(out.get("ocr_title") or "").strip() and prev_title:
+        out["ocr_title"] = prev_title
     out["ocr_agrees"] = clues_agree_with_metadata(clues, metadata)
     out["ocr_at"] = time.time()
+    extra0 = ""
+    if isinstance(out.get("ocr_extras"), list) and out["ocr_extras"]:
+        extra0 = str(out["ocr_extras"][0])
+    if extra0 in ("capture_unavailable", "tesseract_unavailable", "ocr_error"):
+        out["ocr_status"] = extra0
+    elif str(out.get("ocr_title") or "").strip() or (
+        isinstance(out.get("ocr_lines"), list) and out["ocr_lines"]
+    ):
+        out["ocr_status"] = "ok"
+    else:
+        out["ocr_status"] = "no_text"
+    if _last_capture_label:
+        out["ocr_capture"] = _last_capture_label
     return out
 
 
+def _identity_is_placeholder(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    try:
+        from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+        if is_degenerate_tmdb_query(text):
+            return True
+    except ImportError:
+        pass
+    try:
+        from pigeon.ocr_clues import looks_like_ocr_junk
+
+        if looks_like_ocr_junk(text):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def ocr_session_anchor(metadata: Mapping[str, Any] | None) -> str:
+    """pyatv-only identity used to decide whether last HDMI clues still apply."""
+    md = metadata if isinstance(metadata, dict) else {}
+    app = str(md.get("app_id") or md.get("app_name") or "").strip().casefold()
+    query = str(md.get("query") or "").strip()
+    if _identity_is_placeholder(query):
+        query = ""
+    return f"{app}|{query.casefold()}"
+
+
 def apply_ocr_title_as_identity(metadata: dict[str, Any]) -> bool:
-    """Fill empty query/title from OCR so now-playing and TMDb have an identity."""
+    """Fill empty or placeholder query/title from OCR so TMDb has an identity."""
     guess = str(metadata.get("ocr_title") or "").strip()
-    if not guess:
+    if not guess or _identity_is_placeholder(guess):
         return False
     changed = False
-    if not str(metadata.get("query") or "").strip():
+    if _identity_is_placeholder(str(metadata.get("query") or "")):
         metadata["query"] = guess
         changed = True
-    if not str(metadata.get("title") or "").strip():
+    if _identity_is_placeholder(str(metadata.get("title") or "")):
         metadata["title"] = guess
         changed = True
     return changed
@@ -157,6 +262,8 @@ _OCR_FIELD_KEYS = (
     "ocr_reason",
     "ocr_agrees",
     "ocr_at",
+    "ocr_status",
+    "ocr_capture",
 )
 
 
@@ -165,7 +272,7 @@ def copy_ocr_fields(src: Mapping[str, Any] | None, dest: dict[str, Any]) -> None
     if not isinstance(src, dict):
         return
     for key in _OCR_FIELD_KEYS:
-        if key in src and key not in dest:
+        if key in src:
             dest[key] = src[key]
 
 
@@ -177,10 +284,11 @@ def clear_ocr_fields(dest: dict[str, Any]) -> None:
 
 def release_capture() -> None:
     """Free the HDMI capture device so another process can use it."""
-    global _cap
+    global _cap, _cap_index
     with _lock:
         cap = _cap
         _cap = None
+        _cap_index = None
     if cap is None:
         return
     try:
@@ -189,14 +297,32 @@ def release_capture() -> None:
         pass
 
 
+_tesseract_error = ""
+
+
 def _configure_tesseract() -> bool:
-    global _tesseract_ready
+    global _tesseract_ready, _tesseract_error
     if _tesseract_ready:
         return True
     try:
         import pytesseract
     except ImportError:
+        _tesseract_error = "pytesseract_missing"
         return False
+    brew_bin = "/opt/homebrew/bin"
+    path_now = os.environ.get("PATH") or ""
+    if brew_bin not in path_now.split(":"):
+        os.environ["PATH"] = f"{brew_bin}:{path_now}" if path_now else brew_bin
+    if not os.environ.get("TESSDATA_PREFIX"):
+        for tessdata in (
+            "/opt/homebrew/share/tessdata",
+            "/usr/local/share/tessdata",
+            "/usr/share/tesseract-ocr/5/tessdata",
+            "/usr/share/tesseract-ocr/4.00/tessdata",
+        ):
+            if os.path.isfile(os.path.join(tessdata, "eng.traineddata")):
+                os.environ["TESSDATA_PREFIX"] = tessdata
+                break
     for path in (
         shutil.which("tesseract"),
         "/opt/homebrew/bin/tesseract",
@@ -210,25 +336,174 @@ def _configure_tesseract() -> bool:
             except Exception:
                 continue
             _tesseract_ready = True
+            _tesseract_error = ""
             return True
+    _tesseract_error = "tesseract_bin_missing"
     return False
 
 
-def _grab_frame():
-    global _cap
+def _is_skip_camera(name: str, dtype: str = "") -> bool:
+    blob = f"{name} {dtype}".lower()
+    return any(skip in blob for skip in _SKIP_NAME_HINTS)
+
+
+def _is_hdmi_camera(name: str, dtype: str = "") -> bool:
+    if _is_skip_camera(name, dtype):
+        return False
+    low = name.lower()
+    return any(hint in low for hint in _HDMI_NAME_HINTS)
+
+
+def _avfoundation_devices() -> list[tuple[int, str, str]]:
+    """OpenCV AVFoundation indexes with names. Cached; Swift is slow to start."""
+    global _av_devices_cache
+    if _av_devices_cache is not None:
+        return _av_devices_cache
+    if sys.platform != "darwin":
+        _av_devices_cache = []
+        return _av_devices_cache
+    # Same enumeration OpenCV uses: video + muxed, sorted by uniqueID.
+    script = (
+        "import AVFoundation\n"
+        "import Foundation\n"
+        "let video = AVCaptureDevice.devices(for: .video)\n"
+        "let muxed = AVCaptureDevice.devices(for: .muxed)\n"
+        "let all = (video + muxed).sorted { $0.uniqueID < $1.uniqueID }\n"
+        "for (i, d) in all.enumerated() {\n"
+        '    print("\\(i)\\t\\(d.localizedName)\\t\\(d.deviceType.rawValue)")\n'
+        "}\n"
+    )
+    path = ""
     try:
-        import cv2
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".swift", delete=False) as handle:
+            handle.write(script)
+            path = handle.name
+        result = subprocess.run(
+            ["swift", path],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _av_devices_cache = []
+        return _av_devices_cache
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    out: list[tuple[int, str, str]] = []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2 or not parts[0].strip().isdigit():
+            continue
+        idx = int(parts[0].strip())
+        name = parts[1].strip()
+        dtype = parts[2].strip() if len(parts) > 2 else ""
+        if name:
+            out.append((idx, name, dtype))
+    _av_devices_cache = out
+    return _av_devices_cache
+
+
+def _device_name(index: int) -> str:
+    for idx, name, _dtype in _avfoundation_devices():
+        if idx == index:
+            return name
+    return ""
+
+
+def _candidate_capture_indices() -> list[int]:
+    env = str(os.environ.get("PIGEON_HDMI_CAPTURE_INDEX") or "").strip()
+    if env.isdigit():
+        return [int(env)]
+    named = _avfoundation_devices()
+    hdmi = [i for i, name, dtype in named if _is_hdmi_camera(name, dtype)]
+    if hdmi:
+        return hdmi
+    other = [i for i, name, dtype in named if not _is_skip_camera(name, dtype)]
+    if other:
+        return other
+    if named:
+        return []
+    # Do not scan 0..3 on macOS — Continuity Camera often sits at index 1.
+    if sys.platform == "darwin":
+        return []
+    out = [CAPTURE_INDEX]
+    for extra in (1, 2, 3):
+        if extra not in out:
+            out.append(extra)
+    return out
+
+
+def _opencv_backend():
+    import cv2
+
+    if sys.platform == "darwin" and hasattr(cv2, "CAP_AVFOUNDATION"):
+        return cv2.CAP_AVFOUNDATION
+    if sys.platform.startswith("linux") and hasattr(cv2, "CAP_V4L2"):
+        return cv2.CAP_V4L2
+    return cv2.CAP_ANY
+
+
+def _open_capture_at(index: int):
+    import cv2
+
+    cap = cv2.VideoCapture(index, _opencv_backend())
+    if cap is None or not cap.isOpened():
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        return None
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(PREFERRED_WIDTH))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(PREFERRED_HEIGHT))
+    frame = None
+    for _ in range(8):
+        ok, frame = cap.read()
+        if ok and frame is not None and getattr(frame, "size", 0):
+            return cap
+    try:
+        cap.release()
+    except Exception:
+        pass
+    return None
+
+
+def _grab_frame():
+    global _cap, _cap_index
+    try:
+        import cv2  # noqa: F401
     except ImportError:
         return None
-    backend = cv2.CAP_AVFOUNDATION if hasattr(cv2, "CAP_AVFOUNDATION") else cv2.CAP_ANY
     if _cap is None or not _cap.isOpened():
-        _cap = cv2.VideoCapture(CAPTURE_INDEX, backend)
-        if _cap is None or not _cap.isOpened():
+        _cap = None
+        _cap_index = None
+        env = str(os.environ.get("PIGEON_HDMI_CAPTURE_INDEX") or "").strip()
+        if env.isdigit():
+            opened = _open_capture_at(int(env))
+            if opened is not None:
+                _cap = opened
+                _cap_index = int(env)
+        else:
+            # Prefer the named HDMI dongle (blueAVS). Never open iPhone / FaceTime
+            # when a capture card is present — iPhone is also "external" and 1080p.
+            for index in _candidate_capture_indices():
+                opened = _open_capture_at(index)
+                if opened is None:
+                    continue
+                _cap = opened
+                _cap_index = index
+                break
+        if _cap is None:
             return None
-        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-        _cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-        _cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(PREFERRED_WIDTH))
-        _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(PREFERRED_HEIGHT))
     ok, frame = _cap.read()
     if not ok or frame is None or not getattr(frame, "size", 0):
         return None
@@ -242,6 +517,8 @@ def _ocr_lines(bgr_frame) -> list[str]:
 
     hits = _hits_from_image(_gray_variants(bgr_frame))
     hits.extend(_hits_top_right(bgr_frame))
+    hits.extend(_hits_left_title(bgr_frame))
+    hits = _dedupe_hits(hits)
     grouped = _group_lines(hits)
     return [h[0] for h in grouped if h[0]]
 
@@ -250,10 +527,24 @@ def _gray_variants(bgr_frame) -> list:
     import cv2
 
     gray = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2GRAY)
-    return [gray, cv2.bitwise_not(gray)]
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    boosted = clahe.apply(gray)
+    return [boosted, cv2.bitwise_not(boosted), gray]
 
 
-def _hits_from_image(images, min_conf: float = 45.0, config: str = "--psm 11") -> list[tuple]:
+def _dedupe_hits(hits: list[tuple]) -> list[tuple]:
+    """Keep the highest-confidence copy when several passes see the same word."""
+    best: dict[tuple, tuple] = {}
+    for hit in hits:
+        text, conf, left, top, width, height = hit
+        key = (text.lower(), int(left) // 24, int(top) // 16)
+        prior = best.get(key)
+        if prior is None or float(conf) > float(prior[1]):
+            best[key] = hit
+    return list(best.values())
+
+
+def _hits_from_image(images, min_conf: float = 30.0, config: str = "--psm 11") -> list[tuple]:
     import pytesseract
 
     out: list[tuple] = []
@@ -297,6 +588,39 @@ def _hits_top_right(bgr_frame) -> list[tuple]:
     scale = 3.0
     big = cv2.resize(paper, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
     raw = _hits_from_image([big], min_conf=25.0, config="--psm 7")
+    shifted: list[tuple] = []
+    for text, conf, left, top, width, height in raw:
+        shifted.append(
+            (
+                text,
+                conf,
+                x0 + int(left / scale),
+                y0 + int(top / scale),
+                max(1, int(width / scale)),
+                max(1, int(height / scale)),
+            )
+        )
+    return shifted
+
+
+def _hits_left_title(bgr_frame) -> list[tuple]:
+    """Disney+ / Apple TV title cards put the name on the left, not top-right."""
+    import cv2
+
+    h, w = bgr_frame.shape[:2]
+    x0, y0 = 0, int(h * 0.12)
+    x1, y1 = int(w * 0.58), int(h * 0.62)
+    crop = bgr_frame[y0:y1, x0:x1]
+    if crop.size == 0:
+        return []
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    boosted = clahe.apply(gray)
+    _, bright = cv2.threshold(boosted, 160, 255, cv2.THRESH_BINARY)
+    paper = cv2.bitwise_not(bright)
+    scale = 2.0
+    big = cv2.resize(paper, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    raw = _hits_from_image([big], min_conf=25.0, config="--psm 11")
     shifted: list[tuple] = []
     for text, conf, left, top, width, height in raw:
         shifted.append(

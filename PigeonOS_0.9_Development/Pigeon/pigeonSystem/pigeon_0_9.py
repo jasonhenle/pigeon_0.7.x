@@ -5093,6 +5093,7 @@ def main() -> int:
         def _collect_view_four_ocr_lines(md: dict[str, object]) -> list[str]:
             """HDMI OCR clues for View 4 Title Info; omit empty fields."""
             pairs = (
+                ("ocr_status", "ocr.status"),
                 ("ocr_title", "ocr.title"),
                 ("ocr_lines", "ocr.lines"),
                 ("ocr_season", "ocr.season"),
@@ -5100,13 +5101,21 @@ def main() -> int:
                 ("ocr_year", "ocr.year"),
                 ("ocr_runtime_min", "ocr.runtime_min"),
                 ("ocr_extras", "ocr.extras"),
-                ("ocr_reason", "ocr.reason"),
+                ("ocr_reason", "ocr.trigger"),
                 ("ocr_agrees", "ocr.agrees"),
                 ("ocr_at", "ocr.at"),
+                ("ocr_capture", "ocr.capture"),
             )
             out: list[str] = []
             for key, label in pairs:
                 val: object = md.get(key)
+                if key == "ocr_reason":
+                    mapped = {
+                        "no_metadata": "no_pyatv_title",
+                        "pause": "pause",
+                        "confirm": "confirm",
+                    }
+                    val = mapped.get(str(val or ""), val)
                 if key == "ocr_at" and val is not None:
                     try:
                         val = time.strftime(
@@ -5114,8 +5123,31 @@ def main() -> int:
                         )
                     except (TypeError, ValueError, OSError, OverflowError):
                         pass
-                if _view_four_has_value(val):
-                    out.append(f"{label}={val!r}")
+                if not _view_four_has_value(val):
+                    continue
+                if isinstance(val, (list, tuple)):
+                    items: list[str] = []
+                    junk_fn = None
+                    if key == "ocr_lines":
+                        try:
+                            from pigeon.ocr_clues import looks_like_ocr_junk
+
+                            junk_fn = looks_like_ocr_junk
+                        except Exception:
+                            junk_fn = None
+                    for item in val:
+                        text = str(item).strip()
+                        if not _view_four_has_value(text):
+                            continue
+                        if junk_fn is not None and junk_fn(text):
+                            continue
+                        items.append(text)
+                    if not items:
+                        continue
+                    out.append(f"{label}:")
+                    out.extend(f"  {item}" for item in items)
+                    continue
+                out.append(f"{label}={val!r}")
             return out
 
         def _collect_view_four_raw_title_lines() -> list[tuple[str, bool]]:
@@ -5129,12 +5161,17 @@ def main() -> int:
 
             lm_rt = _view_four_display_metadata()
             metadata_on = _view_four_metadata_source_on()
-            _svc_label = str(streaming_badge_state.get("label") or "").strip()
-            _svc_app = str(lm_rt.get("app_name") or "").strip() if isinstance(lm_rt, dict) else ""
-            if _svc_label:
-                _ln(f"streamingService={_svc_label!r}")
-            elif _svc_app:
-                _ln(f"streamingService={_svc_app!r}")
+            if metadata_on:
+                _svc_label = str(streaming_badge_state.get("label") or "").strip()
+                _svc_app = (
+                    str(lm_rt.get("app_name") or "").strip()
+                    if isinstance(lm_rt, dict)
+                    else ""
+                )
+                if _svc_label:
+                    _ln(f"streamingService={_svc_label!r}")
+                elif _svc_app:
+                    _ln(f"streamingService={_svc_app!r}")
 
             if not isinstance(lm_rt, dict):
                 _ln("rawTitle: (no last_metadata dict)")
@@ -5372,10 +5409,11 @@ def main() -> int:
             proto = _md_pick(md, "protocol")
             if proto:
                 _ln(f"Poll protocol: {proto}", False)
-            appn = str(md.get("app_name") or "").strip()
-            appid = str(md.get("app_id") or "").strip()
-            if appn or appid:
-                _ln(f"App: {appn!r} id={appid!r}", False)
+            if _view_four_metadata_source_on():
+                appn = str(md.get("app_name") or "").strip()
+                appid = str(md.get("app_id") or "").strip()
+                if appn or appid:
+                    _ln(f"App: {appn!r} id={appid!r}", False)
 
             if inc:
                 _ln(f"Receiver incoming (raw): {inc}", False)
@@ -5409,6 +5447,8 @@ def main() -> int:
                 "ocr_reason",
                 "ocr_agrees",
                 "ocr_at",
+                "ocr_status",
+                "ocr_capture",
             }
             extra_keys = [
                 k
@@ -5539,89 +5579,92 @@ def main() -> int:
             else:
                 raw_debug_lines = [(f"View 4 — {sub_titles[sub_i]}", True)] + _collect_view_four_playback_lines()
             _any_bold = bool(raw_debug_lines)
+            rows = [
+                (str(raw).strip(), is_bold)
+                for raw, is_bold in raw_debug_lines
+                if str(raw).strip()
+            ]
+            if not rows:
+                rows = [("(no rawTitle lines yet)", False)]
 
             def _vf_thick(sc: float) -> int:
                 return 2 if sc >= 0.48 else 1
 
-            def _vf_wrap_paragraph(text: str, sc: float, thick: int) -> list[str]:
-                t = str(text).replace("\n", " ").strip()
-                if not t:
-                    return []
-                words = t.split()
-                lines_out: list[str] = []
-                cur: str | None = None
-                for w in words:
-                    trial = w if cur is None else f"{cur} {w}"
-                    tw, _ = cv2.getTextSize(trial, font, sc, thick)[0]
-                    if tw <= max_w:
-                        cur = trial
-                    else:
-                        if cur is not None:
-                            lines_out.append(cur)
-                            cur = None
-                        tw_w, _ = cv2.getTextSize(w, font, sc, thick)[0]
-                        if tw_w <= max_w:
-                            cur = w
-                        else:
-                            chunk = ""
-                            for ch in w:
-                                t2 = chunk + ch
-                                tw2, _ = cv2.getTextSize(t2, font, sc, thick)[0]
-                                if tw2 <= max_w:
-                                    chunk = t2
-                                else:
-                                    if chunk:
-                                        lines_out.append(chunk)
-                                    chunk = ch
-                            cur = chunk if chunk else None
-                if cur is not None:
-                    lines_out.append(cur)
-                return lines_out
-
-            def _vf_layout(sc: float) -> tuple[list[tuple[str, bool]], int, int, int]:
+            def _vf_metrics(sc: float) -> tuple[int, int, int, int]:
                 thick_n = _vf_thick(sc)
-                thick_layout = max(thick_n + 2, 3) if _any_bold else thick_n
-                phys: list[tuple[str, bool]] = []
-                for raw, is_bold in raw_debug_lines:
-                    twrap = thick_layout if is_bold else thick_n
-                    for pl in _vf_wrap_paragraph(raw, sc, twrap):
-                        phys.append((pl, is_bold))
-                if not phys:
-                    phys = [("(no rawTitle lines yet)", False)]
-                (_rw, th), bl = cv2.getTextSize("|pqgy", font, sc, thick_layout)
-                line_step = max(th + 6, int(th + bl * 0.5) + 4)
-                return phys, line_step, th, bl
+                thick_b = max(thick_n + 2, 3) if _any_bold else thick_n
+                (_rw, th), bl = cv2.getTextSize("|pqgy", font, sc, thick_b)
+                line_step = max(th + 8, int(th + bl * 0.5) + 6)
+                return thick_n, thick_b, th, line_step
 
-            def _vf_fits(sc: float) -> bool:
-                phys, line_step, th, bl = _vf_layout(sc)
-                n = len(phys)
-                need = my_top + th + (n - 1) * line_step + bl + my_bot
-                return need <= H
+            def _vf_row_width(text: str, sc: float, is_bold: bool) -> int:
+                thick_n, thick_b, _th, _ls = _vf_metrics(sc)
+                return int(cv2.getTextSize(text, font, sc, thick_b if is_bold else thick_n)[0][0])
 
-            lo, hi = 0.52, min(2.15, max(0.75, H / 64.0))
-            if not _vf_fits(lo):
-                sc = lo
-                while sc > 0.28 and not _vf_fits(sc):
-                    sc -= 0.04
-            else:
-                for _ in range(32):
-                    mid = (lo + hi) * 0.5
-                    if _vf_fits(mid):
-                        lo = mid
-                    else:
-                        hi = mid
-                sc = lo
+            def _vf_wrap(text: str, sc: float, is_bold: bool) -> list[str]:
+                """Keep short fields on one line; wrap only when the row is too wide."""
+                if _vf_row_width(text, sc, is_bold) <= max_w:
+                    return [text]
+                parts = text.split(" ")
+                lines: list[str] = []
+                cur = ""
 
-            thick_n = _vf_thick(sc)
-            phys, line_step, th, _ = _vf_layout(sc)
+                def _flush() -> None:
+                    nonlocal cur
+                    if cur:
+                        lines.append(cur)
+                        cur = ""
+
+                def _append_token(token: str) -> None:
+                    nonlocal cur
+                    trial = token if not cur else f"{cur} {token}"
+                    if _vf_row_width(trial, sc, is_bold) <= max_w:
+                        cur = trial
+                        return
+                    _flush()
+                    if _vf_row_width(token, sc, is_bold) <= max_w:
+                        cur = token
+                        return
+                    chunk = ""
+                    for ch in token:
+                        next_chunk = chunk + ch
+                        if chunk and _vf_row_width(next_chunk, sc, is_bold) > max_w:
+                            lines.append(chunk)
+                            chunk = ch
+                        else:
+                            chunk = next_chunk
+                    cur = chunk
+
+                for part in parts:
+                    _append_token(part)
+                _flush()
+                return lines or [text]
+
+            # One readable size for every View 4 row. Do not shrink the page
+            # to force a long OCR list onto a single line.
+            sc = 0.44
+            if H < 800:
+                sc = 0.38
+            elif H > 1400:
+                sc = 0.48
+
+            thick_n, _thick_b, th, line_step = _vf_metrics(sc)
             y = my_top + th
             color_dim = (220, 228, 238)
             color_bold = (255, 255, 255)
-            for row, is_bold in phys:
+            y_limit = H - my_bot
+            for raw, is_bold in rows:
                 t_draw = max(thick_n + 2, 3) if is_bold else thick_n
                 c = color_bold if is_bold else color_dim
-                cv2.putText(out, row, (mx, y), font, sc, c, t_draw, cv2.LINE_AA)
-                y += line_step
+                for piece in raw.splitlines() or [raw]:
+                    piece = piece.rstrip()
+                    if not piece:
+                        continue
+                    for row in _vf_wrap(piece, sc, is_bold):
+                        if y > y_limit:
+                            return out
+                        cv2.putText(out, row, (mx, y), font, sc, c, t_draw, cv2.LINE_AA)
+                        y += line_step
             return out
 
         def _compose_shown_frame(frame_bgr: np.ndarray | None, brightness: float) -> np.ndarray:
@@ -10759,7 +10802,8 @@ def main() -> int:
             md = apple_tv_auto_state.get("last_metadata")
             if not isinstance(md, dict):
                 md = {}
-            had_query = bool(str(md.get("query") or "").strip())
+            raw_query = str(md.get("query") or "").strip()
+            had_query = bool(raw_query) and not is_degenerate_tmdb_query(raw_query)
             merged = apply_clues_to_metadata(md, clues)
             apply_ocr_title_as_identity(merged)
             merged["content_key"] = _content_key_from_metadata(merged)
@@ -11043,26 +11087,29 @@ def main() -> int:
                             _bump_clock_saver_significant_device_from_metadata(merged_md)
                         md_for_spawn = merged_md
                         prev_ocr_md = apple_tv_auto_state.get("last_metadata")
-                        prev_ocr_key = (
-                            str(prev_ocr_md.get("content_key") or "")
-                            if isinstance(prev_ocr_md, dict)
-                            else ""
-                        )
                         try:
                             from pigeon.source_toggles import source_enabled
                             from pigeon.hdmi_ocr import (
                                 apply_ocr_title_as_identity,
                                 clear_ocr_fields,
                                 copy_ocr_fields,
+                                ocr_session_anchor,
                             )
 
                             if source_enabled("hdmi"):
-
-                                new_key = str(merged_md.get("content_key") or "")
-                                if not new_key or (
-                                    prev_ocr_key and prev_ocr_key == new_key
-                                ):
+                                # content_key includes the OCR-filled query, so it
+                                # changes on the next poll and used to drop clues.
+                                # Keep HDMI results until the Apple TV app / real
+                                # pyatv title changes (Disney+ is not a title).
+                                session = ocr_session_anchor(merged_md)
+                                prev_session = (
+                                    str(prev_ocr_md.get("ocr_session") or "")
+                                    if isinstance(prev_ocr_md, dict)
+                                    else ""
+                                )
+                                if not prev_session or prev_session == session:
                                     copy_ocr_fields(prev_ocr_md, merged_md)
+                                merged_md["ocr_session"] = session
                                 if apply_ocr_title_as_identity(merged_md):
                                     merged_md["content_key"] = _content_key_from_metadata(
                                         merged_md
@@ -12240,7 +12287,7 @@ def main() -> int:
         for _pigeon_act in ("<Button-1>", "<B1-Motion>", "<KeyPress>"):
             root.bind_all(_pigeon_act, _bump_pigeon_user_activity, add="+")
 
-        # Serial rotary (Arduino UNO Q / non-HID): CW/CCW/PUSH → navigate / activate.
+        # Serial rotary (non-HID USB): CW/CCW/PUSH → navigate / activate.
         # Prefer a direct callback so settings work even when Tk focus is elsewhere.
         def _enter_main_settings_for_rotary() -> bool:
             """Bring up main settings so the encoder can drive the new menus."""

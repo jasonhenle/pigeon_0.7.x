@@ -163,7 +163,7 @@ PY="${VENV_BIN}/python3"
 # Fast path: if core deps already import, skip network pip (avoids lock hangs when
 # another launcher/pip is already running — common “Pigeon not loading” on Mac).
 deps_ok=0
-if "$PY" -c "import cv2, PIL, numpy, pyatv, numbers_parser, fitz, serial" >/dev/null 2>&1; then
+if "$PY" -c "import cv2, PIL, numpy, pyatv, numbers_parser, fitz, serial, pytesseract" >/dev/null 2>&1; then
   deps_ok=1
 fi
 
