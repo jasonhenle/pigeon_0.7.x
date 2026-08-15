@@ -63,8 +63,13 @@ def apply_toggles_to_settings_state(state: Any) -> None:
     state.source_metadata_on = flags["metadata"]
     state.source_hdmi_on = flags["hdmi"]
     state.source_audio_on = flags["audio"]
-    # Keep legacy LED fields in sync so older render paths stay consistent.
-    state.pigeon_hdmi_ok = flags["hdmi"]
+    # HDMI LED follows the dongle, not the toggle.
+    try:
+        from pigeon.hdmi_ocr import hdmi_capture_available
+
+        state.pigeon_hdmi_ok = hdmi_capture_available()
+    except Exception:
+        pass
     state.pigeon_audio_ok = flags["audio"]
 
 
@@ -77,8 +82,47 @@ _IDENTITY_KEYS = (
     "episode_title",
 )
 
+# Extra poll fields that come from the same Apple TV / Roku metadata source.
+# Used when redacting View 4; live strip keeps play/pause and lets OCR refill title.
+_METADATA_DISPLAY_KEYS = _IDENTITY_KEYS + (
+    "media_type",
+    "prefer_pyatv_media",
+    "inferred_prefer",
+    "content_key",
+    "position",
+    "total_time",
+    "season",
+    "episode",
+    "season_number",
+    "episode_number",
+    "season_index",
+    "episode_index",
+    "app_name",
+    "app_id",
+    "app",
+    "bundle_identifier",
+    "app_identifier",
+    "bundle_id",
+)
+
 
 def strip_streaming_identity(metadata: dict[str, Any]) -> None:
-    """Drop Apple TV / Roku title fields when the metadata source is off."""
+    """Drop Apple TV / Roku title and position when the metadata source is off."""
     for key in _IDENTITY_KEYS:
         metadata[key] = ""
+    metadata["position"] = None
+    metadata["total_time"] = None
+
+
+def redact_disabled_source_fields(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Copy of ``metadata`` with disabled sources removed (View 4 / debug)."""
+    out = dict(metadata)
+    if not source_enabled("metadata"):
+        strip_streaming_identity(out)
+        for key in _METADATA_DISPLAY_KEYS:
+            out.pop(key, None)
+    if not source_enabled("hdmi"):
+        from pigeon.hdmi_ocr import clear_ocr_fields
+
+        clear_ocr_fields(out)
+    return out

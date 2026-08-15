@@ -902,6 +902,13 @@ class MainSettingsState:
             apply_toggles_to_settings_state(self)
         except Exception:
             pass
+        try:
+            from pigeon.hdmi_ocr import hdmi_capture_available, probe_hdmi_presence
+
+            self.pigeon_hdmi_ok = hdmi_capture_available()
+            probe_hdmi_presence(force=True)
+        except Exception:
+            pass
         ring = pigeon_focus_ring()
         # Land on COLOR (first selectable tile); BACK remains in the ring.
         if "color_button" in ring:
@@ -936,6 +943,13 @@ class MainSettingsState:
         ring = preferences_zone_focus_ring()
         # Land on zone1 — first editable target.
         self.preferences_focus_index = ring.index("zone1") if "zone1" in ring else 0
+        try:
+            from pigeon.hdmi_ocr import hdmi_capture_available, probe_hdmi_presence
+
+            self.pigeon_hdmi_ok = hdmi_capture_available()
+            probe_hdmi_presence(force=True)
+        except Exception:
+            pass
 
     def close_preferences(self) -> None:
         self.close_ui_color()
@@ -6190,6 +6204,14 @@ class MainSettingsWidget:
 
     def _main_state_sig(self) -> tuple[object, ...]:
         st = self._state
+        if st.show_pigeon_settings or st.show_preferences:
+            try:
+                from pigeon.hdmi_ocr import hdmi_capture_available, probe_hdmi_presence
+
+                st.pigeon_hdmi_ok = hdmi_capture_available()
+                probe_hdmi_presence()
+            except Exception:
+                pass
         th = st.theme
         kb = st.keyboard
         kb_main: tuple[object, ...] = ()
@@ -7854,8 +7876,10 @@ class MainSettingsWidget:
                 self.invalidate()
                 return "preferences_open"
             if focused == "general_button":
-                # Reserved — no destination yet.
-                return f"pigeon_activate:{focused}"
+                # WIDGETS — opens the now-playing zone widget editor.
+                st.open_preferences()
+                self.invalidate()
+                return "preferences_open"
             if focused in (
                 "wifi_button",
                 "metadata_button",

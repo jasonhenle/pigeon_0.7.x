@@ -1883,7 +1883,7 @@ def main() -> int:
                 except Exception:
                     cast_rows = []
                 st_ms.preferences_cast = tuple(
-                    (str(a or ""), str(c or "")) for a, c in cast_rows[:3]
+                    (str(a or ""), str(c or "")) for a, c in cast_rows[:9]
                 )
 
         def _settings_wheel_target_should_ignore(widget: tk.Misc) -> bool:
@@ -2158,6 +2158,17 @@ def main() -> int:
             "trt_next_fire_mono": None,
         }
 
+        def _has_playback_position() -> bool:
+            """True when zone5 can draw a real progress bar (not LIVE / empty)."""
+            try:
+                from pigeon.source_toggles import source_enabled
+
+                if not source_enabled("metadata"):
+                    return False
+            except Exception:
+                pass
+            return _playback_progress_fraction_for_bar() is not None
+
         def _metadata_is_netflix_app(metadata: dict[str, object] | None) -> bool:
             if not isinstance(metadata, dict):
                 return False
@@ -2172,9 +2183,19 @@ def main() -> int:
             return "netflix" in an or "netflix" in bid or "netflix" in bid2
 
         def _atv_metadata_is_content_idle(metadata: dict[str, object]) -> bool:
-            # Netflix often omits title/query; keep UI "active" while the app is foreground.
-            if _metadata_is_netflix_app(metadata):
-                return False
+            try:
+                from pigeon.display_confidence import content_should_stay_active
+                from pigeon.hdmi_ocr import hdmi_capture_available
+                from pigeon.source_toggles import source_enabled
+
+                if content_should_stay_active(
+                    metadata,
+                    hdmi_on=bool(source_enabled("hdmi")),
+                    hdmi_present=hdmi_capture_available(),
+                ):
+                    return False
+            except Exception:
+                pass
             ds = str(metadata.get("device_state") or "")
             if "Idle" in ds or "Stopped" in ds:
                 return True
@@ -2936,6 +2957,46 @@ def main() -> int:
                 return False
             return "Playing" in str(lm.get("device_state") or "")
 
+        def _tmdb_info_current_and_available() -> bool:
+            """True when live TMDb art/title matches the current show and is ready."""
+            if apple_tv_auto_state.get("tmdb_missing_art"):
+                return False
+            if apple_tv_auto_state.get("tmdb_fetch_in_flight"):
+                return False
+            if not str(active_tmdb_title_key or "").strip():
+                return False
+            md = apple_tv_auto_state.get("last_metadata")
+            query = ""
+            if isinstance(md, dict):
+                query = str(md.get("query") or md.get("ocr_title") or "").strip()
+            if not query:
+                query = str(apple_tv_auto_state.get("query") or "").strip()
+            if not query:
+                return False
+            try:
+                from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+                if is_degenerate_tmdb_query(query):
+                    return False
+            except Exception:
+                pass
+            prev = apple_tv_auto_state.get("tmdb_key")
+            if not prev:
+                return True
+            prefer = str(apple_tv_auto_state.get("prefer") or "auto")
+            new_id = _tmdb_spawn_identity(query, prefer)
+            if prev == new_id:
+                return True
+            if isinstance(prev, tuple) and len(prev) == 2:
+                try:
+                    from pigeon.tmdb_poster import equivalent_tmdb_search_queries
+
+                    if equivalent_tmdb_search_queries(str(prev[0]), new_id[0]):
+                        return True
+                except Exception:
+                    pass
+            return False
+
         def _clock_saver_active(now: float) -> bool:
             if clock_saver_composite_bgra is None:
                 return False
@@ -2944,6 +3005,9 @@ def main() -> int:
             # Do not require ``scene_enabled``: view ONE now-playing (circles) commonly
             # runs with the video scene off, and the saver must still arm there.
             _apply_position_stall_grace_to_clock_saver(now)
+            if _tmdb_info_current_and_available():
+                _boot_clock_saver_until_playback[0] = False
+                return False
             # Boot: if nothing is playing after splash, stay on the saver until playback
             # starts or a local control dismisses it.
             if _boot_clock_saver_until_playback[0]:
@@ -3037,6 +3101,8 @@ def main() -> int:
             if clock_saver_composite_bgra is None:
                 return False
             if _clock_startup_intro_opacity(now) is not None:
+                if _tmdb_info_current_and_available():
+                    return False
                 return True
             if dev_phase != DevPhase.OFF:
                 return False
@@ -3281,6 +3347,12 @@ def main() -> int:
             nonlocal skip_cache
             if view_circles_widget is None:
                 return
+            try:
+                from pigeon.hdmi_ocr import probe_hdmi_presence
+
+                probe_hdmi_presence()
+            except Exception:
+                pass
             prog = _playback_progress_fraction_for_bar()
             progress = float(prog) if prog is not None else 0.0
             remaining_text = ""
@@ -3354,6 +3426,7 @@ def main() -> int:
                     artist_title=artist_t,
                     paused=circles_paused,
                     service_name=circles_service,
+                    has_position=_has_playback_position(),
                 ):
                     changed = True
             else:
@@ -3390,6 +3463,7 @@ def main() -> int:
                     artist_title="",
                     paused=circles_paused,
                     service_name=circles_service,
+                    has_position=_has_playback_position(),
                 ):
                     changed = True
             if changed:
@@ -5036,67 +5110,247 @@ def main() -> int:
             tw, th = display_dims[0], display_dims[1]
             return _present_frame_to_display(canvas, tw, th)
 
+        def _view_four_text_is_placeholder(s: str) -> bool:
+            """Hide rows whose text is empty or ends with ``-`` / ``NONE`` (any case)."""
+            t = str(s).strip()
+            if not t:
+                return True
+            while t and t[-1] in {"'", '"'}:
+                t = t[:-1].rstrip()
+            if not t:
+                return True
+            up = t.upper()
+            return (
+                up.endswith("NONE")
+                or up.endswith("UNKNOWN")
+                or t.endswith("-")
+                or t.endswith("—")
+            )
+
+        def _view_four_has_value(v: object) -> bool:
+            """True when a View 4 debug field should be listed (skip None / empty / NONE / -)."""
+            if v is None:
+                return False
+            if isinstance(v, bool):
+                return True
+            if isinstance(v, str):
+                return not _view_four_text_is_placeholder(v)
+            if isinstance(v, (list, tuple, set)):
+                return any(_view_four_has_value(x) for x in v)
+            if isinstance(v, dict):
+                return any(_view_four_has_value(x) for x in v.values())
+            if isinstance(v, float) and v != v:
+                return False
+            return True
+
+        def _view_four_display_metadata() -> dict[str, object] | None:
+            """last_metadata with disabled METADATA / HDMI sources removed."""
+            md = apple_tv_auto_state.get("last_metadata")
+            if not isinstance(md, dict):
+                return None
+            try:
+                from pigeon.source_toggles import redact_disabled_source_fields
+
+                redacted = redact_disabled_source_fields(md)
+            except Exception:
+                redacted = dict(md)
+            return redacted if isinstance(redacted, dict) else dict(md)
+
+        def _view_four_metadata_source_on() -> bool:
+            try:
+                from pigeon.source_toggles import source_enabled
+
+                return bool(source_enabled("metadata"))
+            except Exception:
+                return True
+
+        def _collect_view_four_ocr_lines(md: dict[str, object]) -> list[str]:
+            """HDMI OCR clues for View 4 Title Info; omit empty fields."""
+            pairs = (
+                ("ocr_status", "ocr.status"),
+                ("ocr_title", "ocr.title"),
+                ("ocr_lines", "ocr.lines"),
+                ("ocr_season", "ocr.season"),
+                ("ocr_episode", "ocr.episode"),
+                ("ocr_year", "ocr.year"),
+                ("ocr_runtime_min", "ocr.runtime_min"),
+                ("ocr_extras", "ocr.extras"),
+                ("ocr_reason", "ocr.trigger"),
+                ("ocr_agrees", "ocr.agrees"),
+                ("ocr_at", "ocr.at"),
+                ("ocr_capture", "ocr.capture"),
+            )
+            out: list[str] = []
+            for key, label in pairs:
+                val: object = md.get(key)
+                if key == "ocr_reason":
+                    mapped = {
+                        "no_metadata": "no_pyatv_title",
+                        "watch": "stay_alert",
+                        "pause": "pause",
+                        "confirm": "confirm",
+                    }
+                    val = mapped.get(str(val or ""), val)
+                if key == "ocr_at" and val is not None:
+                    try:
+                        val = time.strftime(
+                            "%Y-%m-%d %H:%M:%S", time.localtime(float(val))
+                        )
+                    except (TypeError, ValueError, OSError, OverflowError):
+                        pass
+                if not _view_four_has_value(val):
+                    continue
+                if isinstance(val, (list, tuple)):
+                    items: list[str] = []
+                    junk_fn = None
+                    if key == "ocr_lines":
+                        try:
+                            from pigeon.ocr_clues import looks_like_ocr_junk
+
+                            junk_fn = looks_like_ocr_junk
+                        except Exception:
+                            junk_fn = None
+                    for item in val:
+                        text = str(item).strip()
+                        if not _view_four_has_value(text):
+                            continue
+                        if junk_fn is not None and junk_fn(text):
+                            continue
+                        items.append(text)
+                    if not items:
+                        continue
+                    shown = items[:6]
+                    extra_n = len(items) - len(shown)
+                    text = ", ".join(shown)
+                    if extra_n > 0:
+                        text = f"{text} +{extra_n} more"
+                    out.append(f"{label}={text}")
+                    continue
+                out.append(f"{label}={val!r}")
+            return out
+
         def _collect_view_four_raw_title_lines() -> list[tuple[str, bool]]:
-            """View 4: streaming label, rawTitle fields, last TMDb fetch (if any)."""
+            """View 4: streaming label, rawTitle + OCR fields that have a value, last TMDb fetch."""
             rows: list[tuple[str, bool]] = []
 
             def _ln(s: str) -> None:
+                if _view_four_text_is_placeholder(s):
+                    return
                 rows.append((s, False))
 
-            lm_rt = apple_tv_auto_state.get("last_metadata")
-            _svc_label = str(streaming_badge_state.get("label") or "").strip()
-            _svc_app = str(lm_rt.get("app_name") or "").strip() if isinstance(lm_rt, dict) else ""
-            if _svc_label:
-                _ln(f"streamingService={_svc_label!r}")
-            elif _svc_app:
-                _ln(f"streamingService={_svc_app!r}")
+            lm_rt = _view_four_display_metadata()
+            metadata_on = _view_four_metadata_source_on()
+            if isinstance(lm_rt, dict):
+                for ocr_line in _collect_view_four_ocr_lines(lm_rt):
+                    _ln(ocr_line)
+                try:
+                    from pigeon.display_confidence import scores_for_metadata
+                    from pigeon.hdmi_ocr import hdmi_capture_available
+                    from pigeon.source_toggles import source_enabled
+
+                    clk = apple_tv_playback_clock
+                    advancing = bool(clk.get("has_sync") and clk.get("playing"))
+                    tmdb_ok = bool(_tmdb_info_current_and_available())
+
+                    scores = scores_for_metadata(
+                        lm_rt,
+                        position_advancing=advancing,
+                        tmdb_matches=tmdb_ok,
+                        hdmi_on=bool(source_enabled("hdmi")),
+                        hdmi_present=hdmi_capture_available(),
+                    )
+                    src = str(lm_rt.get("identity_source") or "").strip()
+                    if src:
+                        _ln(f"identity.source={src!r}")
+                    pending = str(lm_rt.get("ocr_pending_title") or "").strip()
+                    if pending:
+                        _ln(f"identity.pending={pending!r}")
+                        hits = lm_rt.get("ocr_pending_hits")
+                        if hits is not None:
+                            _ln(f"identity.pending_hits={hits!r}")
+                    for key in ("identity", "position", "art", "app"):
+                        val = scores.get(key)
+                        if val is None:
+                            continue
+                        _ln(f"confidence.{key}={float(val):.2f}")
+                    if scores.get("ocr_charge"):
+                        _ln("ocr.charge=true")
+                except Exception:
+                    pass
+            if metadata_on:
+                _svc_label = str(streaming_badge_state.get("label") or "").strip()
+                _svc_app = (
+                    str(lm_rt.get("app_name") or "").strip()
+                    if isinstance(lm_rt, dict)
+                    else ""
+                )
+                if _svc_label:
+                    _ln(f"streamingService={_svc_label!r}")
+                elif _svc_app:
+                    _ln(f"streamingService={_svc_app!r}")
 
             if not isinstance(lm_rt, dict):
                 _ln("rawTitle: (no last_metadata dict)")
             else:
-                try:
-                    from pigeon.raw_title import raw_title_from_metadata_dict
+                if metadata_on:
+                    try:
+                        from pigeon.raw_title import raw_title_from_metadata_dict
 
-                    rt = raw_title_from_metadata_dict(lm_rt)
-                    _ln(f"rawTitle.source={rt.source!r}")
-                    for fn in (
-                        "raw_title",
-                        "raw_series_name",
-                        "raw_artist",
-                        "raw_album",
-                        "raw_episode_title",
-                        "raw_query",
-                        "season_index",
-                        "episode_index",
-                        "layer_series_title",
-                        "layer_series_number",
-                        "layer_episode_number",
-                        "layer_episode_title",
-                        "media_type_label",
-                    ):
-                        _ln(f"rawTitle.{fn}={getattr(rt, fn)!r}")
-                    if rt.notes:
-                        _ln(f"rawTitle.notes={rt.notes!r}")
-                    sig = rt.training_signature_normalized()
-                    if sig:
-                        _ln(f"rawTitle.training_signature_normalized={sig!r}")
-                except Exception as e:
-                    _ln(f"rawTitle err={e}")
-            if isinstance(lm_rt, dict):
+                        rt = raw_title_from_metadata_dict(lm_rt)
+                        if _view_four_has_value(rt.source):
+                            _ln(f"rawTitle.source={rt.source!r}")
+                        for fn in (
+                            "raw_title",
+                            "raw_series_name",
+                            "raw_artist",
+                            "raw_album",
+                            "raw_episode_title",
+                            "raw_query",
+                            "season_index",
+                            "episode_index",
+                            "layer_series_title",
+                            "layer_series_number",
+                            "layer_episode_number",
+                            "layer_episode_title",
+                            "media_type_label",
+                        ):
+                            val = getattr(rt, fn, None)
+                            if _view_four_has_value(val):
+                                _ln(f"rawTitle.{fn}={val!r}")
+                        if rt.notes:
+                            _ln(f"rawTitle.notes={rt.notes!r}")
+                        sig = rt.training_signature_normalized()
+                        if sig:
+                            _ln(f"rawTitle.training_signature_normalized={sig!r}")
+                    except Exception as e:
+                        _ln(f"rawTitle err={e}")
+            if metadata_on and isinstance(lm_rt, dict):
                 _pp = str(lm_rt.get("prefer_pyatv_media") or "").strip().lower()
                 if _pp in ("auto", "tv", "movie"):
                     _ln(f"metadata.prefer_pyatv_media={_pp!r}")
                 _ip = str(lm_rt.get("inferred_prefer") or "").strip().lower()
                 if _ip in ("auto", "tv", "movie"):
                     _ln(f"metadata.prefer_tmdb={_ip!r}")
+            ocr_guess = (
+                str(lm_rt.get("ocr_title") or "").strip().casefold()
+                if isinstance(lm_rt, dict)
+                else ""
+            )
+
+            def _tmdb_row_allowed(q: object) -> bool:
+                if metadata_on:
+                    return True
+                t = str(q or "").strip().casefold()
+                return bool(t and ocr_guess and (t == ocr_guess or t in ocr_guess or ocr_guess in t))
+
             _ti = apple_tv_auto_state.get("last_tmdb_fetch_input")
             _tr = apple_tv_auto_state.get("last_tmdb_fetch_refined")
             _tp = apple_tv_auto_state.get("last_tmdb_fetch_prefer")
-            if _ti is not None and str(_ti).strip():
+            if _ti is not None and str(_ti).strip() and _tmdb_row_allowed(_ti):
                 _ln(f"tmdbFetch.input_query={str(_ti)!r}")
-            if _tr is not None and str(_tr).strip():
+            if _tr is not None and str(_tr).strip() and _tmdb_row_allowed(_tr):
                 _ln(f"tmdbFetch.refined_query={str(_tr)!r}")
-            if _tp is not None and str(_tp).strip():
+            if _tp is not None and str(_tp).strip() and (_tmdb_row_allowed(_ti) or _tmdb_row_allowed(_tr)):
                 _ln(f"tmdbFetch.prefer={str(_tp)!r}")
             rx_dbg = receiver_telnet_debug_holder[0] if receiver_telnet_debug_holder else {}
             if isinstance(rx_dbg, dict) and rx_dbg:
@@ -5117,6 +5371,8 @@ def main() -> int:
             rows: list[tuple[str, bool]] = []
 
             def _ln(s: str, bold: bool = False) -> None:
+                if _view_four_text_is_placeholder(s):
+                    return
                 rows.append((s, bold))
 
             def _md_pick(md: dict[str, object], *keys: str) -> str | None:
@@ -5149,7 +5405,7 @@ def main() -> int:
                 g = gcd(wi, hi)
                 return f"{wi // g}:{hi // g}"
 
-            md = apple_tv_auto_state.get("last_metadata")
+            md = _view_four_display_metadata()
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
             rx_blob = f"{inc} {cfg}".strip()
@@ -5167,84 +5423,71 @@ def main() -> int:
                 "resolution",
                 "VideoResolution",
             )
+
+            def _ln_val(label: str, value: str | None) -> None:
+                if _view_four_has_value(value):
+                    _ln(f"{label}: {value}", False)
+
             if res_one:
-                _ln(f"Video source resolution: {res_one}", False)
+                _ln_val("Video source resolution", res_one)
             elif w and h:
-                _ln(f"Video source resolution: {w}×{h}", False)
+                _ln_val("Video source resolution", f"{w}×{h}")
             elif w or h:
-                _ln(f"Video source resolution: {w or '?'}×{h or '?'}", False)
-            else:
-                _ln("Video source resolution: —", False)
+                _ln_val("Video source resolution", f"{w or '?'}×{h or '?'}")
 
             ar = _md_pick(md, "aspect_ratio", "video_aspect_ratio", "AspectRatio", "DisplayAspectRatio")
             if not ar:
                 ar = _aspect_from_wh(w, h)
-            _ln(f"Video source aspect ratio: {ar or '—'}", False)
-
-            _ln(
-                "Video source color space: "
-                + (
-                    _md_pick(
-                        md,
-                        "color_space",
-                        "color_primaries",
-                        "VideoColorSpace",
-                        "ColorSpace",
-                        "colour_space",
-                    )
-                    or "—"
+            _ln_val("Video source aspect ratio", ar)
+            _ln_val(
+                "Video source color space",
+                _md_pick(
+                    md,
+                    "color_space",
+                    "color_primaries",
+                    "VideoColorSpace",
+                    "ColorSpace",
+                    "colour_space",
                 ),
-                False,
             )
-            _ln(
-                "Video source frame rate: "
-                + (
-                    _md_pick(
-                        md,
-                        "frame_rate",
-                        "framerate",
-                        "fps",
-                        "video_frame_rate",
-                        "FrameRate",
-                    )
-                    or "—"
+            _ln_val(
+                "Video source frame rate",
+                _md_pick(
+                    md,
+                    "frame_rate",
+                    "framerate",
+                    "fps",
+                    "video_frame_rate",
+                    "FrameRate",
                 ),
-                False,
             )
-            _ln(
-                "Video source bit depth: "
-                + (_md_pick(md, "video_bit_depth", "bit_depth", "bits_per_pixel", "VideoBitDepth") or "—"),
-                False,
+            _ln_val(
+                "Video source bit depth",
+                _md_pick(md, "video_bit_depth", "bit_depth", "bits_per_pixel", "VideoBitDepth"),
             )
-            _ln(
-                "Video source codec: "
-                + (_md_pick(md, "video_codec", "codec", "video_format", "VideoCodec", "format") or "—"),
-                False,
+            _ln_val(
+                "Video source codec",
+                _md_pick(md, "video_codec", "codec", "video_format", "VideoCodec", "format"),
             )
-            _ln(
-                "Video source wrapper: "
-                + (_md_pick(md, "container", "wrapper", "mime_type", "MimeType", "file_extension") or "—"),
-                False,
+            _ln_val(
+                "Video source wrapper",
+                _md_pick(md, "container", "wrapper", "mime_type", "MimeType", "file_extension"),
             )
-            _ln(
-                "Audio source wrapper: "
-                + (_md_pick(md, "audio_container", "audio_wrapper", "AudioContainer") or "—"),
-                False,
+            _ln_val(
+                "Audio source wrapper",
+                _md_pick(md, "audio_container", "audio_wrapper", "AudioContainer"),
             )
-            _ln(
-                "Audio source bit depth: "
-                + (_md_pick(md, "audio_bit_depth", "source_audio_bit_depth", "AudioBitDepth") or "—"),
-                False,
+            _ln_val(
+                "Audio source bit depth",
+                _md_pick(md, "audio_bit_depth", "source_audio_bit_depth", "AudioBitDepth"),
             )
-            _ln(
-                "Audio source bit rate: "
-                + (_md_pick(md, "audio_bit_rate", "source_audio_bit_rate", "AudioBitrate", "audio_bitrate") or "—"),
-                False,
+            _ln_val(
+                "Audio source bit rate",
+                _md_pick(md, "audio_bit_rate", "source_audio_bit_rate", "AudioBitrate", "audio_bitrate"),
             )
-            _ln(
-                "Audio source codec: "
-                + (_md_pick(md, "audio_codec", "audio_format", "AudioCodec", "AudioFormat") or "—"),
-                False,
+            _ln_val(
+                "Audio source codec",
+                _md_pick(md, "audio_codec", "audio_format", "AudioCodec", "AudioFormat"),
             )
 
             def _lpcm_vs_bitstream(blob: str, md2: dict[str, object]) -> str:
@@ -5273,15 +5516,18 @@ def main() -> int:
                     return "Unknown (see receiver lines below)"
                 return "—"
 
-            _ln(f"Audio source LPCM vs bitstream: {_lpcm_vs_bitstream(rx_blob, md)}", False)
+            _lpcm = _lpcm_vs_bitstream(rx_blob, md)
+            if _view_four_has_value(_lpcm):
+                _ln(f"Audio source LPCM vs bitstream: {_lpcm}", False)
 
             proto = _md_pick(md, "protocol")
             if proto:
                 _ln(f"Poll protocol: {proto}", False)
-            appn = str(md.get("app_name") or "").strip()
-            appid = str(md.get("app_id") or "").strip()
-            if appn or appid:
-                _ln(f"App: {appn!r} id={appid!r}", False)
+            if _view_four_metadata_source_on():
+                appn = str(md.get("app_name") or "").strip()
+                appid = str(md.get("app_id") or "").strip()
+                if appn or appid:
+                    _ln(f"App: {appn!r} id={appid!r}", False)
 
             if inc:
                 _ln(f"Receiver incoming (raw): {inc}", False)
@@ -5305,10 +5551,28 @@ def main() -> int:
                 "app_id",
                 "volume_percent",
                 "prefer",
+                "ocr_title",
+                "ocr_lines",
+                "ocr_season",
+                "ocr_episode",
+                "ocr_year",
+                "ocr_runtime_min",
+                "ocr_extras",
+                "ocr_reason",
+                "ocr_agrees",
+                "ocr_at",
+                "ocr_status",
+                "ocr_capture",
             }
-            extra_keys = [k for k in sorted(md.keys()) if k not in known and not str(k).startswith("_")]
-            if extra_keys:
-                _ln("— other metadata keys —", False)
+            extra_keys = [
+                k
+                for k in sorted(md.keys())
+                if k not in known
+                and not str(k).startswith("_")
+                and _view_four_has_value(md.get(k))
+            ]
+            if extra_keys and _view_four_metadata_source_on():
+                _ln("other metadata keys", False)
                 for k in extra_keys[:36]:
                     try:
                         vv = md[k]
@@ -5326,9 +5590,11 @@ def main() -> int:
             rows: list[tuple[str, bool]] = []
 
             def _ln(s: str, bold: bool = False) -> None:
+                if _view_four_text_is_placeholder(s):
+                    return
                 rows.append((s, bold))
 
-            md_raw = apple_tv_auto_state.get("last_metadata")
+            md_raw = _view_four_display_metadata()
             md = md_raw if isinstance(md_raw, dict) else None
             inc = str(receiver_overlay_state.get("incoming") or "").strip()
             cfg = str(receiver_overlay_state.get("config") or "").strip()
@@ -5346,36 +5612,24 @@ def main() -> int:
                     return "Atmos (hint)"
                 return "—"
 
-            fmt = "—"
+            fmt_parts: list[str] = []
             if md:
                 mt = str(md.get("media_type") or "").strip()
                 if mt:
-                    fmt = mt
+                    fmt_parts.append(mt)
             if inc or cfg:
-                fmt = f"{fmt} | receiver: {(inc + ' ' + cfg).strip()[:120]}"
+                fmt_parts.append(f"receiver: {(inc + ' ' + cfg).strip()[:120]}")
+            if fmt_parts:
+                _ln(f"Audio playback format: {' | '.join(fmt_parts)}", False)
 
-            _ln(f"Audio playback format: {fmt}", False)
-
-            _ln(
-                "Audio playback bit rate: "
-                + (
-                    str(md.get("audio_playback_bit_rate")).strip()
-                    if md and md.get("audio_playback_bit_rate") is not None
-                    else "—"
-                ),
-                False,
-            )
-            _ln(
-                "Audio playback bit depth: "
-                + (
-                    str(md.get("audio_playback_bit_depth")).strip()
-                    if md and md.get("audio_playback_bit_depth") is not None
-                    else "—"
-                ),
-                False,
-            )
-            _ln(f"Audio playback available channels: {_channels_guess(blob)}", False)
-            _ln(f"Audio playback active channels: {_channels_guess(blob)}", False)
+            if md and md.get("audio_playback_bit_rate") is not None:
+                _ln(f"Audio playback bit rate: {str(md.get('audio_playback_bit_rate')).strip()}", False)
+            if md and md.get("audio_playback_bit_depth") is not None:
+                _ln(f"Audio playback bit depth: {str(md.get('audio_playback_bit_depth')).strip()}", False)
+            ch = _channels_guess(blob)
+            if _view_four_has_value(ch):
+                _ln(f"Audio playback available channels: {ch}", False)
+                _ln(f"Audio playback active channels: {ch}", False)
 
             if vol_line:
                 scale = "dB scale" if ("db" in vol_line.lower() or re.search(r"-?\d+\.\d+\s*d", vol_line.lower())) else (
@@ -5389,14 +5643,11 @@ def main() -> int:
                     _ln(f"Audio playback volume: {vp}", False)
                     _ln("Audio playback volume scale: Apple TV 0–100", False)
                 except (TypeError, ValueError):
-                    _ln("Audio playback volume: —", False)
-                    _ln("Audio playback volume scale: —", False)
-            else:
-                _ln("Audio playback volume: —", False)
-                _ln("Audio playback volume scale: —", False)
+                    pass
 
             dw, dh = int(display_dims[0]), int(display_dims[1])
-            _ln(f"Video playback resolution (window): {dw}×{dh}", False)
+            if dw > 0 and dh > 0:
+                _ln(f"Video playback resolution (window): {dw}×{dh}", False)
 
             cap_fps = None
             try:
@@ -5408,21 +5659,19 @@ def main() -> int:
                 cap_fps = None
             if cap_fps is not None:
                 _ln(f"Video capture nominal FPS: {cap_fps:.3g}", False)
-            else:
-                _ln("Video capture nominal FPS: —", False)
 
             ui_hz = 1000.0 / float(frame_interval_ms) if frame_interval_ms else 0.0
-            _ln(f"UI composite cadence: ~{ui_hz:.2f} Hz (frame_interval_ms={frame_interval_ms})", False)
+            if ui_hz > 0:
+                _ln(f"UI composite cadence: ~{ui_hz:.2f} Hz (frame_interval_ms={frame_interval_ms})", False)
 
-            _ln("Video playback color: —", False)
-            _ln("Video playback video bit depth: —", False)
-            _ln("Video playback bit depth: —", False)
             if md:
                 ds = str(md.get("device_state") or "").strip()
                 pos = md.get("position")
                 tot = md.get("total_time")
-                _ln(f"Device state: {ds or '—'}", False)
-                _ln(f"Position / duration: {pos!r} / {tot!r}", False)
+                if ds:
+                    _ln(f"Device state: {ds}", False)
+                if _view_four_has_value(pos) or _view_four_has_value(tot):
+                    _ln(f"Position / duration: {pos!r} / {tot!r}", False)
             return rows
 
         def _blend_view_four_debug(bgr: np.ndarray) -> np.ndarray:
@@ -5444,89 +5693,91 @@ def main() -> int:
             else:
                 raw_debug_lines = [(f"View 4 — {sub_titles[sub_i]}", True)] + _collect_view_four_playback_lines()
             _any_bold = bool(raw_debug_lines)
+            rows = [
+                (str(raw).strip(), is_bold)
+                for raw, is_bold in raw_debug_lines
+                if str(raw).strip()
+            ]
+            if not rows:
+                rows = [("(no rawTitle lines yet)", False)]
 
             def _vf_thick(sc: float) -> int:
                 return 2 if sc >= 0.48 else 1
 
-            def _vf_wrap_paragraph(text: str, sc: float, thick: int) -> list[str]:
-                t = str(text).replace("\n", " ").strip()
-                if not t:
-                    return []
-                words = t.split()
-                lines_out: list[str] = []
-                cur: str | None = None
-                for w in words:
-                    trial = w if cur is None else f"{cur} {w}"
-                    tw, _ = cv2.getTextSize(trial, font, sc, thick)[0]
-                    if tw <= max_w:
-                        cur = trial
-                    else:
-                        if cur is not None:
-                            lines_out.append(cur)
-                            cur = None
-                        tw_w, _ = cv2.getTextSize(w, font, sc, thick)[0]
-                        if tw_w <= max_w:
-                            cur = w
-                        else:
-                            chunk = ""
-                            for ch in w:
-                                t2 = chunk + ch
-                                tw2, _ = cv2.getTextSize(t2, font, sc, thick)[0]
-                                if tw2 <= max_w:
-                                    chunk = t2
-                                else:
-                                    if chunk:
-                                        lines_out.append(chunk)
-                                    chunk = ch
-                            cur = chunk if chunk else None
-                if cur is not None:
-                    lines_out.append(cur)
-                return lines_out
-
-            def _vf_layout(sc: float) -> tuple[list[tuple[str, bool]], int, int, int]:
+            def _vf_metrics(sc: float) -> tuple[int, int, int, int]:
                 thick_n = _vf_thick(sc)
-                thick_layout = max(thick_n + 2, 3) if _any_bold else thick_n
-                phys: list[tuple[str, bool]] = []
-                for raw, is_bold in raw_debug_lines:
-                    twrap = thick_layout if is_bold else thick_n
-                    for pl in _vf_wrap_paragraph(raw, sc, twrap):
-                        phys.append((pl, is_bold))
-                if not phys:
-                    phys = [("(no rawTitle lines yet)", False)]
-                (_rw, th), bl = cv2.getTextSize("|pqgy", font, sc, thick_layout)
-                line_step = max(th + 6, int(th + bl * 0.5) + 4)
-                return phys, line_step, th, bl
+                thick_b = max(thick_n + 2, 3) if _any_bold else thick_n
+                (_rw, th), bl = cv2.getTextSize("|pqgy", font, sc, thick_b)
+                line_step = max(th + 8, int(th + bl * 0.5) + 6)
+                return thick_n, thick_b, th, line_step
 
-            def _vf_fits(sc: float) -> bool:
-                phys, line_step, th, bl = _vf_layout(sc)
-                n = len(phys)
-                need = my_top + th + (n - 1) * line_step + bl + my_bot
-                return need <= H
+            def _vf_row_width(text: str, sc: float, is_bold: bool) -> int:
+                thick_n, thick_b, _th, _ls = _vf_metrics(sc)
+                return int(cv2.getTextSize(text, font, sc, thick_b if is_bold else thick_n)[0][0])
 
-            lo, hi = 0.52, min(2.15, max(0.75, H / 64.0))
-            if not _vf_fits(lo):
-                sc = lo
-                while sc > 0.28 and not _vf_fits(sc):
-                    sc -= 0.04
-            else:
-                for _ in range(32):
-                    mid = (lo + hi) * 0.5
-                    if _vf_fits(mid):
-                        lo = mid
-                    else:
-                        hi = mid
-                sc = lo
+            def _vf_wrap(text: str, sc: float, is_bold: bool) -> list[str]:
+                """Keep short fields on one line; wrap only when the row is too wide."""
+                if _vf_row_width(text, sc, is_bold) <= max_w:
+                    return [text]
+                parts = text.split(" ")
+                lines: list[str] = []
+                cur = ""
 
-            thick_n = _vf_thick(sc)
-            phys, line_step, th, _ = _vf_layout(sc)
+                def _flush() -> None:
+                    nonlocal cur
+                    if cur:
+                        lines.append(cur)
+                        cur = ""
+
+                def _append_token(token: str) -> None:
+                    nonlocal cur
+                    trial = token if not cur else f"{cur} {token}"
+                    if _vf_row_width(trial, sc, is_bold) <= max_w:
+                        cur = trial
+                        return
+                    _flush()
+                    if _vf_row_width(token, sc, is_bold) <= max_w:
+                        cur = token
+                        return
+                    chunk = ""
+                    for ch in token:
+                        next_chunk = chunk + ch
+                        if chunk and _vf_row_width(next_chunk, sc, is_bold) > max_w:
+                            lines.append(chunk)
+                            chunk = ch
+                        else:
+                            chunk = next_chunk
+                    cur = chunk
+
+                for part in parts:
+                    _append_token(part)
+                _flush()
+                return lines or [text]
+
+            # One readable size for every View 4 row. Long values wrap.
+            sc = 0.64
+            if H < 800:
+                sc = 0.56
+            elif H > 1400:
+                sc = 0.72
+
+            thick_n, _thick_b, th, line_step = _vf_metrics(sc)
             y = my_top + th
             color_dim = (220, 228, 238)
             color_bold = (255, 255, 255)
-            for row, is_bold in phys:
+            y_limit = H - my_bot
+            for raw, is_bold in rows:
                 t_draw = max(thick_n + 2, 3) if is_bold else thick_n
                 c = color_bold if is_bold else color_dim
-                cv2.putText(out, row, (mx, y), font, sc, c, t_draw, cv2.LINE_AA)
-                y += line_step
+                for piece in raw.splitlines() or [raw]:
+                    piece = piece.rstrip()
+                    if not piece:
+                        continue
+                    for row in _vf_wrap(piece, sc, is_bold):
+                        if y > y_limit:
+                            return out
+                        cv2.putText(out, row, (mx, y), font, sc, c, t_draw, cv2.LINE_AA)
+                        y += line_step
             return out
 
         def _compose_shown_frame(frame_bgr: np.ndarray | None, brightness: float) -> np.ndarray:
@@ -6533,6 +6784,8 @@ def main() -> int:
                         pass
                 return
             prefer_n = str(prefer or "auto").strip() or "auto"
+            if not _tmdb_spawn_identity_changed(q_in, prefer_n):
+                return
             if apple_tv_auto_state.get("tmdb_fetch_in_flight"):
                 # Keep spinner up; run this title as soon as the worker ends.
                 apple_tv_auto_state["pending_tmdb"] = {"query": q_in, "prefer": prefer_n}
@@ -9959,6 +10212,8 @@ def main() -> int:
             else:
                 query = pyatv_q
             if not query:
+                query = str(metadata.get("ocr_title") or "").strip()
+            if not query:
                 return None
             prefer = _tmdb_pref_from_metadata(metadata)
             title = str(metadata.get("title") or "").strip()
@@ -10644,7 +10899,15 @@ def main() -> int:
 
         def _on_hdmi_ocr_clues(clues) -> None:
             """Merge HDMI OCR into last_metadata. Spawn TMDb only when clues add a title."""
-            from pigeon.hdmi_ocr import apply_clues_to_metadata
+            root.after(0, lambda c=clues: _apply_hdmi_ocr_clues(c))
+
+        def _apply_hdmi_ocr_clues(clues) -> None:
+            from pigeon.display_confidence import ocr_is_in_charge
+            from pigeon.hdmi_ocr import (
+                apply_clues_to_metadata,
+                apply_ocr_title_as_identity,
+                hdmi_capture_available,
+            )
             from pigeon.tmdb_poster import is_degenerate_tmdb_query
 
             apple_tv_auto_state["ocr_in_flight"] = False
@@ -10653,26 +10916,45 @@ def main() -> int:
 
                 if not source_enabled("hdmi"):
                     return
+                metadata_on = source_enabled("metadata")
+                hdmi_on = True
             except Exception:
-                pass
+                metadata_on = True
+                hdmi_on = True
             md = apple_tv_auto_state.get("last_metadata")
             if not isinstance(md, dict):
                 md = {}
+            raw_query = str(md.get("query") or "").strip()
+            had_query = bool(raw_query) and not is_degenerate_tmdb_query(raw_query)
             merged = apply_clues_to_metadata(md, clues)
+            identity_changed = apply_ocr_title_as_identity(merged)
+            merged["content_key"] = _content_key_from_metadata(merged)
             apple_tv_auto_state["last_metadata"] = merged
             agrees = bool(merged.get("ocr_agrees"))
             guess = str(clues.title_guess or "").strip()
             reason = str(clues.reason or "")
-            if reason == "pause" and (agrees or not guess):
+            ocr_owns = ocr_is_in_charge(
+                merged,
+                hdmi_on=hdmi_on,
+                hdmi_present=hdmi_capture_available(),
+            ) or (not metadata_on)
+            # Player still owns a real title: OCR watches, but does not replace art.
+            if metadata_on and had_query and not ocr_owns and reason in ("pause", "confirm", "watch") and agrees:
+                try:
+                    _sync_now_playing_screen_state()
+                except Exception:
+                    pass
                 return
-            if reason == "confirm" and agrees:
-                return
-            if guess and not is_degenerate_tmdb_query(guess):
-                if reason == "no_metadata" or (reason == "pause" and not agrees):
-                    spawn_tmdb_poster_fetch(guess, prefer="auto", force=True)
+            if guess and not is_degenerate_tmdb_query(guess) and ocr_owns and identity_changed:
+                apple_tv_auto_state["query"] = guess
+                spawn_tmdb_poster_fetch(guess, prefer="auto", force=True)
+            try:
+                _sync_now_playing_screen_state()
+            except Exception:
+                pass
 
         def _schedule_hdmi_ocr_from_poll(metadata: dict[str, object]) -> None:
-            """OCR when pyatv is empty, once per new title, or on pause (max 1/min)."""
+            """OCR when the player has no title, playback is stalled, or on pause."""
             try:
                 from pigeon.source_toggles import source_enabled
 
@@ -10926,20 +11208,74 @@ def main() -> int:
                             _bump_clock_saver_significant_device_from_metadata(merged_md)
                         md_for_spawn = merged_md
                         prev_ocr_md = apple_tv_auto_state.get("last_metadata")
-                        prev_ocr_key = (
-                            str(prev_ocr_md.get("content_key") or "")
-                            if isinstance(prev_ocr_md, dict)
-                            else ""
-                        )
                         try:
+                            from pigeon.display_confidence import (
+                                PYATV_IDENTITY,
+                                mark_identity,
+                                mark_stale,
+                                player_metadata_adequate,
+                            )
                             from pigeon.source_toggles import source_enabled
-                            from pigeon.hdmi_ocr import clear_ocr_fields, copy_ocr_fields
+                            from pigeon.hdmi_ocr import (
+                                apply_ocr_title_as_identity,
+                                clear_ocr_fields,
+                                copy_ocr_fields,
+                                ocr_session_anchor,
+                            )
 
+                            prev_app = ""
+                            if isinstance(prev_ocr_md, dict):
+                                prev_app = str(
+                                    prev_ocr_md.get("app_id")
+                                    or prev_ocr_md.get("app_name")
+                                    or ""
+                                ).strip().casefold()
+                            new_app = str(
+                                merged_md.get("app_id") or merged_md.get("app_name") or ""
+                            ).strip().casefold()
+                            app_changed = bool(prev_app and new_app and prev_app != new_app)
+                            player_ok = player_metadata_adequate(merged_md)
+                            if player_ok:
+                                mark_identity(
+                                    merged_md, source="pyatv", confidence=PYATV_IDENTITY
+                                )
                             if source_enabled("hdmi"):
-                                if prev_ocr_key and prev_ocr_key == str(
-                                    merged_md.get("content_key") or ""
-                                ):
+                                # content_key includes the OCR-filled query, so it
+                                # changes on the next poll and used to drop clues.
+                                # Keep HDMI results until the Apple TV app / real
+                                # pyatv title changes (Disney+ is not a title).
+                                session = ocr_session_anchor(merged_md)
+                                prev_session = (
+                                    str(prev_ocr_md.get("ocr_session") or "")
+                                    if isinstance(prev_ocr_md, dict)
+                                    else ""
+                                )
+                                if app_changed and not player_ok:
+                                    # Metadata-rich app → no-meta app: drop stale
+                                    # identity/art; OCR will refill what it can.
+                                    mark_stale(merged_md)
+                                    _clear_displayed_tmdb_art_for_content_change()
+                                elif not prev_session or prev_session == session:
                                     copy_ocr_fields(prev_ocr_md, merged_md)
+                                    if (
+                                        not player_ok
+                                        and isinstance(prev_ocr_md, dict)
+                                        and str(prev_ocr_md.get("identity_source") or "")
+                                        == "ocr"
+                                    ):
+                                        mark_identity(
+                                            merged_md,
+                                            source="ocr",
+                                            confidence=float(
+                                                prev_ocr_md.get("identity_confidence")
+                                                or 0.65
+                                            ),
+                                        )
+                                merged_md["ocr_session"] = session
+                                if apply_ocr_title_as_identity(merged_md):
+                                    merged_md["content_key"] = _content_key_from_metadata(
+                                        merged_md
+                                    )
                             else:
                                 clear_ocr_fields(merged_md)
                         except Exception:
@@ -12113,7 +12449,7 @@ def main() -> int:
         for _pigeon_act in ("<Button-1>", "<B1-Motion>", "<KeyPress>"):
             root.bind_all(_pigeon_act, _bump_pigeon_user_activity, add="+")
 
-        # Serial rotary (Arduino UNO Q / non-HID): CW/CCW/PUSH → navigate / activate.
+        # Serial rotary (non-HID USB): CW/CCW/PUSH → navigate / activate.
         # Prefer a direct callback so settings work even when Tk focus is elsewhere.
         def _enter_main_settings_for_rotary() -> bool:
             """Bring up main settings so the encoder can drive the new menus."""

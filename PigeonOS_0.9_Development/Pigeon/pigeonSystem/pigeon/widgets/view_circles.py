@@ -383,6 +383,7 @@ class ViewCirclesState:
     missing_art: bool = False
     paused: bool = False
     service_name: str = ""
+    has_position: bool = False
 
 
 def _normalize_content_mode(mode: str | None) -> str:
@@ -702,6 +703,50 @@ def _default_zone_widget_assignments() -> tuple[str, str, str, str, str]:
         return ("clock", "poster", "volume", "cast_info", "now_playing")
 
 
+_CAST_NAMES_PER_ZONE = 3
+
+
+def _effective_zone_widgets(
+    *,
+    has_position: bool,
+    cast_count: int = 0,
+    zone_widgets: tuple[str, str, str, str, str] | None = None,
+) -> tuple[str, str, str, str, str]:
+    """Show only widgets we have content for; never two copies of the same one.
+
+    Status bar needs a live position. Without it, that zone can show the next
+    unused cast names. A second cast strip is kept only when more names remain.
+    Any other repeated widget is dropped so the layout does not duplicate.
+    """
+    zones = list(zone_widgets or _default_zone_widget_assignments())
+    if len(zones) < 5:
+        return _default_zone_widget_assignments()
+    named = max(0, int(cast_count))
+    if not has_position:
+        for i, widget in enumerate(zones):
+            if widget == "now_playing":
+                zones[i] = "cast_info"
+    seen: set[str] = set()
+    cast_used = 0
+    for i, widget in enumerate(zones):
+        key = str(widget or "").strip()
+        if not key:
+            zones[i] = ""
+            continue
+        if key == "cast_info":
+            remaining = named - cast_used
+            if remaining <= 0:
+                zones[i] = ""
+                continue
+            cast_used += _CAST_NAMES_PER_ZONE
+            continue
+        if key in seen:
+            zones[i] = ""
+            continue
+        seen.add(key)
+    return (zones[0], zones[1], zones[2], zones[3], zones[4])
+
+
 def _zone_widget_visibility(
     *,
     content_mode: str,
@@ -795,8 +840,8 @@ def _ordinal_day(day: int) -> str:
 
 
 def _format_zone0_date(now: datetime) -> str:
-    """``Friday, Aug 14`` — clock-widget date line (abbreviated month)."""
-    return f"{now.strftime('%A')}, {now.strftime('%b')} {int(now.day)}"
+    """``SAT, AUG 15`` — abbreviated weekday and month, all caps."""
+    return f"{now.strftime('%a')}, {now.strftime('%b')} {int(now.day)}".upper()
 
 
 def _clock_date_baseline_y(cy: float) -> float:
@@ -1196,6 +1241,7 @@ def apply_view_circles_svg_state(
     now: datetime | None = None,
     active_clock_zone: int = 1,
     theme: _NpTheme | None = None,
+    zone_widgets: tuple[str, str, str, str, str] | None = None,
 ) -> None:
     mode = _normalize_content_mode(content_mode)
     th = theme or np_theme_from_settings()
@@ -1203,7 +1249,9 @@ def apply_view_circles_svg_state(
     _remove_element_by_id(root, "background")
     _remove_element_by_id(root, "background-2")
 
-    vis = _zone_widget_visibility(content_mode=mode, paused=paused)
+    vis = _zone_widget_visibility(
+        content_mode=mode, paused=paused, zone_widgets=zone_widgets
+    )
     _apply_zone_visibility(root, vis)
 
     # Play triangle: match chrome grey used for icons / unplayed bar (#939393).
@@ -1289,6 +1337,7 @@ def render_view_circles_svg_base_bgra(
     paused: bool = False,
     now: datetime | None = None,
     theme: _NpTheme | None = None,
+    zone_widgets: tuple[str, str, str, str, str] | None = None,
 ) -> np.ndarray:
     mode = _normalize_content_mode(content_mode)
     th = theme or np_theme_from_settings()
@@ -1306,6 +1355,7 @@ def render_view_circles_svg_base_bgra(
         now=now,
         active_clock_zone=1,
         theme=th,
+        zone_widgets=zone_widgets,
     )
     bgra = _rasterize_svg_tree(root)
     bgra = _decanvas_white_bgra(bgra)
@@ -1897,9 +1947,17 @@ def _zone_circle_halo_patch(
     return _ui_halo_from_mask(mask, sigma=sigma, opacity=opacity)
 
 
-def _draw_zone_halos(bgra: np.ndarray, *, content_mode: str, paused: bool = False) -> None:
+def _draw_zone_halos(
+    bgra: np.ndarray,
+    *,
+    content_mode: str,
+    paused: bool = False,
+    zone_widgets: tuple[str, str, str, str, str] | None = None,
+) -> None:
     """Gentle white glow behind active clock widgets (not volume)."""
-    vis = _zone_widget_visibility(content_mode=content_mode, paused=paused)
+    vis = _zone_widget_visibility(
+        content_mode=content_mode, paused=paused, zone_widgets=zone_widgets
+    )
     circle = _zone_circle_halo_patch()
     ch, cw = circle.shape[:2]
     seen: set[tuple[float, float]] = set()
@@ -2253,6 +2311,7 @@ class ViewCirclesWidget:
         artist_title: str | None = None,
         paused: bool | None = None,
         service_name: str | None = None,
+        has_position: bool | None = None,
     ) -> bool:
         changed = False
         if self.set_now_playing_chrome_visible(has_now_playing):
@@ -2303,6 +2362,11 @@ class ViewCirclesWidget:
             if want_paused != self._state.paused:
                 self._state.paused = want_paused
                 changed = True
+        if has_position is not None:
+            want_pos = bool(has_position)
+            if want_pos != self._state.has_position:
+                self._state.has_position = want_pos
+                changed = True
         if service_name is not None:
             svc = str(service_name or "").strip()
             if svc != self._state.service_name:
@@ -2334,9 +2398,7 @@ class ViewCirclesWidget:
                 self._state.artist_title = ""
                 changed = True
             if cast is not None:
-                norm = [(str(a or ""), str(c or "")) for a, c in cast[:3]]
-                while len(norm) < 3:
-                    norm.append(("", ""))
+                norm = [(str(a or ""), str(c or "")) for a, c in cast[:9]]
                 if norm != self._state.cast:
                     self._state.cast = norm
                     changed = True
@@ -2407,9 +2469,16 @@ class ViewCirclesWidget:
         self._search_frames = build_search_spinner_frames(self._assets_dir)
         return self._search_frames
 
+    def _assignments(self) -> tuple[str, str, str, str, str]:
+        named = sum(1 for actor, _role in (self._state.cast or []) if str(actor or "").strip())
+        return _effective_zone_widgets(
+            has_position=bool(self._state.has_position),
+            cast_count=named,
+        )
+
     def _cache_sig(self) -> tuple[object, ...]:
         st = self._state
-        cast_sig = tuple(st.cast[:3])
+        cast_sig = tuple(st.cast[:9])
         poster_id = id(self._poster_bgra) if self._poster_bgra is not None else None
         now = self._clock_now_for_display()
         search_frame = (
@@ -2419,11 +2488,12 @@ class ViewCirclesWidget:
         if h12 == 0:
             h12 = 12
         vol_disp = self._volume_fraction_for_display()
-        zone_widgets = _default_zone_widget_assignments()
+        zone_widgets = self._assignments()
         theme_key = np_theme_from_settings().cache_key
         return (
-            29,  # cache schema — settings theme colors
+            31,  # cache schema — zone adapt / no duplicate widgets
             st.content_mode,
+            st.has_position,
             round(st.progress, 6),
             st.elapsed_text,
             st.remaining_text,
@@ -2461,7 +2531,7 @@ class ViewCirclesWidget:
         h12 = now.hour % 12
         if h12 == 0:
             h12 = 12
-        zone_widgets = _default_zone_widget_assignments()
+        zone_widgets = self._assignments()
         # Reuse rasters across hours/days — ticks only depend on h/m/s + mode/pause.
         return (
             str(path),
@@ -2488,6 +2558,7 @@ class ViewCirclesWidget:
                 paused=bool(self._state.paused),
                 now=now,
                 theme=np_theme_from_settings(),
+                zone_widgets=self._assignments(),
             )
         except Exception:
             base = _fallback_base_bgra()
@@ -2551,7 +2622,7 @@ class ViewCirclesWidget:
         )
 
     def _draw_poster(self, out: np.ndarray) -> None:
-        assignments = _default_zone_widget_assignments()
+        assignments = self._assignments()
         poster_zone = _zone_for_widget(assignments, "poster")
         if poster_zone is None:
             return
@@ -2724,7 +2795,7 @@ class ViewCirclesWidget:
             _paste_centered(out, paused_patch, _PAUSED_TEXT_CX, _PAUSED_TEXT_CY)
 
     def _draw_clock_digital(self, out: np.ndarray, now: datetime) -> None:
-        assignments = _default_zone_widget_assignments()
+        assignments = self._assignments()
         clock_zone = _zone_for_widget(assignments, "clock")
         if clock_zone is None:
             return
@@ -2782,7 +2853,7 @@ class ViewCirclesWidget:
 
     def _draw_audio_level_labels(self, out: np.ndarray) -> None:
         """Paint sl/l/c/r/sr under each meter column in Digital-7."""
-        assignments = _default_zone_widget_assignments()
+        assignments = self._assignments()
         for zone, cols in _AUDIO_LEVEL_LABELS_BY_ZONE.items():
             if assignments[zone - 1] != "audio_levels":
                 continue
@@ -2872,7 +2943,12 @@ class ViewCirclesWidget:
         _paste_centered(out, time_p, cx, cy)
 
     def _draw_cast(self, out: np.ndarray, *, cast_zone: int = 4) -> None:
-        cast = list(self._state.cast or [])
+        assignments = self._assignments()
+        start = 0
+        for z in range(1, int(cast_zone)):
+            if assignments[z - 1] == "cast_info":
+                start += 3
+        cast = list(self._state.cast or [])[start : start + 3]
         while len(cast) < 3:
             cast.append(("", ""))
         cols = _CAST_COLS_Z5 if int(cast_zone) == 5 else _CAST_COLS_Z4
@@ -2943,7 +3019,7 @@ class ViewCirclesWidget:
     def _render_static_bgra(self) -> np.ndarray:
         now = self._clock_now_for_display()
         out = _fallback_base_bgra()
-        assignments = _default_zone_widget_assignments()
+        assignments = self._assignments()
         theme = np_theme_from_settings()
         if (
             self._poster_bgra is not None
@@ -2958,6 +3034,7 @@ class ViewCirclesWidget:
             out,
             content_mode=self.content_mode,
             paused=bool(self._state.paused),
+            zone_widgets=assignments,
         )
         # Poster/album under SVG chrome so play button + accents sit on top.
         self._draw_poster(out)
@@ -2990,10 +3067,10 @@ class ViewCirclesWidget:
             if _zone_for_widget(assignments, "poster") is not None:
                 self._draw_track_titles(out)
         else:
-            # Zone4 (and zone5 expanded cast) get the live cast redraw.
-            cast_zone = _zone_for_widget(assignments, "cast_info")
-            if cast_zone in (4, 5):
-                self._draw_cast(out, cast_zone=int(cast_zone))
+            # Zone4 and zone5 both draw when assigned cast (zone5 fallback included).
+            for z in (4, 5):
+                if assignments[z - 1] == "cast_info":
+                    self._draw_cast(out, cast_zone=z)
         return out
 
     def bgra_frame(self) -> np.ndarray | None:
