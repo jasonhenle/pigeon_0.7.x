@@ -1573,64 +1573,69 @@ def _draw_preferences_cast_bgra(
     assignments = _normalize_zone_widgets(
         getattr(state, "preferences_zone_widgets", None) or DEFAULT_ZONE_WIDGETS
     )
-    cast_zone = next(
-        (i + 1 for i, w in enumerate(assignments) if w == "cast_info"),
-        None,
-    )
-    if cast_zone not in (4, 5):
-        return
-    if getattr(state, "preferences_live_content", False):
-        cast = list(getattr(state, "preferences_cast", None) or ())
+    live = bool(getattr(state, "preferences_live_content", False))
+    if live and getattr(state, "preferences_np_progress", None) is None and assignments[4] == "now_playing":
+        assignments = (assignments[0], assignments[1], assignments[2], assignments[3], "cast_info")
+    if live:
+        all_cast = list(getattr(state, "preferences_cast", None) or ())
     else:
-        cast = list(_PREFS_DEMO_CAST)
-    while len(cast) < 3:
-        cast.append(("", ""))
-    cols = _PREFS_CAST_COLS_Z5 if cast_zone == 5 else _PREFS_CAST_COLS_Z4
+        all_cast = list(_PREFS_DEMO_CAST)
     font_actor = vc._load_digital7(18)
     font_char = vc._load_digital7(14)
-    for i, (center_x, actor_y, char_y) in enumerate(cols):
-        actor, character = cast[i] if i < len(cast) else ("", "")
-        actor = str(actor or "").strip()
-        character = str(character or "").strip()
-        max_w = int(
-            max(
-                60,
-                min(
-                    float(_PREFS_CAST_COL_W),
-                    2.0 * min(float(center_x), float(DESIGN_W) - float(center_x)) - 8.0,
-                ),
+    start = 0
+    for cast_zone in (1, 2, 3, 4, 5):
+        if assignments[cast_zone - 1] != "cast_info":
+            continue
+        slice_cast = list(all_cast[start : start + 3])
+        start += 3
+        if cast_zone not in (4, 5):
+            continue
+        while len(slice_cast) < 3:
+            slice_cast.append(("", ""))
+        cols = _PREFS_CAST_COLS_Z5 if cast_zone == 5 else _PREFS_CAST_COLS_Z4
+        for i, (center_x, actor_y, char_y) in enumerate(cols):
+            actor, character = slice_cast[i] if i < len(slice_cast) else ("", "")
+            actor = str(actor or "").strip()
+            character = str(character or "").strip()
+            max_w = int(
+                max(
+                    60,
+                    min(
+                        float(_PREFS_CAST_COL_W),
+                        2.0 * min(float(center_x), float(DESIGN_W) - float(center_x)) - 8.0,
+                    ),
+                )
             )
-        )
-        if actor:
-            label = actor.upper()
-            ap, _aw, _ah = vc._text_patch_digital7(
-                label,
-                size_px=18,
-                max_width_px=max_w,
-            )
-            vc._paste_baseline_centered(
-                bgra,
-                ap,
-                center_x,
-                float(actor_y),
-                bbox_top=vc._font_bbox_top(label, font_actor),
-                pad=2,
-            )
-        if character:
-            label = character.upper()
-            cp, _cw, _ch = vc._text_patch_digital7(
-                label,
-                size_px=14,
-                max_width_px=max_w,
-            )
-            vc._paste_baseline_centered(
-                bgra,
-                cp,
-                center_x,
-                float(char_y),
-                bbox_top=vc._font_bbox_top(label, font_char),
-                pad=2,
-            )
+            if actor:
+                label = actor.upper()
+                ap, _aw, _ah = vc._text_patch_digital7(
+                    label,
+                    size_px=18,
+                    max_width_px=max_w,
+                )
+                vc._paste_baseline_centered(
+                    bgra,
+                    ap,
+                    center_x,
+                    float(actor_y),
+                    bbox_top=vc._font_bbox_top(label, font_actor),
+                    pad=2,
+                )
+            if character:
+                label = character.upper()
+                cp, _cw, _ch = vc._text_patch_digital7(
+                    label,
+                    size_px=14,
+                    max_width_px=max_w,
+                )
+                vc._paste_baseline_centered(
+                    bgra,
+                    cp,
+                    center_x,
+                    float(char_y),
+                    bbox_top=vc._font_bbox_top(label, font_char),
+                    pad=2,
+                )
 
 
 def _draw_preferences_status_bar_bgra(
@@ -1643,6 +1648,8 @@ def _draw_preferences_status_bar_bgra(
     assignments = _normalize_zone_widgets(
         getattr(state, "preferences_zone_widgets", None) or DEFAULT_ZONE_WIDGETS
     )
+    if getattr(state, "preferences_np_progress", None) is None:
+        return
     if assignments[4] != "now_playing":
         return
     if not getattr(state, "preferences_live_content", False):
@@ -2038,6 +2045,9 @@ def apply_preferences_svg_state(root: ET.Element, state: MainSettingsState) -> N
     assignments = _normalize_zone_widgets(
         getattr(state, "preferences_zone_widgets", None) or DEFAULT_ZONE_WIDGETS
     )
+    live = bool(getattr(state, "preferences_live_content", False))
+    if live and getattr(state, "preferences_np_progress", None) is None and assignments[4] == "now_playing":
+        assignments = (assignments[0], assignments[1], assignments[2], assignments[3], "cast_info")
     focused = str(getattr(state, "preferences_focused_id", "") or "")
 
     # Zone preview layers follow current assignments (live while browsing widgets).

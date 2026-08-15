@@ -1883,7 +1883,7 @@ def main() -> int:
                 except Exception:
                     cast_rows = []
                 st_ms.preferences_cast = tuple(
-                    (str(a or ""), str(c or "")) for a, c in cast_rows[:3]
+                    (str(a or ""), str(c or "")) for a, c in cast_rows[:9]
                 )
 
         def _settings_wheel_target_should_ignore(widget: tk.Misc) -> bool:
@@ -2157,6 +2157,17 @@ def main() -> int:
             "display_played_sec": None,
             "trt_next_fire_mono": None,
         }
+
+        def _has_playback_position() -> bool:
+            """True when zone5 can draw a real progress bar (not LIVE / empty)."""
+            try:
+                from pigeon.source_toggles import source_enabled
+
+                if not source_enabled("metadata"):
+                    return False
+            except Exception:
+                pass
+            return _playback_progress_fraction_for_bar() is not None
 
         def _metadata_is_netflix_app(metadata: dict[str, object] | None) -> bool:
             if not isinstance(metadata, dict):
@@ -2936,6 +2947,46 @@ def main() -> int:
                 return False
             return "Playing" in str(lm.get("device_state") or "")
 
+        def _tmdb_info_current_and_available() -> bool:
+            """True when live TMDb art/title matches the current show and is ready."""
+            if apple_tv_auto_state.get("tmdb_missing_art"):
+                return False
+            if apple_tv_auto_state.get("tmdb_fetch_in_flight"):
+                return False
+            if not str(active_tmdb_title_key or "").strip():
+                return False
+            md = apple_tv_auto_state.get("last_metadata")
+            query = ""
+            if isinstance(md, dict):
+                query = str(md.get("query") or md.get("ocr_title") or "").strip()
+            if not query:
+                query = str(apple_tv_auto_state.get("query") or "").strip()
+            if not query:
+                return False
+            try:
+                from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+                if is_degenerate_tmdb_query(query):
+                    return False
+            except Exception:
+                pass
+            prev = apple_tv_auto_state.get("tmdb_key")
+            if not prev:
+                return True
+            prefer = str(apple_tv_auto_state.get("prefer") or "auto")
+            new_id = _tmdb_spawn_identity(query, prefer)
+            if prev == new_id:
+                return True
+            if isinstance(prev, tuple) and len(prev) == 2:
+                try:
+                    from pigeon.tmdb_poster import equivalent_tmdb_search_queries
+
+                    if equivalent_tmdb_search_queries(str(prev[0]), new_id[0]):
+                        return True
+                except Exception:
+                    pass
+            return False
+
         def _clock_saver_active(now: float) -> bool:
             if clock_saver_composite_bgra is None:
                 return False
@@ -2944,6 +2995,9 @@ def main() -> int:
             # Do not require ``scene_enabled``: view ONE now-playing (circles) commonly
             # runs with the video scene off, and the saver must still arm there.
             _apply_position_stall_grace_to_clock_saver(now)
+            if _tmdb_info_current_and_available():
+                _boot_clock_saver_until_playback[0] = False
+                return False
             # Boot: if nothing is playing after splash, stay on the saver until playback
             # starts or a local control dismisses it.
             if _boot_clock_saver_until_playback[0]:
@@ -3037,6 +3091,8 @@ def main() -> int:
             if clock_saver_composite_bgra is None:
                 return False
             if _clock_startup_intro_opacity(now) is not None:
+                if _tmdb_info_current_and_available():
+                    return False
                 return True
             if dev_phase != DevPhase.OFF:
                 return False
@@ -3354,6 +3410,7 @@ def main() -> int:
                     artist_title=artist_t,
                     paused=circles_paused,
                     service_name=circles_service,
+                    has_position=_has_playback_position(),
                 ):
                     changed = True
             else:
@@ -3390,6 +3447,7 @@ def main() -> int:
                     artist_title="",
                     paused=circles_paused,
                     service_name=circles_service,
+                    has_position=_has_playback_position(),
                 ):
                     changed = True
             if changed:
@@ -5144,8 +5202,12 @@ def main() -> int:
                         items.append(text)
                     if not items:
                         continue
-                    out.append(f"{label}:")
-                    out.extend(f"  {item}" for item in items)
+                    shown = items[:6]
+                    extra_n = len(items) - len(shown)
+                    text = ", ".join(shown)
+                    if extra_n > 0:
+                        text = f"{text} +{extra_n} more"
+                    out.append(f"{label}={text}")
                     continue
                 out.append(f"{label}={val!r}")
             return out
@@ -5161,6 +5223,9 @@ def main() -> int:
 
             lm_rt = _view_four_display_metadata()
             metadata_on = _view_four_metadata_source_on()
+            if isinstance(lm_rt, dict):
+                for ocr_line in _collect_view_four_ocr_lines(lm_rt):
+                    _ln(ocr_line)
             if metadata_on:
                 _svc_label = str(streaming_badge_state.get("label") or "").strip()
                 _svc_app = (
@@ -5208,8 +5273,6 @@ def main() -> int:
                             _ln(f"rawTitle.training_signature_normalized={sig!r}")
                     except Exception as e:
                         _ln(f"rawTitle err={e}")
-                for ocr_line in _collect_view_four_ocr_lines(lm_rt):
-                    _ln(ocr_line)
             if metadata_on and isinstance(lm_rt, dict):
                 _pp = str(lm_rt.get("prefer_pyatv_media") or "").strip().lower()
                 if _pp in ("auto", "tv", "movie"):
@@ -5640,13 +5703,12 @@ def main() -> int:
                 _flush()
                 return lines or [text]
 
-            # One readable size for every View 4 row. Do not shrink the page
-            # to force a long OCR list onto a single line.
-            sc = 0.44
+            # One readable size for every View 4 row. Long values wrap.
+            sc = 0.64
             if H < 800:
-                sc = 0.38
+                sc = 0.56
             elif H > 1400:
-                sc = 0.48
+                sc = 0.72
 
             thick_n, _thick_b, th, line_step = _vf_metrics(sc)
             y = my_top + th
@@ -6671,6 +6733,8 @@ def main() -> int:
                         pass
                 return
             prefer_n = str(prefer or "auto").strip() or "auto"
+            if not _tmdb_spawn_identity_changed(q_in, prefer_n):
+                return
             if apple_tv_auto_state.get("tmdb_fetch_in_flight"):
                 # Keep spinner up; run this title as soon as the worker ends.
                 apple_tv_auto_state["pending_tmdb"] = {"query": q_in, "prefer": prefer_n}

@@ -103,9 +103,18 @@ def clues_from_lines(lines: list[str], reason: str = "") -> OcrClues:
             and not looks_like_ocr_junk(line)
         )
     ][:8]
-    extra0 = clues.extras[0] if clues.extras else ""
-    if clues.title_guess and extra0 and extra0.casefold() not in clues.title_guess.casefold():
-        clues.title_guess = f"{clues.title_guess} {extra0}"
+    parts: list[str] = []
+    if clues.title_guess:
+        parts.append(clues.title_guess)
+    for extra in clues.extras:
+        if not _is_title_row(extra):
+            continue
+        blob = " ".join(parts).casefold()
+        if extra.casefold() in blob:
+            continue
+        parts.append(extra)
+    if parts:
+        clues.title_guess = " ".join(parts)
     return clues
 
 
@@ -176,6 +185,14 @@ def _is_chrome(line: str) -> bool:
     if any(w in low for w in ("remaining", "ultrahd", "hdr10", "dolbyatmos")):
         return True
     return False
+
+
+def _is_title_row(line: str) -> bool:
+    """True for a short stacked title row, not year / runtime / genre leftovers."""
+    if _YEAR.search(line) or _RUNTIME.search(line) or "," in line:
+        return False
+    words = line.split()
+    return 6 <= len(line) <= 48 and 1 <= len(words) <= 6
 
 
 def _looks_like_synopsis(line: str) -> bool:

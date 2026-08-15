@@ -2110,7 +2110,7 @@ def _character_from_cast_entry(entry: dict) -> str:
     return str(entry.get("character") or "").strip()
 
 
-def fetch_top_cast(kind: MediaKind, media_id: int, *, limit: int = 3) -> list[tuple[str, str]]:
+def fetch_top_cast(kind: MediaKind, media_id: int, *, limit: int = 9) -> list[tuple[str, str]]:
     """
     Top billed cast as ``(actor_name, character_name)``.
 
@@ -2172,7 +2172,7 @@ def cache_tmdb_cast_for_title(title_key_s: str, cast: list[tuple[str, str]]) -> 
     tk = str(title_key_s or "").strip()
     if not tk:
         return
-    rows = [(str(a or ""), str(c or "")) for a, c in cast[:3]]
+    rows = [(str(a or ""), str(c or "")) for a, c in cast[:9]]
     _CAST_CACHE[tk] = rows
     cleaned, _year = split_query_and_year(tk)
     cleaned = (cleaned or "").strip()
@@ -2512,9 +2512,9 @@ def apply_tmdb_movie_query(
     tk = title_key(display_title)
     parts: list[str] = [display_title]
 
-    # --- Cast (top 3) for view_circles ---
+    # --- Cast (enough for two 3-up strips: zone4 + zone5) ---
     try:
-        cast = fetch_top_cast(kind, int(item["id"]), limit=3)
+        cast = fetch_top_cast(kind, int(item["id"]), limit=9)
         cache_tmdb_cast_for_title(tk, cast)
         if cast:
             parts.append(f"cast: {len(cast)}")
