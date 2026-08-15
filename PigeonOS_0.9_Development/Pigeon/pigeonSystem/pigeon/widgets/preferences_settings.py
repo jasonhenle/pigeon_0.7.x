@@ -1243,28 +1243,10 @@ def _draw_preferences_clock_digitals_bgra(
     when = now or datetime.now()
     hhmm = vc._clock_hhmm(when)
     time_p, _, _ = vc._text_patch_digital7(hhmm, size_px=_PREFS_NP_TIME_SIZE_PX)
-    # Scale NP exterior radius into prefs design space for the date baseline.
-    clock_r = float(vc._CLOCK_EXTERIOR_ACCENT_R) * min(sx, sy)
+    # No curved date on the preferences page — live now-playing keeps it.
     for _zone, center in centers.items():
         cx = (center[0] - vb_x) * sx
         cy = (center[1] - vb_y) * sy
-        # Date: Sharp Sans Semibold, curved baseline matching the clock exterior.
-        label = vc._format_zone0_date(when)
-        if label:
-            font = vc._load_sharp_semibold(vc._CLOCK_DATE_SIZE_PX)
-            date_p, _, _ = vc._text_patch_font(
-                label,
-                font=font,
-                fill_rgb=(255, 255, 255),
-            )
-            vc._paste_label_above_circle_curved(
-                bgra,
-                date_p,
-                cx,
-                widget_cy=cy,
-                widget_r=clock_r,
-                gap_px=float(vc._WIDGET_LABEL_BASELINE_GAP_PX),
-            )
         vc._paste_centered(bgra, time_p, cx, cy)
 
 
@@ -1347,7 +1329,7 @@ def _draw_preferences_volume_bgra(
     centers: dict[int, tuple[float, float]],
     state: MainSettingsState | None = None,
 ) -> None:
-    """Zones 1–3 volume: UI-color level pie + centered dB; audio config above ring."""
+    """Zones 1–3 volume: UI-color level pie + centered dB (no config label here)."""
     from pigeon.widgets import view_circles as vc
 
     if not centers:
@@ -1360,7 +1342,7 @@ def _draw_preferences_volume_bgra(
     scale = min(sx, sy)
     outer_r = float(_PREFS_NP_RING_OUTER_R) * scale
     inner_r = float(_PREFS_NP_RING_INNER_R) * scale
-    vol, cfg = _preferences_volume_lines(st)
+    vol, _cfg = _preferences_volume_lines(st)
     np_th = vc.np_theme_from_settings()
 
     for _zone, center in centers.items():
@@ -1419,31 +1401,8 @@ def _draw_preferences_volume_bgra(
                 max_size_px=_PREFS_VOLUME_SIZE_PX,
             )
             vc._paste_centered(bgra, vol_p, cx, cy)
-        if cfg:
-            cfg_label = cfg.upper()
-            max_w = int(
-                max(
-                    80,
-                    min(
-                        240,
-                        2.0 * min(float(cx), float(DESIGN_W) - float(cx)) - 8.0,
-                    ),
-                )
-            )
-            cfg_p, _, _ = vc._text_patch_digital7(
-                cfg_label,
-                size_px=_PREFS_AUDIO_CFG_SIZE_PX,
-                max_width_px=max_w,
-                fill_rgb=(255, 255, 255),
-            )
-            vc._paste_label_above_circle_curved(
-                bgra,
-                cfg_p,
-                cx,
-                widget_cy=cy,
-                widget_r=outer_r,
-                gap_px=float(vc._WIDGET_LABEL_BASELINE_GAP_PX),
-            )
+        # No curved audio-config label on the preferences page — live
+        # now-playing keeps it.
 
 
 def _prefs_poster_patch_for_zone(

@@ -390,7 +390,7 @@ def _sync_info_label(root: ET.Element) -> None:
         _set_text_content(text, "NOW PLAY")
     widgets = _find_by_logical_id(root, "settings_pigeon_03_general_text")
     if widgets is not None:
-        _set_text_content(widgets, "WIDGETS")
+        _set_text_content(widgets, "PREFERENCES")
 
 
 def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
