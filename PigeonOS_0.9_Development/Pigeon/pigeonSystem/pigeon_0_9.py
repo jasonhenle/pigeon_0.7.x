@@ -5036,15 +5036,25 @@ def main() -> int:
             tw, th = display_dims[0], display_dims[1]
             return _present_frame_to_display(canvas, tw, th)
 
+        def _view_four_text_is_placeholder(s: str) -> bool:
+            """Hide rows whose text is empty or ends with ``-`` / ``NONE`` (any case)."""
+            t = str(s).strip()
+            if not t:
+                return True
+            while t and t[-1] in {"'", '"'}:
+                t = t[:-1].rstrip()
+            if not t:
+                return True
+            return t.upper().endswith("NONE") or t.endswith("-") or t.endswith("—")
+
         def _view_four_has_value(v: object) -> bool:
-            """True when a View 4 debug field should be listed (skip None / empty)."""
+            """True when a View 4 debug field should be listed (skip None / empty / NONE / -)."""
             if v is None:
                 return False
             if isinstance(v, bool):
                 return True
             if isinstance(v, str):
-                t = v.strip()
-                return bool(t) and t != "—"
+                return not _view_four_text_is_placeholder(v)
             if isinstance(v, (list, tuple, set)):
                 return any(_view_four_has_value(x) for x in v)
             if isinstance(v, dict):
@@ -5086,6 +5096,8 @@ def main() -> int:
             rows: list[tuple[str, bool]] = []
 
             def _ln(s: str) -> None:
+                if _view_four_text_is_placeholder(s):
+                    return
                 rows.append((s, False))
 
             lm_rt = apple_tv_auto_state.get("last_metadata")
@@ -5167,6 +5179,8 @@ def main() -> int:
             rows: list[tuple[str, bool]] = []
 
             def _ln(s: str, bold: bool = False) -> None:
+                if _view_four_text_is_placeholder(s):
+                    return
                 rows.append((s, bold))
 
             def _md_pick(md: dict[str, object], *keys: str) -> str | None:
@@ -5363,7 +5377,7 @@ def main() -> int:
                 and _view_four_has_value(md.get(k))
             ]
             if extra_keys:
-                _ln("— other metadata keys —", False)
+                _ln("other metadata keys", False)
                 for k in extra_keys[:36]:
                     try:
                         vv = md[k]
@@ -5381,6 +5395,8 @@ def main() -> int:
             rows: list[tuple[str, bool]] = []
 
             def _ln(s: str, bold: bool = False) -> None:
+                if _view_four_text_is_placeholder(s):
+                    return
                 rows.append((s, bold))
 
             md_raw = apple_tv_auto_state.get("last_metadata")
