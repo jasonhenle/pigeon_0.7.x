@@ -5036,8 +5036,53 @@ def main() -> int:
             tw, th = display_dims[0], display_dims[1]
             return _present_frame_to_display(canvas, tw, th)
 
+        def _view_four_has_value(v: object) -> bool:
+            """True when a View 4 debug field should be listed (skip None / empty)."""
+            if v is None:
+                return False
+            if isinstance(v, bool):
+                return True
+            if isinstance(v, str):
+                t = v.strip()
+                return bool(t) and t != "—"
+            if isinstance(v, (list, tuple, set)):
+                return any(_view_four_has_value(x) for x in v)
+            if isinstance(v, dict):
+                return any(_view_four_has_value(x) for x in v.values())
+            if isinstance(v, float) and v != v:
+                return False
+            return True
+
+        def _collect_view_four_ocr_lines(md: dict[str, object]) -> list[str]:
+            """HDMI OCR clues for View 4 Title Info; omit empty fields."""
+            pairs = (
+                ("ocr_title", "ocr.title"),
+                ("ocr_lines", "ocr.lines"),
+                ("ocr_season", "ocr.season"),
+                ("ocr_episode", "ocr.episode"),
+                ("ocr_year", "ocr.year"),
+                ("ocr_runtime_min", "ocr.runtime_min"),
+                ("ocr_extras", "ocr.extras"),
+                ("ocr_reason", "ocr.reason"),
+                ("ocr_agrees", "ocr.agrees"),
+                ("ocr_at", "ocr.at"),
+            )
+            out: list[str] = []
+            for key, label in pairs:
+                val: object = md.get(key)
+                if key == "ocr_at" and val is not None:
+                    try:
+                        val = time.strftime(
+                            "%Y-%m-%d %H:%M:%S", time.localtime(float(val))
+                        )
+                    except (TypeError, ValueError, OSError, OverflowError):
+                        pass
+                if _view_four_has_value(val):
+                    out.append(f"{label}={val!r}")
+            return out
+
         def _collect_view_four_raw_title_lines() -> list[tuple[str, bool]]:
-            """View 4: streaming label, rawTitle fields, last TMDb fetch (if any)."""
+            """View 4: streaming label, rawTitle + OCR fields that have a value, last TMDb fetch."""
             rows: list[tuple[str, bool]] = []
 
             def _ln(s: str) -> None:
@@ -5058,7 +5103,8 @@ def main() -> int:
                     from pigeon.raw_title import raw_title_from_metadata_dict
 
                     rt = raw_title_from_metadata_dict(lm_rt)
-                    _ln(f"rawTitle.source={rt.source!r}")
+                    if _view_four_has_value(rt.source):
+                        _ln(f"rawTitle.source={rt.source!r}")
                     for fn in (
                         "raw_title",
                         "raw_series_name",
@@ -5074,7 +5120,9 @@ def main() -> int:
                         "layer_episode_title",
                         "media_type_label",
                     ):
-                        _ln(f"rawTitle.{fn}={getattr(rt, fn)!r}")
+                        val = getattr(rt, fn, None)
+                        if _view_four_has_value(val):
+                            _ln(f"rawTitle.{fn}={val!r}")
                     if rt.notes:
                         _ln(f"rawTitle.notes={rt.notes!r}")
                     sig = rt.training_signature_normalized()
@@ -5082,6 +5130,8 @@ def main() -> int:
                         _ln(f"rawTitle.training_signature_normalized={sig!r}")
                 except Exception as e:
                     _ln(f"rawTitle err={e}")
+                for ocr_line in _collect_view_four_ocr_lines(lm_rt):
+                    _ln(ocr_line)
             if isinstance(lm_rt, dict):
                 _pp = str(lm_rt.get("prefer_pyatv_media") or "").strip().lower()
                 if _pp in ("auto", "tv", "movie"):
@@ -5167,84 +5217,71 @@ def main() -> int:
                 "resolution",
                 "VideoResolution",
             )
+
+            def _ln_val(label: str, value: str | None) -> None:
+                if _view_four_has_value(value):
+                    _ln(f"{label}: {value}", False)
+
             if res_one:
-                _ln(f"Video source resolution: {res_one}", False)
+                _ln_val("Video source resolution", res_one)
             elif w and h:
-                _ln(f"Video source resolution: {w}×{h}", False)
+                _ln_val("Video source resolution", f"{w}×{h}")
             elif w or h:
-                _ln(f"Video source resolution: {w or '?'}×{h or '?'}", False)
-            else:
-                _ln("Video source resolution: —", False)
+                _ln_val("Video source resolution", f"{w or '?'}×{h or '?'}")
 
             ar = _md_pick(md, "aspect_ratio", "video_aspect_ratio", "AspectRatio", "DisplayAspectRatio")
             if not ar:
                 ar = _aspect_from_wh(w, h)
-            _ln(f"Video source aspect ratio: {ar or '—'}", False)
-
-            _ln(
-                "Video source color space: "
-                + (
-                    _md_pick(
-                        md,
-                        "color_space",
-                        "color_primaries",
-                        "VideoColorSpace",
-                        "ColorSpace",
-                        "colour_space",
-                    )
-                    or "—"
+            _ln_val("Video source aspect ratio", ar)
+            _ln_val(
+                "Video source color space",
+                _md_pick(
+                    md,
+                    "color_space",
+                    "color_primaries",
+                    "VideoColorSpace",
+                    "ColorSpace",
+                    "colour_space",
                 ),
-                False,
             )
-            _ln(
-                "Video source frame rate: "
-                + (
-                    _md_pick(
-                        md,
-                        "frame_rate",
-                        "framerate",
-                        "fps",
-                        "video_frame_rate",
-                        "FrameRate",
-                    )
-                    or "—"
+            _ln_val(
+                "Video source frame rate",
+                _md_pick(
+                    md,
+                    "frame_rate",
+                    "framerate",
+                    "fps",
+                    "video_frame_rate",
+                    "FrameRate",
                 ),
-                False,
             )
-            _ln(
-                "Video source bit depth: "
-                + (_md_pick(md, "video_bit_depth", "bit_depth", "bits_per_pixel", "VideoBitDepth") or "—"),
-                False,
+            _ln_val(
+                "Video source bit depth",
+                _md_pick(md, "video_bit_depth", "bit_depth", "bits_per_pixel", "VideoBitDepth"),
             )
-            _ln(
-                "Video source codec: "
-                + (_md_pick(md, "video_codec", "codec", "video_format", "VideoCodec", "format") or "—"),
-                False,
+            _ln_val(
+                "Video source codec",
+                _md_pick(md, "video_codec", "codec", "video_format", "VideoCodec", "format"),
             )
-            _ln(
-                "Video source wrapper: "
-                + (_md_pick(md, "container", "wrapper", "mime_type", "MimeType", "file_extension") or "—"),
-                False,
+            _ln_val(
+                "Video source wrapper",
+                _md_pick(md, "container", "wrapper", "mime_type", "MimeType", "file_extension"),
             )
-            _ln(
-                "Audio source wrapper: "
-                + (_md_pick(md, "audio_container", "audio_wrapper", "AudioContainer") or "—"),
-                False,
+            _ln_val(
+                "Audio source wrapper",
+                _md_pick(md, "audio_container", "audio_wrapper", "AudioContainer"),
             )
-            _ln(
-                "Audio source bit depth: "
-                + (_md_pick(md, "audio_bit_depth", "source_audio_bit_depth", "AudioBitDepth") or "—"),
-                False,
+            _ln_val(
+                "Audio source bit depth",
+                _md_pick(md, "audio_bit_depth", "source_audio_bit_depth", "AudioBitDepth"),
             )
-            _ln(
-                "Audio source bit rate: "
-                + (_md_pick(md, "audio_bit_rate", "source_audio_bit_rate", "AudioBitrate", "audio_bitrate") or "—"),
-                False,
+            _ln_val(
+                "Audio source bit rate",
+                _md_pick(md, "audio_bit_rate", "source_audio_bit_rate", "AudioBitrate", "audio_bitrate"),
             )
-            _ln(
-                "Audio source codec: "
-                + (_md_pick(md, "audio_codec", "audio_format", "AudioCodec", "AudioFormat") or "—"),
-                False,
+            _ln_val(
+                "Audio source codec",
+                _md_pick(md, "audio_codec", "audio_format", "AudioCodec", "AudioFormat"),
             )
 
             def _lpcm_vs_bitstream(blob: str, md2: dict[str, object]) -> str:
@@ -5273,7 +5310,9 @@ def main() -> int:
                     return "Unknown (see receiver lines below)"
                 return "—"
 
-            _ln(f"Audio source LPCM vs bitstream: {_lpcm_vs_bitstream(rx_blob, md)}", False)
+            _lpcm = _lpcm_vs_bitstream(rx_blob, md)
+            if _view_four_has_value(_lpcm):
+                _ln(f"Audio source LPCM vs bitstream: {_lpcm}", False)
 
             proto = _md_pick(md, "protocol")
             if proto:
@@ -5305,8 +5344,24 @@ def main() -> int:
                 "app_id",
                 "volume_percent",
                 "prefer",
+                "ocr_title",
+                "ocr_lines",
+                "ocr_season",
+                "ocr_episode",
+                "ocr_year",
+                "ocr_runtime_min",
+                "ocr_extras",
+                "ocr_reason",
+                "ocr_agrees",
+                "ocr_at",
             }
-            extra_keys = [k for k in sorted(md.keys()) if k not in known and not str(k).startswith("_")]
+            extra_keys = [
+                k
+                for k in sorted(md.keys())
+                if k not in known
+                and not str(k).startswith("_")
+                and _view_four_has_value(md.get(k))
+            ]
             if extra_keys:
                 _ln("— other metadata keys —", False)
                 for k in extra_keys[:36]:
@@ -5346,36 +5401,24 @@ def main() -> int:
                     return "Atmos (hint)"
                 return "—"
 
-            fmt = "—"
+            fmt_parts: list[str] = []
             if md:
                 mt = str(md.get("media_type") or "").strip()
                 if mt:
-                    fmt = mt
+                    fmt_parts.append(mt)
             if inc or cfg:
-                fmt = f"{fmt} | receiver: {(inc + ' ' + cfg).strip()[:120]}"
+                fmt_parts.append(f"receiver: {(inc + ' ' + cfg).strip()[:120]}")
+            if fmt_parts:
+                _ln(f"Audio playback format: {' | '.join(fmt_parts)}", False)
 
-            _ln(f"Audio playback format: {fmt}", False)
-
-            _ln(
-                "Audio playback bit rate: "
-                + (
-                    str(md.get("audio_playback_bit_rate")).strip()
-                    if md and md.get("audio_playback_bit_rate") is not None
-                    else "—"
-                ),
-                False,
-            )
-            _ln(
-                "Audio playback bit depth: "
-                + (
-                    str(md.get("audio_playback_bit_depth")).strip()
-                    if md and md.get("audio_playback_bit_depth") is not None
-                    else "—"
-                ),
-                False,
-            )
-            _ln(f"Audio playback available channels: {_channels_guess(blob)}", False)
-            _ln(f"Audio playback active channels: {_channels_guess(blob)}", False)
+            if md and md.get("audio_playback_bit_rate") is not None:
+                _ln(f"Audio playback bit rate: {str(md.get('audio_playback_bit_rate')).strip()}", False)
+            if md and md.get("audio_playback_bit_depth") is not None:
+                _ln(f"Audio playback bit depth: {str(md.get('audio_playback_bit_depth')).strip()}", False)
+            ch = _channels_guess(blob)
+            if _view_four_has_value(ch):
+                _ln(f"Audio playback available channels: {ch}", False)
+                _ln(f"Audio playback active channels: {ch}", False)
 
             if vol_line:
                 scale = "dB scale" if ("db" in vol_line.lower() or re.search(r"-?\d+\.\d+\s*d", vol_line.lower())) else (
@@ -5389,14 +5432,11 @@ def main() -> int:
                     _ln(f"Audio playback volume: {vp}", False)
                     _ln("Audio playback volume scale: Apple TV 0–100", False)
                 except (TypeError, ValueError):
-                    _ln("Audio playback volume: —", False)
-                    _ln("Audio playback volume scale: —", False)
-            else:
-                _ln("Audio playback volume: —", False)
-                _ln("Audio playback volume scale: —", False)
+                    pass
 
             dw, dh = int(display_dims[0]), int(display_dims[1])
-            _ln(f"Video playback resolution (window): {dw}×{dh}", False)
+            if dw > 0 and dh > 0:
+                _ln(f"Video playback resolution (window): {dw}×{dh}", False)
 
             cap_fps = None
             try:
@@ -5408,21 +5448,19 @@ def main() -> int:
                 cap_fps = None
             if cap_fps is not None:
                 _ln(f"Video capture nominal FPS: {cap_fps:.3g}", False)
-            else:
-                _ln("Video capture nominal FPS: —", False)
 
             ui_hz = 1000.0 / float(frame_interval_ms) if frame_interval_ms else 0.0
-            _ln(f"UI composite cadence: ~{ui_hz:.2f} Hz (frame_interval_ms={frame_interval_ms})", False)
+            if ui_hz > 0:
+                _ln(f"UI composite cadence: ~{ui_hz:.2f} Hz (frame_interval_ms={frame_interval_ms})", False)
 
-            _ln("Video playback color: —", False)
-            _ln("Video playback video bit depth: —", False)
-            _ln("Video playback bit depth: —", False)
             if md:
                 ds = str(md.get("device_state") or "").strip()
                 pos = md.get("position")
                 tot = md.get("total_time")
-                _ln(f"Device state: {ds or '—'}", False)
-                _ln(f"Position / duration: {pos!r} / {tot!r}", False)
+                if ds:
+                    _ln(f"Device state: {ds}", False)
+                if _view_four_has_value(pos) or _view_four_has_value(tot):
+                    _ln(f"Position / duration: {pos!r} / {tot!r}", False)
             return rows
 
         def _blend_view_four_debug(bgr: np.ndarray) -> np.ndarray:
