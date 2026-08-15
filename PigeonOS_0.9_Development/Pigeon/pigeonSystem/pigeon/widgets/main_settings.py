@@ -476,6 +476,17 @@ class MainSettingsState:
     box3_ip_invalid: bool = False
     show_pigeon_settings: bool = False
     pigeon_focus_index: int = 0
+    # Silent GitHub poll when opening settings_pigeon (badge without popup).
+    pigeon_needs_update_prefetch: bool = False
+    # Status LEDs for tiles 6–9 (None → derive wifi/metadata; hdmi/audio follow toggles).
+    pigeon_metadata_ok: bool | None = None
+    pigeon_hdmi_ok: bool = False
+    pigeon_audio_ok: bool = False
+    # User toggles for WIFI / METADATA / HDMI / AUDIO (persisted in state.json).
+    source_wifi_on: bool = True
+    source_metadata_on: bool = True
+    source_hdmi_on: bool = True
+    source_audio_on: bool = True
     show_preferences: bool = False
     # "zones" = navigation A; "widgets" = navigation B after a zone is activated.
     preferences_nav: str = "zones"
@@ -885,16 +896,28 @@ class MainSettingsState:
         self.close_preferences()
         self.close_ui_color()
         load_persisted_theme_into_state(self)
+        try:
+            from pigeon.source_toggles import apply_toggles_to_settings_state
+
+            apply_toggles_to_settings_state(self)
+        except Exception:
+            pass
         ring = pigeon_focus_ring()
-        # Land on GENERAL (first tile); BACK is still in the ring via SETTINGS header.
-        self.pigeon_focus_index = (
-            ring.index("general_button") if "general_button" in ring else 0
-        )
+        # Land on COLOR (first selectable tile); BACK remains in the ring.
+        if "color_button" in ring:
+            self.pigeon_focus_index = ring.index("color_button")
+        elif "general_button" in ring:
+            self.pigeon_focus_index = ring.index("general_button")
+        else:
+            self.pigeon_focus_index = 0
+        # Prefetch update availability so the badge is ready without opening the popup.
+        self.pigeon_needs_update_prefetch = True
 
     def exit_pigeon_settings(self) -> None:
         self.close_update_popup()
         self.close_preferences()
         self.show_pigeon_settings = False
+        self.pigeon_needs_update_prefetch = False
         self.ensure_focus_ring()
         if "main_box1_button" in self.focus_ring:
             self.focus_index = self.focus_ring.index("main_box1_button")
@@ -6230,6 +6253,15 @@ class MainSettingsWidget:
             st.box3_devices.picked,
             bool(st.show_pigeon_settings),
             int(st.pigeon_focus_index),
+            bool(st.pigeon_needs_update_prefetch),
+            st.pigeon_metadata_ok,
+            bool(st.pigeon_hdmi_ok),
+            bool(st.pigeon_audio_ok),
+            bool(st.source_wifi_on),
+            bool(st.source_metadata_on),
+            bool(st.source_hdmi_on),
+            bool(st.source_audio_on),
+            bool(st.wifi_configured),
             bool(st.show_preferences),
             str(st.preferences_nav or ""),
             int(st.preferences_focus_index),
@@ -7809,17 +7841,44 @@ class MainSettingsWidget:
                 st.open_update_popup()
                 self.invalidate()
                 return "update_popup:open"
-            if focused in ("general_button", "prefs_button"):
-                st.open_preferences()
-                self.invalidate()
-                return "preferences_open"
-            if focused in ("colors_button", "color_button"):
-                # Color page opens directly from the grid (BACK returns here).
+            if focused == "color_button":
                 st.close_preferences()
                 st.open_ui_color()
                 self.invalidate()
                 return "ui_color_open"
-            # Remaining tiles are chrome placeholders for now.
+            if focused == "reset_button":
+                self.invalidate()
+                return "pigeon_factory_reset"
+            if focused == "info_button":
+                st.open_preferences()
+                self.invalidate()
+                return "preferences_open"
+            if focused == "general_button":
+                # Reserved — no destination yet.
+                return f"pigeon_activate:{focused}"
+            if focused in (
+                "wifi_button",
+                "metadata_button",
+                "hdmi_button",
+                "audio_button",
+            ):
+                kind = focused.removesuffix("_button")
+                from pigeon.source_toggles import (
+                    apply_toggles_to_settings_state,
+                    toggle_source,
+                )
+
+                on = toggle_source(kind)
+                apply_toggles_to_settings_state(st)
+                if kind == "hdmi" and not on:
+                    try:
+                        from pigeon.hdmi_ocr import release_capture
+
+                        release_capture()
+                    except Exception:
+                        pass
+                self.invalidate()
+                return f"source_toggle:{kind}:{int(on)}"
             return f"pigeon_activate:{focused}"
 
         focused = st.focused_id

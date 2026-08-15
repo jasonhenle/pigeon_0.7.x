@@ -627,7 +627,7 @@ def tmdb_query_candidates_from_metadata(metadata: Mapping[str, Any] | None) -> l
         add(tmdb_query_from_raw_title(rt, base_query=pyatv_q or None))
     except Exception:
         pass
-    for key in ("series_name", "artist", "album", "title"):
+    for key in ("series_name", "artist", "album", "title", "ocr_title"):
         add(str(metadata.get(key) or ""))
     if not out:
         add(resolve_metadata_tmdb_query(metadata))

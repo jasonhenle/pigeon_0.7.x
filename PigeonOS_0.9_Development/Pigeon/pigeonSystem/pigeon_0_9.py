@@ -2113,6 +2113,8 @@ def main() -> int:
             # and show "?" in the circles 2×3 poster slot.
             "tmdb_missing_art": False,
             "tmdb_exhausted_identity": None,
+            # HDMI OCR is another metadata source (confirm / fill / pause check).
+            "ocr_in_flight": False,
         }
         tmdb_retry_rule_idx = [0]
         tmdb_adv_manual_btn_holder: list[tk.Button | None] = [None]
@@ -6495,6 +6497,14 @@ def main() -> int:
                 apple_tv_auto_state["pending_tmdb"] = None
                 return
 
+            try:
+                from pigeon.source_toggles import source_enabled
+
+                if not source_enabled("wifi"):
+                    return
+            except Exception:
+                pass
+
             q_in = (query or "").strip()
             q = refine_tmdb_search_query(q_in) or ""
             if not q:
@@ -8085,6 +8095,16 @@ def main() -> int:
                     if pa is not None:
                         _paint_cred_led_canvas(pa, _cred_led(air_sel))
                     _refresh_observed_pairing_led_rows()
+                    if main_settings_widget is not None:
+                        try:
+                            st_led = main_settings_widget.state
+                            if st_led.show_pigeon_settings:
+                                meta_ok = bool(_content_indicator_ok())
+                                if st_led.pigeon_metadata_ok != meta_ok:
+                                    st_led.pigeon_metadata_ok = meta_ok
+                                    main_settings_widget.invalidate()
+                        except Exception:
+                            pass
 
                 root.after(0, apply_leds)
 
@@ -8477,6 +8497,170 @@ def main() -> int:
             if main_settings_widget is None:
                 return
             st = main_settings_widget.state
+
+            if str(action or "").startswith("source_toggle:"):
+                parts = str(action).split(":")
+                kind = parts[1] if len(parts) > 1 else ""
+                on = parts[2] == "1" if len(parts) > 2 else True
+                md = apple_tv_auto_state.get("last_metadata")
+                if isinstance(md, dict) and not on:
+                    if kind == "metadata":
+                        try:
+                            from pigeon.source_toggles import strip_streaming_identity
+
+                            strip_streaming_identity(md)
+                        except Exception:
+                            pass
+                    elif kind == "hdmi":
+                        try:
+                            from pigeon.hdmi_ocr import clear_ocr_fields
+
+                            clear_ocr_fields(md)
+                        except Exception:
+                            pass
+                skip_cache = None
+                return
+
+            if action == "pigeon_settings":
+                # Entered settings_pigeon — seed update badge and refresh in background.
+                def _prefetch_pigeon_update_badge() -> None:
+                    if not getattr(st, "pigeon_needs_update_prefetch", False):
+                        return
+                    st.pigeon_needs_update_prefetch = False
+                    try:
+                        if update_check_state.get("update_available") and not update_check_state.get(
+                            "error"
+                        ):
+                            st.update_available = True
+                            st.update_remote_version = update_check_state.get("remote_version")
+                            st.update_github_branch = update_check_state.get("github_branch")
+                            st.update_error = None
+                            main_settings_widget.invalidate()
+                            skip_cache = None
+                    except Exception:
+                        pass
+
+                    def worker_prefetch() -> None:
+                        try:
+                            from pigeon.update_check import check_for_update
+
+                            result = check_for_update(force=False)
+                        except Exception as e:
+                            from pigeon.update_check import UpdateCheckResult
+
+                            result = UpdateCheckResult(
+                                local_version=version_string(),
+                                remote_version=None,
+                                update_available=False,
+                                error=str(e),
+                            )
+
+                        def finish_prefetch() -> None:
+                            nonlocal skip_cache
+                            if main_settings_widget is None:
+                                return
+                            st2 = main_settings_widget.state
+                            if not st2.show_pigeon_settings or st2.show_update_popup:
+                                return
+                            err = getattr(result, "error", None)
+                            available = bool(getattr(result, "update_available", False)) and not err
+                            st2.update_available = available
+                            st2.update_remote_version = getattr(result, "remote_version", None)
+                            st2.update_github_branch = getattr(result, "github_branch", None)
+                            st2.update_error = err
+                            try:
+                                update_check_state["update_available"] = bool(available)
+                                update_check_state["remote_version"] = st2.update_remote_version
+                                update_check_state["github_branch"] = st2.update_github_branch
+                                update_check_state["error"] = err
+                                update_check_state["last_check_mono"] = time.monotonic()
+                                _sync_update_button_style()
+                            except Exception:
+                                pass
+                            main_settings_widget.invalidate()
+                            skip_cache = None
+
+                        root.after(0, finish_prefetch)
+
+                    threading.Thread(
+                        target=worker_prefetch, name="pigeon-update-prefetch", daemon=True
+                    ).start()
+
+                _prefetch_pigeon_update_badge()
+                return
+
+            if action == "pigeon_factory_reset":
+                from pigeon.widgets.pigeon_settings import factory_reset_pigeon_persisted_state
+                from pigeon.widgets.ui_color_settings import (
+                    apply_color_keys_to_state,
+                    load_persisted_theme_into_state,
+                )
+
+                factory_reset_pigeon_persisted_state()
+                try:
+                    discovery_scan_cache["rows"] = None
+                    discovery_scan_cache["mono_s"] = 0.0
+                except Exception:
+                    pass
+                try:
+                    streaming_slot_holder[0] = None
+                    avr_slot_holder[0] = None
+                except Exception:
+                    pass
+                try:
+                    current_apple_tv.clear()
+                    current_apple_tv.update(
+                        {"identifier": "", "address": "", "name": "", "label": ""}
+                    )
+                except Exception:
+                    pass
+                try:
+                    receiver_http_host["host"] = ""
+                except Exception:
+                    pass
+                try:
+                    apple_tv_auto_state["content_key"] = None
+                    apple_tv_auto_state["tmdb_key"] = None
+                    apple_tv_auto_state["query"] = None
+                    apple_tv_auto_state["last_metadata"] = None
+                    apple_tv_dashboard_track["last_poll_ok"] = None
+                    apple_tv_dashboard_track["consecutive_fail"] = 0
+                except Exception:
+                    pass
+                try:
+                    load_persisted_theme_into_state(st)
+                    apply_color_keys_to_state(
+                        st,
+                        {"accent": "white", "ui": "red", "button": "black"},
+                        persist=False,
+                    )
+                except Exception:
+                    pass
+                try:
+                    st.reset_box_device_panel(2)
+                    st.reset_box_device_panel(3)
+                except Exception:
+                    pass
+                st.selected_wifi_ssid = ""
+                st.pigeon_metadata_ok = False
+                st.pigeon_hdmi_ok = False
+                st.pigeon_audio_ok = False
+                try:
+                    from pigeon.source_toggles import apply_toggles_to_settings_state
+
+                    apply_toggles_to_settings_state(st)
+                except Exception:
+                    pass
+                try:
+                    describe_current_apple_tv()
+                    _refresh_location_selector()
+                    _rebuild_paired_devices_panel()
+                    _schedule_refresh_pairing_leds()
+                except Exception:
+                    pass
+                main_settings_widget.invalidate()
+                skip_cache = None
+                return
 
             if action == "update_popup:open":
                 # Always re-check GitHub (ignore any prior in-memory poll).
@@ -10458,6 +10642,57 @@ def main() -> int:
             if had_art:
                 render_once()
 
+        def _on_hdmi_ocr_clues(clues) -> None:
+            """Merge HDMI OCR into last_metadata. Spawn TMDb only when clues add a title."""
+            from pigeon.hdmi_ocr import apply_clues_to_metadata
+            from pigeon.tmdb_poster import is_degenerate_tmdb_query
+
+            apple_tv_auto_state["ocr_in_flight"] = False
+            try:
+                from pigeon.source_toggles import source_enabled
+
+                if not source_enabled("hdmi"):
+                    return
+            except Exception:
+                pass
+            md = apple_tv_auto_state.get("last_metadata")
+            if not isinstance(md, dict):
+                md = {}
+            merged = apply_clues_to_metadata(md, clues)
+            apple_tv_auto_state["last_metadata"] = merged
+            agrees = bool(merged.get("ocr_agrees"))
+            guess = str(clues.title_guess or "").strip()
+            reason = str(clues.reason or "")
+            if reason == "pause" and (agrees or not guess):
+                return
+            if reason == "confirm" and agrees:
+                return
+            if guess and not is_degenerate_tmdb_query(guess):
+                if reason == "no_metadata" or (reason == "pause" and not agrees):
+                    spawn_tmdb_poster_fetch(guess, prefer="auto", force=True)
+
+        def _schedule_hdmi_ocr_from_poll(metadata: dict[str, object]) -> None:
+            """OCR when pyatv is empty, once per new title, or on pause (max 1/min)."""
+            try:
+                from pigeon.source_toggles import source_enabled
+
+                if not source_enabled("hdmi"):
+                    return
+            except Exception:
+                pass
+            try:
+                from pigeon.hdmi_ocr import decide_ocr_reason, request_ocr
+            except Exception:
+                return
+            reason = decide_ocr_reason(metadata)
+            if not reason:
+                return
+            if apple_tv_auto_state.get("ocr_in_flight"):
+                return
+            apple_tv_auto_state["ocr_in_flight"] = True
+            if not request_ocr(reason, _on_hdmi_ocr_clues):
+                apple_tv_auto_state["ocr_in_flight"] = False
+
         def _apple_tv_auto_poll_tick() -> None:
             if apple_tv_auto_state.get("running"):
                 root.after(APPLE_TV_POLL_MS, _apple_tv_auto_poll_tick)
@@ -10674,10 +10909,46 @@ def main() -> int:
                         merged_md["app_name"] = str(metadata_w.get("app_name") or "").strip()
                         merged_md["app_id"] = str(metadata_w.get("app_id") or "").strip()
                         merged_md["volume_percent"] = metadata_w.get("volume_percent")
+                        try:
+                            from pigeon.source_toggles import (
+                                source_enabled,
+                                strip_streaming_identity,
+                            )
+
+                            if not source_enabled("metadata"):
+                                strip_streaming_identity(merged_md)
+                                merged_md["content_key"] = _content_key_from_metadata(
+                                    merged_md
+                                )
+                        except Exception:
+                            pass
                         if ok_w:
                             _bump_clock_saver_significant_device_from_metadata(merged_md)
                         md_for_spawn = merged_md
+                        prev_ocr_md = apple_tv_auto_state.get("last_metadata")
+                        prev_ocr_key = (
+                            str(prev_ocr_md.get("content_key") or "")
+                            if isinstance(prev_ocr_md, dict)
+                            else ""
+                        )
+                        try:
+                            from pigeon.source_toggles import source_enabled
+                            from pigeon.hdmi_ocr import clear_ocr_fields, copy_ocr_fields
+
+                            if source_enabled("hdmi"):
+                                if prev_ocr_key and prev_ocr_key == str(
+                                    merged_md.get("content_key") or ""
+                                ):
+                                    copy_ocr_fields(prev_ocr_md, merged_md)
+                            else:
+                                clear_ocr_fields(merged_md)
+                        except Exception:
+                            pass
                         apple_tv_auto_state["last_metadata"] = merged_md
+                        try:
+                            _schedule_hdmi_ocr_from_poll(merged_md)
+                        except Exception:
+                            pass
                         # Music artwork (bytes live only on the poll dict; not stored in last_metadata).
                         try:
                             art_md = dict(merged_md)
@@ -10781,9 +11052,13 @@ def main() -> int:
                             _return_to_landing_if_atv_idle(md_for_spawn)
                     if not pyatv_tmdb_eligible and wk_roku_title is not None:
                         try:
+                            from pigeon.source_toggles import source_enabled
                             from pigeon.tmdb_poster import is_degenerate_tmdb_query
 
-                            r_ok, _rmsg, rtitle = wk_roku_title
+                            if not source_enabled("metadata"):
+                                r_ok, _rmsg, rtitle = False, "", None
+                            else:
+                                r_ok, _rmsg, rtitle = wk_roku_title
                             if (
                                 r_ok
                                 and rtitle

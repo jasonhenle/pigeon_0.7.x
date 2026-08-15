@@ -1306,6 +1306,13 @@ def _minimal_subprocess_env() -> dict[str, str]:
 
 def _http_get_bytes(url: str, *, timeout_s: float = 60.0, headers: dict[str, str] | None = None) -> bytes:
     """HTTPS GET for TMDb API and image CDN (curl on Linux for reliable Pi SSL)."""
+    try:
+        from pigeon.source_toggles import source_enabled
+
+        if not source_enabled("wifi"):
+            raise OSError("Pigeon is offline (Wi-Fi source is off).")
+    except ImportError:
+        pass
     safe_headers = {
         str(k): "".join(ch for ch in str(v) if ord(ch) < 256) for k, v in (headers or {}).items()
     }

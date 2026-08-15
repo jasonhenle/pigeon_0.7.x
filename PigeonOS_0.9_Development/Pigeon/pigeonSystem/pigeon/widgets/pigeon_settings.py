@@ -1,100 +1,178 @@
 """
-Pigeon device settings — 12-tile grid (settings home).
+Pigeon device settings — ``settings_0.8/settings_pigeon.svg``.
 
-Opened from main settings box1 (device panel). Shared settings theme background
-under a 6×2 grid of filled, rounded tiles. Focused tile uses the settings UI
-color. Existing destinations: GENERAL → preferences, COLORS → color page,
-UPDATE → update popup.
+Opened from main settings box1. Selectable tiles 1–5 + BACK; tiles 6–9
+(WIFI / METADATA / HDMI / AUDIO) toggle those data sources on and off.
+Uses the shared settings theme background (SVG ``background`` / menu
+containers are disabled).
 """
 
 from __future__ import annotations
 
+import copy
 import os
-from dataclasses import dataclass
-from functools import lru_cache
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
 
 from pigeon.design import DESIGN_H, DESIGN_W
-from pigeon.widgets.main_settings import MainSettingsState
+from pigeon.version import version_string
+from pigeon.widgets.main_settings import (
+    MainSettingsState,
+    _composite_bgra_over_bgra,
+    _disable_embedded_settings_background_layers,
+    _draw_container_background_bgra,
+    _find_by_logical_id,
+    _prune_display_none,
+    _set_paint,
+    _set_text_content,
+    _set_visible,
+)
 
-# ---------------------------------------------------------------------------
-# Focus / tile catalog (row-major: 6×2)
-# ---------------------------------------------------------------------------
+# Crop Illustrator board so the menu panel aligns with the shared theme mask
+# (``_MENU_CONTAINER_BBOX`` ≈ 22..777). SVG menu clip sits at x=385.66.
+_PIGEON_VIEWBOX = (363.7, 441.8, 800.0, 480.0)
 
+_COLOR_BLACK = "#000000"
+_COLOR_WHITE = "#FFFFFF"
+_COLOR_TEXT_OFF = "#808080"
+_COLOR_BACK_FILL = "#202020"
+_COLOR_STATUS_OK = "#0DFF00"
+_COLOR_STATUS_BAD = "#FF0013"
+_WIFI_RING_STROKE = "#E2E2E2"
+
+# Color tile gradient (SVG user units). PyMuPDF ignores rounded clip-path.
+_COLOR_CLIP_SVG = (416.13, 563.45, 94.84, 94.84, 10.35)  # x,y,w,h,rx
+_COLOR_IMG_TRANSFORM_SVG = (0.48, 0.48, 411.09, 558.38)  # sx,sy,tx,ty
+_COLOR_IMG_SIZE_SVG = (218.0, 218.0)
+_COLOR_DOT_SVG = (463.7, 610.87, 15.93)  # cx,cy,r
+
+# WiFi rings (SVG). PyMuPDF drops clip-path — redraw with button ∩ triangle fan.
+_WIFI_BUTTON_SVG = (534.98, 720.56, 94.77, 94.77, 10.35)  # x,y,w,h,rx
+_WIFI_CENTER_SVG = (582.9, 813.49)
+_WIFI_RADII_SVG = (29.5, 46.74, 61.86)
+_WIFI_STROKE_SVG = 3.0
+# ``clippath-6`` polygon — downward fan that shapes the arcs into a wifi wedge.
+_WIFI_FAN_POLYGON_SVG: tuple[tuple[float, float], ...] = (
+    (582.9, 742.81),
+    (610.88, 742.6),
+    (596.71, 766.72),
+    (582.9, 791.06),
+    (569.1, 766.72),
+    (554.92, 742.6),
+)
+
+# Update icon: white bar + gray fill clipped by ``clippath-7`` (PyMuPDF drops it).
+_UPDATE_BAR_SVG = (1027.53, 604.83, 67.43, 13.34, 6.67)  # x,y,w,h,rx
+_UPDATE_CLIP_SVG = (1074.93, 589.9, 57.32, 39.5)  # x,y,w,h
+_UPDATE_GRAY = (0x4A, 0x4A, 0x4A)  # BGR
+
+XLINK_NS = "http://www.w3.org/1999/xlink"
+
+# Focus ring: BACK + tiles 1–9 (actions 1–5, source toggles 6–9).
 _PIGEON_FOCUS_RING: tuple[str, ...] = (
     "pigeon_back",
+    "color_button",
+    "info_button",
     "general_button",
-    "colors_button",
-    "display_button",
-    "network_button",
-    "audio_button",
-    "time_button",
-    "wifi_button",
-    "music_button",
-    "bluetooth_button",
-    "system_button",
+    "reset_button",
     "update_button",
-    "about_button",
+    "wifi_button",
+    "metadata_button",
+    "hdmi_button",
+    "audio_button",
 )
 
-# Legacy aliases kept so older focus indices / saved expectations still resolve.
+# Legacy aliases from the old 12-tile Pillow grid.
 _FOCUS_ALIASES: dict[str, str] = {
     "prefs_button": "general_button",
-    "color_button": "colors_button",
+    "colors_button": "color_button",
+    "color_button": "color_button",
 }
 
-
-@dataclass(frozen=True)
-class _Tile:
-    focus_id: str
-    label: str
-    icon: str  # general | colors | display | update | about | none
-
-
-_TILES: tuple[_Tile, ...] = (
-    _Tile("general_button", "GENERAL", "general"),
-    _Tile("colors_button", "COLORS", "colors"),
-    _Tile("display_button", "DISPLAY", "display"),
-    _Tile("network_button", "NETWORK", "none"),
-    _Tile("audio_button", "AUDIO", "none"),
-    _Tile("time_button", "TIME", "none"),
-    _Tile("wifi_button", "WIFI", "none"),
-    _Tile("music_button", "MUSIC", "none"),
-    _Tile("bluetooth_button", "BLUETOOTH", "none"),
-    _Tile("system_button", "SYSTEM", "none"),
-    _Tile("update_button", "UPDATE", "update"),
-    _Tile("about_button", "ABOUT", "about"),
+# (focus_id, text_group logical id, text_button id, text id)
+_SELECTABLE_TILES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "color_button",
+        "settings_pigeon_01_text_group",
+        "settings_pigeon_version_color_button",
+        "settings_pigeon_version_color_text",
+    ),
+    (
+        "info_button",
+        "settings_pigeon_02_info_text_group",
+        "settings_pigeon_02_info_button",
+        "settings_pigeon_02_info_text",
+    ),
+    (
+        "general_button",
+        "settings_pigeon_03_general_text_group",
+        "settings_pigeon_03_general_box_button",
+        "settings_pigeon_03_general_text",
+    ),
+    (
+        "reset_button",
+        "settings_pigeon_04_reset_text_group",
+        "settings_pigeon_04_reset_text_button",
+        "settings_pigeon_04_reset_text",
+    ),
+    (
+        "update_button",
+        "settings_pigeon_05_update_text_group",
+        "settings_pigeon_05_update_button",
+        "settings_pigeon_05_update_text",
+    ),
+    (
+        "wifi_button",
+        "settings_pigeon_06_wifi_text_group",
+        "settings_pigeon_06_wifi_button",
+        "settings_pigeon_06_wifi_text",
+    ),
+    (
+        "metadata_button",
+        "settings_pigeon_07_metadata_text_group",
+        "settings_pigeon_07_metadata_button",
+        "settings_pigeon_07_metadata_text",
+    ),
+    (
+        "hdmi_button",
+        "settings_pigeon_08_hdmi_text_group",
+        "settings_pigeon_09_hdmi_button",
+        "settings_pigeon_09_hdmi_text_text",
+    ),
+    (
+        "audio_button",
+        "settings_pigeon_09_audio_text_group",
+        "settings_pigeon_09_audio_text_button",
+        "settings_pigeon_09_audio_text_text",
+    ),
 )
 
-# Layout (design 800×480).
-_COLS = 6
-_ROWS = 2
-_TILE = 96
-_GAP_X = 18
-_GAP_Y = 28
-_GRID_W = _COLS * _TILE + (_COLS - 1) * _GAP_X
-_GRID_H = _ROWS * _TILE + (_ROWS - 1) * _GAP_Y
-_GRID_X = (DESIGN_W - _GRID_W) // 2
-_GRID_Y = 118
-_LABEL_GAP = 10
-_LABEL_SIZE = 13
-_CORNER = 10
-_BRACKET = 10
-_STROKE = 2
+_STATUS_ICONS: tuple[tuple[str, str], ...] = (
+    ("wifi", "settings_pigeon_06_wifi_status_icon"),
+    ("metadata", "settings_pigeon_07_metadata_status_icon"),
+    ("hdmi", "settings_pigeon_08_hdmi_status_icon"),
+    ("audio", "settings_pigeon_09_audio_status_icon"),
+)
 
-_HEADER_SETTINGS_SIZE = 36
-_HEADER_PIGEON_SIZE = 18
-_HEADER_META_SIZE = 16
-_HEADER_X = 36
-_HEADER_SETTINGS_Y = 36
-_HEADER_PIGEON_Y = 72
-_HEADER_META_Y = 40
+_SOURCE_TILE_KINDS: dict[str, str] = {
+    "wifi_button": "wifi",
+    "metadata_button": "metadata",
+    "hdmi_button": "hdmi",
+    "audio_button": "audio",
+}
+
+_UPDATE_BADGE_ID = "settings_pigeon_05_update_update_icon"
+
+_SVG_TREE_TEMPLATES: dict[tuple[str, int], ET.Element] = {}
+_SVG_TREE_TEMPLATE_MAX = 4
+_THEME_BG_CACHE: dict[tuple[str, str, int, int], np.ndarray] = {}
+_THEME_BG_CACHE_MAX = 8
+_COLOR_GRAD_CACHE: dict[tuple[str, int, int], np.ndarray] = {}
 
 
 def default_pigeon_settings_svg_path(assets_dir: Path | str | None = None) -> Path:
-    """Legacy path retained for callers / env overrides (grid is drawn in code)."""
     env = os.environ.get("PIGEON_PIGEON_SETTINGS_SVG", "").strip()
     if env:
         return Path(env).expanduser().resolve()
@@ -113,50 +191,236 @@ def normalize_pigeon_focus_id(focus_id: str) -> str:
     return _FOCUS_ALIASES.get(fid, fid)
 
 
-# ---------------------------------------------------------------------------
-# Fonts / text
-# ---------------------------------------------------------------------------
+def _paint_text(el: ET.Element | None, color: str) -> None:
+    if el is None:
+        return
+    nodes = [el] if el.tag.endswith("text") else [
+        n for n in el.iter() if n.tag.endswith("text") or n.tag.endswith("tspan")
+    ]
+    if not nodes:
+        nodes = [el]
+    for node in nodes:
+        _set_paint(node, fill=color)
 
 
-@lru_cache(maxsize=32)
-def _load_font(size_px: int, *, bold: bool = True):
-    from PIL import ImageFont
-
-    from pigeon.font_paths import resolve_ui_font_extrabold, resolve_ui_font_medium
-
-    path = resolve_ui_font_extrabold() if bold else resolve_ui_font_medium()
-    if path:
-        try:
-            return ImageFont.truetype(str(path), size=max(8, int(size_px)))
-        except OSError:
-            pass
-    return ImageFont.load_default()
+def _paint_button(el: ET.Element | None, *, fill: str, stroke: str = _COLOR_BLACK) -> None:
+    if el is None:
+        return
+    _set_paint(el, fill=fill, stroke=stroke)
 
 
-@lru_cache(maxsize=128)
-def _text_patch(
-    text: str,
-    size_px: int,
-    fill_rgba: tuple[int, int, int, int],
+def _sync_back_button(root: ET.Element, *, selected: bool) -> None:
+    group = _find_by_logical_id(root, "settings_pigeon_back_group")
+    button = _find_by_logical_id(group or root, "settings_pigeon_back_button")
+    accent = _find_by_logical_id(group or root, "settings_pigeon_back_accent")
+    text = _find_by_logical_id(group or root, "settings_pigeon_back_text")
+    if selected:
+        _paint_button(button, fill=_COLOR_WHITE, stroke=_COLOR_BLACK)
+        if accent is not None:
+            _set_paint(accent, fill="none", stroke=_COLOR_BLACK)
+        _paint_text(text, _COLOR_BLACK)
+    else:
+        _paint_button(button, fill=_COLOR_BACK_FILL, stroke=_COLOR_BLACK)
+        if accent is not None:
+            _set_paint(accent, fill="none", stroke=_COLOR_WHITE)
+        _paint_text(text, _COLOR_WHITE)
+
+
+def _sync_selectable_tile(
+    root: ET.Element,
+    focus_id: str,
     *,
-    bold: bool = True,
-) -> tuple[np.ndarray, int, int]:
-    from PIL import Image, ImageDraw
-    import cv2
+    selected: bool,
+    source_on: bool = True,
+) -> None:
+    for fid, _tg, button_id, text_id in _SELECTABLE_TILES:
+        if fid != focus_id:
+            continue
+        button = _find_by_logical_id(root, button_id)
+        text = _find_by_logical_id(root, text_id)
+        if selected:
+            _paint_button(button, fill=_COLOR_WHITE, stroke=_COLOR_BLACK)
+            _paint_text(text, _COLOR_BLACK)
+        else:
+            _paint_button(button, fill=_COLOR_BLACK, stroke=_COLOR_BLACK)
+            _paint_text(text, _COLOR_WHITE if source_on else _COLOR_TEXT_OFF)
+        return
 
-    draw_text = str(text or "")
-    if not draw_text:
-        return np.zeros((1, 1, 4), dtype=np.uint8), 0, 0
-    font = _load_font(size_px, bold=bold)
-    probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(probe)
-    left, top, right, bottom = draw.textbbox((0, 0), draw_text, font=font)
-    tw, th = max(1, right - left), max(1, bottom - top)
-    pad = 1
-    img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.text((pad - left, pad - top), draw_text, font=font, fill=fill_rgba)
-    return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGBA2BGRA), tw + pad * 2, th + pad * 2
+
+def _source_on(state: MainSettingsState, kind: str) -> bool:
+    return bool(getattr(state, f"source_{kind}_on", True))
+
+
+def _wifi_status_ok(state: MainSettingsState) -> bool:
+    """Green when internet is allowed and a network is configured."""
+    if not _source_on(state, "wifi"):
+        return False
+    return bool(getattr(state, "wifi_configured", False))
+
+
+def _metadata_status_ok(state: MainSettingsState) -> bool:
+    """Green when Apple TV / Roku metadata is allowed and a source is present."""
+    if not _source_on(state, "metadata"):
+        return False
+    flagged = getattr(state, "pigeon_metadata_ok", None)
+    if flagged is not None:
+        return bool(flagged)
+    try:
+        from pigeon.app_state import read_saved_streaming_device
+
+        return read_saved_streaming_device() is not None
+    except Exception:
+        return False
+
+
+def _hdmi_status_ok(state: MainSettingsState) -> bool:
+    """Green when HDMI OCR is allowed (capture path is wired)."""
+    return _source_on(state, "hdmi")
+
+
+def _audio_status_ok(state: MainSettingsState) -> bool:
+    """Green when audio ID is allowed. Recognizer is still reserved."""
+    return _source_on(state, "audio")
+
+
+def _status_ok_for(kind: str, state: MainSettingsState) -> bool:
+    if kind == "wifi":
+        return _wifi_status_ok(state)
+    if kind == "metadata":
+        return _metadata_status_ok(state)
+    if kind == "hdmi":
+        return _hdmi_status_ok(state)
+    if kind == "audio":
+        return _audio_status_ok(state)
+    return False
+
+
+def _sync_status_icons(root: ET.Element, state: MainSettingsState) -> None:
+    for kind, lid in _STATUS_ICONS:
+        el = _find_by_logical_id(root, lid)
+        if el is None:
+            continue
+        if not _source_on(state, kind):
+            _set_visible(el, False)
+            continue
+        _set_visible(el, True)
+        ok = _status_ok_for(kind, state)
+        _set_paint(el, fill=_COLOR_STATUS_OK if ok else _COLOR_STATUS_BAD)
+
+
+def _sync_update_badge(root: ET.Element, state: MainSettingsState) -> None:
+    badge = _find_by_logical_id(root, _UPDATE_BADGE_ID)
+    if badge is None:
+        return
+    show = bool(getattr(state, "update_available", False)) and not bool(
+        getattr(state, "update_error", None)
+    )
+    _set_visible(badge, show)
+    if show:
+        _set_paint(badge, fill=_COLOR_STATUS_OK)
+
+
+def _sync_version_text(root: ET.Element, state: MainSettingsState) -> None:
+    ver = str(getattr(state, "version_string", "") or version_string()).strip()
+    if ver.lower().startswith("v"):
+        ver = ver[1:].lstrip()
+    label = f"PIGEON V {ver}" if ver else "PIGEON"
+    text = _find_by_logical_id(root, "settings_pigeon_version_text")
+    if text is None:
+        return
+    # Prefer the nested text node when the group wraps it.
+    if not text.tag.endswith("text"):
+        nested = None
+        for node in text.iter():
+            if node is text:
+                continue
+            if node.tag.endswith("text"):
+                nested = node
+                break
+        text = nested if nested is not None else text
+    _set_text_content(text, label)
+    _paint_text(text, _COLOR_WHITE)
+    # Right-align inside the menu panel so the string never clips the right edge.
+    vb_x, vb_y, _vb_w, _vb_h = _PIGEON_VIEWBOX
+    text.set("transform", f"translate({vb_x + 748.0:.2f} {vb_y + 93.0:.2f})")
+    text.set("text-anchor", "end")
+    text.attrib.pop("style", None)
+
+
+def _sync_info_label(root: ET.Element) -> None:
+    """Tile label is now-playing prefs — keep SVG text in sync if art is re-exported."""
+    text = _find_by_logical_id(root, "settings_pigeon_02_info_text")
+    if text is None:
+        return
+    _set_text_content(text, "NOW PLAYING")
+
+
+def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:
+    focused = normalize_pigeon_focus_id(state.pigeon_focused_id)
+    _sync_back_button(root, selected=(focused == "pigeon_back"))
+    for fid, _tg, _b, _t in _SELECTABLE_TILES:
+        kind = _SOURCE_TILE_KINDS.get(fid)
+        source_on = _source_on(state, kind) if kind else True
+        _sync_selectable_tile(
+            root, fid, selected=(focused == fid), source_on=source_on
+        )
+    _sync_info_label(root)
+    _sync_status_icons(root, state)
+    _sync_update_badge(root, state)
+    _sync_version_text(root, state)
+
+
+def _svg_to_px(x: float, y: float) -> tuple[float, float]:
+    vb_x, vb_y, vb_w, vb_h = _PIGEON_VIEWBOX
+    return ((x - vb_x) * DESIGN_W / vb_w, (y - vb_y) * DESIGN_H / vb_h)
+
+
+def _svg_len_to_px(v: float) -> float:
+    vb_w = _PIGEON_VIEWBOX[2]
+    return float(v) * DESIGN_W / vb_w
+
+
+def _hide_pymupdf_clip_victims(root: ET.Element) -> None:
+    """Hide layers that rely on clip-path — PyMuPDF ignores those clips."""
+    # Color rainbow <image> (+ center disc; both redrawn after rasterize).
+    grad = _find_by_logical_id(root, "settings_pigeon_01_color_box_gradient")
+    if grad is not None:
+        for el in grad.iter():
+            if el.tag.endswith("image"):
+                _set_visible(el, False)
+    dot = _find_by_logical_id(root, "settings_pigeon_01_color_icon_black_dot")
+    if dot is not None:
+        _set_visible(dot, False)
+    # WiFi concentric rings (full circles without button clip).
+    wifi_icon = _find_by_logical_id(root, "settings_pigeon_06_wifi_icon_group")
+    if wifi_icon is not None:
+        for el in wifi_icon.iter():
+            if el.tag.endswith("circle"):
+                _set_visible(el, False)
+    # Update gray fill (same geometry as the white bar; clippath-7 shapes it).
+    update_icon = _find_by_logical_id(root, "settings_pigeon_05_update_icon")
+    if update_icon is not None:
+        for el in update_icon.iter():
+            if el is update_icon:
+                continue
+            cp = (el.get("clip-path") or "").strip()
+            if "clippath-7" in cp:
+                _set_visible(el, False)
+                for child in el.iter():
+                    if child is el:
+                        continue
+                    if child.tag.endswith("rect"):
+                        _set_visible(child, False)
+
+
+def _rounded_rect_mask(w: int, h: int, radius: int) -> np.ndarray:
+    from PIL import Image, ImageDraw
+
+    ww, hh = max(1, int(w)), max(1, int(h))
+    r = max(0, min(int(radius), ww // 2, hh // 2))
+    img = Image.new("L", (ww, hh), 0)
+    ImageDraw.Draw(img).rounded_rectangle((0, 0, ww - 1, hh - 1), radius=r, fill=255)
+    return np.asarray(img, dtype=np.uint8)
 
 
 def _paste_bgra(dst: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
@@ -187,328 +451,242 @@ def _paste_bgra(dst: np.ndarray, patch: np.ndarray, x: int, y: int) -> None:
     dst[dy0:dy1, dx0:dx1] = np.clip(out, 0, 255).astype(np.uint8)
 
 
-def _paste_centered(dst: np.ndarray, patch: np.ndarray, cx: float, cy: float) -> None:
-    if patch is None or patch.size == 0:
-        return
-    ph, pw = patch.shape[:2]
-    _paste_bgra(dst, patch, int(round(cx - pw / 2.0)), int(round(cy - ph / 2.0)))
+def _load_color_gradient_bgra(svg_path: Path) -> np.ndarray | None:
+    import base64
 
-
-def _hex_to_bgr(hex_color: str) -> tuple[int, int, int]:
-    s = str(hex_color or "").strip().lstrip("#")
-    if len(s) >= 6:
-        try:
-            r = int(s[0:2], 16)
-            g = int(s[2:4], 16)
-            b = int(s[4:6], 16)
-            return (b, g, r)
-        except ValueError:
-            pass
-    return (0, 0, 255)
-
-
-# ---------------------------------------------------------------------------
-# Chrome drawing
-# ---------------------------------------------------------------------------
-
-
-@lru_cache(maxsize=16)
-def _rounded_rect_mask(w: int, h: int, radius: int) -> np.ndarray:
-    """Opaque=255 mask for a rounded rectangle (tile / icon clip)."""
-    from PIL import Image, ImageDraw
-
-    ww, hh = max(1, int(w)), max(1, int(h))
-    r = max(0, min(int(radius), ww // 2, hh // 2))
-    img = Image.new("L", (ww, hh), 0)
-    ImageDraw.Draw(img).rounded_rectangle((0, 0, ww - 1, hh - 1), radius=r, fill=255)
-    return np.asarray(img, dtype=np.uint8)
-
-
-def _apply_rounded_mask(cell: np.ndarray, radius: int) -> None:
-    """Zero alpha outside the rounded tile so icons respect corner masks."""
-    h, w = cell.shape[:2]
-    mask = _rounded_rect_mask(w, h, radius)
-    if cell.shape[2] >= 4:
-        cell[:, :, 3] = np.minimum(cell[:, :, 3], mask)
-    else:
-        cell[mask == 0] = 0
-
-
-def _draw_rounded_rect_outline(
-    bgra: np.ndarray,
-    *,
-    x: int,
-    y: int,
-    w: int,
-    h: int,
-    radius: int,
-    color_bgr: tuple[int, int, int],
-    thickness: int = 2,
-) -> None:
     import cv2
 
-    if w < 2 or h < 2:
-        return
-    t = max(1, int(thickness))
-    outer = _rounded_rect_mask(w, h, radius)
-    inner = np.zeros_like(outer)
-    if w > 2 * t and h > 2 * t:
-        inset = _rounded_rect_mask(w - 2 * t, h - 2 * t, max(0, int(radius) - t))
-        inner[t : t + inset.shape[0], t : t + inset.shape[1]] = inset
-    ring = cv2.subtract(outer, inner)
-    ys, xs = np.where(ring > 0)
-    if not ys.size:
-        return
-    yy = ys + int(y)
-    xx = xs + int(x)
-    valid = (
-        (yy >= 0)
-        & (yy < bgra.shape[0])
-        & (xx >= 0)
-        & (xx < bgra.shape[1])
-    )
-    yy, xx = yy[valid], xx[valid]
-    bgra[yy, xx, 0] = color_bgr[0]
-    bgra[yy, xx, 1] = color_bgr[1]
-    bgra[yy, xx, 2] = color_bgr[2]
-    bgra[yy, xx, 3] = 255
-
-
-def _draw_rounded_rect_fill(
-    bgra: np.ndarray,
-    *,
-    x: int,
-    y: int,
-    w: int,
-    h: int,
-    radius: int,
-    color_bgr: tuple[int, int, int],
-) -> None:
-    if w < 2 or h < 2:
-        return
-    mask = _rounded_rect_mask(w, h, radius)
-    y0, x0 = int(y), int(x)
-    y1, x1 = y0 + h, x0 + w
-    if y0 >= bgra.shape[0] or x0 >= bgra.shape[1] or y1 <= 0 or x1 <= 0:
-        return
-    sy0 = max(0, -y0)
-    sx0 = max(0, -x0)
-    dy0 = max(0, y0)
-    dx0 = max(0, x0)
-    dy1 = min(bgra.shape[0], y1)
-    dx1 = min(bgra.shape[1], x1)
-    m = mask[sy0 : sy0 + (dy1 - dy0), sx0 : sx0 + (dx1 - dx0)] > 0
-    roi = bgra[dy0:dy1, dx0:dx1]
-    roi[m, 0] = color_bgr[0]
-    roi[m, 1] = color_bgr[1]
-    roi[m, 2] = color_bgr[2]
-    roi[m, 3] = 255
-
-
-def _draw_corner_brackets(
-    bgra: np.ndarray,
-    *,
-    x: int,
-    y: int,
-    w: int,
-    h: int,
-    length: int,
-    color_bgr: tuple[int, int, int],
-    thickness: int = 2,
-) -> None:
-    import cv2
-
-    L = max(4, int(length))
-    t = max(1, int(thickness))
-    pts = [
-        # TL
-        ((x, y + L), (x, y), (x + L, y)),
-        # TR
-        ((x + w - 1 - L, y), (x + w - 1, y), (x + w - 1, y + L)),
-        # BL
-        ((x, y + h - 1 - L), (x, y + h - 1), (x + L, y + h - 1)),
-        # BR
-        ((x + w - 1 - L, y + h - 1), (x + w - 1, y + h - 1), (x + w - 1, y + h - 1 - L)),
-    ]
-    for a, b, c in pts:
-        cv2.line(bgra, a, b, (*color_bgr, 255), t, lineType=cv2.LINE_AA)
-        cv2.line(bgra, b, c, (*color_bgr, 255), t, lineType=cv2.LINE_AA)
-
-
-def _draw_icon_general(tile: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
-    import cv2
-
-    h, w = tile.shape[:2]
-    cx, cy = w // 2, h // 2
-    for i, dy in enumerate((-18, 0, 18)):
-        y = cy + dy
-        cv2.circle(tile, (cx - 22, y), 3, (*color_bgr, 255), -1, lineType=cv2.LINE_AA)
-        cv2.line(
-            tile,
-            (cx - 12, y),
-            (cx + 24, y),
-            (*color_bgr, 255),
-            3,
-            lineType=cv2.LINE_AA,
+    try:
+        st = svg_path.stat()
+        key = (str(svg_path.resolve()), int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        key = (str(svg_path), 0, 0)
+    cached = _COLOR_GRAD_CACHE.get(key)
+    if cached is not None:
+        return cached.copy()
+    try:
+        root = ET.parse(svg_path).getroot()
+    except Exception:
+        return None
+    href = ""
+    for el in root.iter():
+        if not el.tag.endswith("image"):
+            continue
+        href = (
+            el.get(f"{{{XLINK_NS}}}href")
+            or el.get("href")
+            or el.get("xlink:href")
+            or ""
         )
+        if href.startswith("data:image"):
+            break
+    if not href.startswith("data:image"):
+        return None
+    try:
+        _header, b64 = href.split(",", 1)
+        raw = base64.b64decode(b64)
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+    except Exception:
+        return None
+    if bgr is None or bgr.size == 0:
+        return None
+    if bgr.ndim == 2:
+        bgra = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGRA)
+    elif bgr.shape[2] == 3:
+        bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+    else:
+        bgra = bgr
+    if len(_COLOR_GRAD_CACHE) >= 4:
+        _COLOR_GRAD_CACHE.clear()
+    _COLOR_GRAD_CACHE[key] = bgra
+    return bgra.copy()
 
 
-def _draw_icon_colors(tile: np.ndarray) -> None:
-    """Rainbow square with black center disc."""
+def _draw_color_icon_clipped(bgra: np.ndarray, svg_path: Path) -> None:
+    """Paint the rainbow tile with a rounded-rect clip (PyMuPDF can't)."""
     import cv2
 
-    h, w = tile.shape[:2]
-    pad = 18
-    x0, y0 = pad, pad
-    bw, bh = w - 2 * pad, h - 2 * pad
-    # HSV sweep left→right.
-    for x in range(bw):
-        hue = int(179 * x / max(1, bw - 1))
-        hsv = np.uint8([[[hue, 255, 255]]])
-        bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0, 0]
-        tile[y0 : y0 + bh, x0 + x, 0] = int(bgr[0])
-        tile[y0 : y0 + bh, x0 + x, 1] = int(bgr[1])
-        tile[y0 : y0 + bh, x0 + x, 2] = int(bgr[2])
-        tile[y0 : y0 + bh, x0 + x, 3] = 255
+    cx, cy, cw, ch, crx = _COLOR_CLIP_SVG
+    clip_x0, clip_y0 = _svg_to_px(cx, cy)
+    clip_x1, clip_y1 = _svg_to_px(cx + cw, cy + ch)
+    clip_w = max(1, int(round(clip_x1 - clip_x0)))
+    clip_h = max(1, int(round(clip_y1 - clip_y0)))
+    radius = max(1, int(round(_svg_len_to_px(crx))))
+    mask = _rounded_rect_mask(clip_w, clip_h, radius)
+
+    # Opaque rounded face under the gradient (matches other icon buttons).
+    face = np.zeros((clip_h, clip_w, 4), dtype=np.uint8)
+    face[:, :, 0:3] = (0x42, 0x42, 0x42)
+    face[:, :, 3] = mask
+    _paste_bgra(bgra, face, int(round(clip_x0)), int(round(clip_y0)))
+
+    master = _load_color_gradient_bgra(svg_path)
+    if master is None:
+        return
+    sx, sy, tx, ty = _COLOR_IMG_TRANSFORM_SVG
+    img_w, img_h = _COLOR_IMG_SIZE_SVG
+    dest_x0, dest_y0 = tx, ty
+    dest_w, dest_h = img_w * sx, img_h * sy
+    x0, y0 = _svg_to_px(dest_x0, dest_y0)
+    x1, y1 = _svg_to_px(dest_x0 + dest_w, dest_y0 + dest_h)
+    pw = max(1, int(round(x1 - x0)))
+    ph = max(1, int(round(y1 - y0)))
+    scaled = cv2.resize(master, (pw, ph), interpolation=cv2.INTER_AREA)
+    if scaled.ndim == 2:
+        scaled = cv2.cvtColor(scaled, cv2.COLOR_GRAY2BGRA)
+    elif scaled.shape[2] == 3:
+        scaled = cv2.cvtColor(scaled, cv2.COLOR_BGR2BGRA)
+    scaled = scaled.copy()
+    scaled[:, :, 3] = 255
+
+    ix0 = int(round(clip_x0 - x0))
+    iy0 = int(round(clip_y0 - y0))
+    cell = np.zeros((clip_h, clip_w, 4), dtype=np.uint8)
+    sx0 = max(0, ix0)
+    sy0 = max(0, iy0)
+    dx0 = max(0, -ix0)
+    dy0 = max(0, -iy0)
+    dw = min(clip_w - dx0, scaled.shape[1] - sx0)
+    dh = min(clip_h - dy0, scaled.shape[0] - sy0)
+    if dw > 0 and dh > 0:
+        cell[dy0 : dy0 + dh, dx0 : dx0 + dw] = scaled[sy0 : sy0 + dh, sx0 : sx0 + dw]
+    cell[:, :, 3] = mask
+    cell[mask == 0, :3] = 0
+    _paste_bgra(bgra, cell, int(round(clip_x0)), int(round(clip_y0)))
+
+    dcx, dcy, dr = _COLOR_DOT_SVG
+    px, py = _svg_to_px(dcx, dcy)
+    rr = max(1, int(round(_svg_len_to_px(dr))))
     cv2.circle(
-        tile,
-        (w // 2, h // 2),
-        14,
-        (0, 0, 0, 255),
+        bgra,
+        (int(round(px)), int(round(py))),
+        rr,
+        (0x33, 0x33, 0x33, 255),
         -1,
         lineType=cv2.LINE_AA,
     )
 
 
-def _draw_icon_display(tile: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
+def _draw_wifi_icon_clipped(bgra: np.ndarray) -> None:
+    """Paint WiFi arcs clipped to the rounded button ∩ triangle fan (clippath-6)."""
     import cv2
 
-    h, w = tile.shape[:2]
-    cx, cy = w // 2, h // 2
-    rw, rh = 36, 56
-    x0, y0 = cx - rw // 2, cy - rh // 2
-    cv2.rectangle(
-        tile,
-        (x0, y0),
-        (x0 + rw, y0 + rh),
-        (*color_bgr, 255),
-        2,
-        lineType=cv2.LINE_AA,
+    bx, by, bw, bh, brx = _WIFI_BUTTON_SVG
+    x0, y0 = _svg_to_px(bx, by)
+    x1, y1 = _svg_to_px(bx + bw, by + bh)
+    cw = max(1, int(round(x1 - x0)))
+    ch = max(1, int(round(y1 - y0)))
+    radius = max(1, int(round(_svg_len_to_px(brx))))
+    button_clip = _rounded_rect_mask(cw, ch, radius)
+
+    # Triangle/hex fan from Illustrator ``clippath-6`` (local to the button cell).
+    fan = np.zeros((ch, cw), dtype=np.uint8)
+    fan_pts = np.array(
+        [
+            (
+                int(round(_svg_to_px(px, py)[0] - x0)),
+                int(round(_svg_to_px(px, py)[1] - y0)),
+            )
+            for px, py in _WIFI_FAN_POLYGON_SVG
+        ],
+        dtype=np.int32,
     )
-    cv2.circle(tile, (cx, y0 + 8), 2, (*color_bgr, 255), -1, lineType=cv2.LINE_AA)
+    cv2.fillPoly(fan, [fan_pts], 255)
+    clip = cv2.bitwise_and(button_clip, fan)
+
+    cx_svg, cy_svg = _WIFI_CENTER_SVG
+    cx, cy = _svg_to_px(cx_svg, cy_svg)
+    stroke = max(2, int(round(_svg_len_to_px(_WIFI_STROKE_SVG))))
+    color = (0xE2, 0xE2, 0xE2)
+
+    rings = np.zeros((ch, cw, 4), dtype=np.uint8)
+    lcx = int(round(cx - x0))
+    lcy = int(round(cy - y0))
+    for r_svg in _WIFI_RADII_SVG:
+        rr = max(1, int(round(_svg_len_to_px(r_svg))))
+        cv2.circle(rings, (lcx, lcy), rr, (*color, 255), stroke, lineType=cv2.LINE_AA)
+    rings[:, :, 3] = np.minimum(rings[:, :, 3], clip)
+    rings[clip == 0, :3] = 0
+    _paste_bgra(bgra, rings, int(round(x0)), int(round(y0)))
 
 
-def _draw_icon_update(tile: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
+def _draw_update_icon_clipped(bgra: np.ndarray) -> None:
+    """Paint the update bar's gray fill clipped by ``clippath-7`` over the white bar."""
     import cv2
 
-    h, w = tile.shape[:2]
-    cx, cy = w // 2, h // 2
-    r = 22
-    # Two open arcs with arrowheads.
-    cv2.ellipse(
-        tile,
-        (cx, cy),
-        (r, r),
-        0,
-        40,
-        220,
-        (*color_bgr, 255),
-        3,
-        lineType=cv2.LINE_AA,
-    )
-    cv2.ellipse(
-        tile,
-        (cx, cy),
-        (r, r),
-        0,
-        220,
-        400,
-        (*color_bgr, 255),
-        3,
-        lineType=cv2.LINE_AA,
-    )
-    # Arrow tips
-    cv2.arrowedLine(
-        tile,
-        (cx + r - 2, cy - 8),
-        (cx + r + 2, cy + 6),
-        (*color_bgr, 255),
-        3,
-        tipLength=0.45,
-        line_type=cv2.LINE_AA,
-    )
-    cv2.arrowedLine(
-        tile,
-        (cx - r + 2, cy + 8),
-        (cx - r - 2, cy - 6),
-        (*color_bgr, 255),
-        3,
-        tipLength=0.45,
-        line_type=cv2.LINE_AA,
-    )
+    bx, by, bw, bh, brx = _UPDATE_BAR_SVG
+    cx, cy, cw, ch = _UPDATE_CLIP_SVG
+    x0, y0 = _svg_to_px(bx, by)
+    x1, y1 = _svg_to_px(bx + bw, by + bh)
+    pw = max(1, int(round(x1 - x0)))
+    ph = max(1, int(round(y1 - y0)))
+    radius = max(1, int(round(_svg_len_to_px(brx))))
+    bar_mask = _rounded_rect_mask(pw, ph, radius)
+
+    # clippath-7 in local bar coordinates
+    clip_x0, clip_y0 = _svg_to_px(cx, cy)
+    clip_x1, clip_y1 = _svg_to_px(cx + cw, cy + ch)
+    lx0 = int(round(clip_x0 - x0))
+    ly0 = int(round(clip_y0 - y0))
+    lx1 = int(round(clip_x1 - x0))
+    ly1 = int(round(clip_y1 - y0))
+    clip_mask = np.zeros((ph, pw), dtype=np.uint8)
+    rx0 = max(0, min(pw, lx0))
+    ry0 = max(0, min(ph, ly0))
+    rx1 = max(0, min(pw, lx1))
+    ry1 = max(0, min(ph, ly1))
+    if rx1 > rx0 and ry1 > ry0:
+        clip_mask[ry0:ry1, rx0:rx1] = 255
+    mask = cv2.bitwise_and(bar_mask, clip_mask)
+    if int(mask.max()) == 0:
+        return
+    patch = np.zeros((ph, pw, 4), dtype=np.uint8)
+    patch[:, :, 0] = _UPDATE_GRAY[0]
+    patch[:, :, 1] = _UPDATE_GRAY[1]
+    patch[:, :, 2] = _UPDATE_GRAY[2]
+    patch[:, :, 3] = mask
+    patch[mask == 0, :3] = 0
+    _paste_bgra(bgra, patch, int(round(x0)), int(round(y0)))
 
 
-def _draw_icon_about(tile: np.ndarray, color_bgr: tuple[int, int, int]) -> None:
-    import cv2
-
-    h, w = tile.shape[:2]
-    cx, cy = w // 2, h // 2
-    cv2.line(
-        tile,
-        (cx - 26, cy),
-        (cx + 26, cy),
-        (*color_bgr, 255),
-        4,
-        lineType=cv2.LINE_AA,
-    )
-    cv2.circle(tile, (cx + 8, cy), 7, (*color_bgr, 255), -1, lineType=cv2.LINE_AA)
-    cv2.circle(tile, (cx + 8, cy), 7, (0, 0, 0, 255), 2, lineType=cv2.LINE_AA)
-
-
-def _draw_tile_icon(
-    tile: np.ndarray,
-    icon: str,
-    color_bgr: tuple[int, int, int],
-) -> None:
-    if icon == "general":
-        _draw_icon_general(tile, color_bgr)
-    elif icon == "colors":
-        _draw_icon_colors(tile)
-    elif icon == "display":
-        _draw_icon_display(tile, color_bgr)
-    elif icon == "update":
-        _draw_icon_update(tile, color_bgr)
-    elif icon == "about":
-        _draw_icon_about(tile, color_bgr)
+def _svg_tree_from_path(path: Path) -> ET.Element:
+    path = Path(path)
+    key = (str(path.resolve()), path.stat().st_mtime_ns)
+    template = _SVG_TREE_TEMPLATES.get(key)
+    if template is None:
+        tree = ET.parse(path)
+        root = tree.getroot()
+        x, y, w, h = _PIGEON_VIEWBOX
+        root.set("viewBox", f"{x} {y} {w} {h}")
+        root.set("width", str(DESIGN_W))
+        root.set("height", str(DESIGN_H))
+        if len(_SVG_TREE_TEMPLATES) >= _SVG_TREE_TEMPLATE_MAX:
+            _SVG_TREE_TEMPLATES.clear()
+        _SVG_TREE_TEMPLATES[key] = root
+        template = root
+    return copy.deepcopy(template)
 
 
-def _draw_badge(
-    bgra: np.ndarray,
+def _full_theme_bgra(
+    state: MainSettingsState,
     *,
-    cx: int,
-    cy: int,
-    text: str,
-    fill_bgr: tuple[int, int, int],
-) -> None:
-    import cv2
-
-    r = 12
-    cv2.circle(bgra, (cx, cy), r, (*fill_bgr, 255), -1, lineType=cv2.LINE_AA)
-    patch, tw, th = _text_patch(text, 14, (255, 255, 255, 255), bold=True)
-    _paste_bgra(bgra, patch, cx - tw // 2, cy - th // 2)
-
-
-def _tile_origin(index: int) -> tuple[int, int]:
-    col = index % _COLS
-    row = index // _COLS
-    x = _GRID_X + col * (_TILE + _GAP_X)
-    y = _GRID_Y + row * (_TILE + _GAP_Y)
-    return x, y
-
-
-def apply_pigeon_settings_svg_state(root, state: MainSettingsState) -> None:
-    """No-op — grid UI is drawn in Pillow/OpenCV, not from SVG layers."""
-    del root, state
+    assets_dir: Path | str | None,
+    path: Path,
+) -> np.ndarray:
+    ui_hex = str(getattr(state.theme, "ui", "#ff0013") or "#ff0013")
+    adir = str(assets_dir if assets_dir is not None else path.parent.parent)
+    key = (ui_hex, adir, int(DESIGN_W), int(DESIGN_H))
+    cached = _THEME_BG_CACHE.get(key)
+    if cached is not None:
+        return cached
+    bg_bgra = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
+    bg_bgra[:, :, 3] = 255
+    _draw_container_background_bgra(bg_bgra, ui_hex=ui_hex, assets_dir=adir)
+    if len(_THEME_BG_CACHE) >= _THEME_BG_CACHE_MAX:
+        _THEME_BG_CACHE.clear()
+    _THEME_BG_CACHE[key] = bg_bgra
+    return bg_bgra
 
 
 def render_pigeon_settings_bgra(
@@ -517,136 +695,101 @@ def render_pigeon_settings_bgra(
     svg_path: Path | str | None = None,
     assets_dir: Path | str | None = None,
 ) -> np.ndarray:
-    del svg_path
+    path = Path(svg_path) if svg_path is not None else default_pigeon_settings_svg_path(assets_dir)
+    if not path.is_file():
+        raise FileNotFoundError(f"pigeon settings SVG not found: {path}")
     st = state if state is not None else MainSettingsState()
-    focused = normalize_pigeon_focus_id(st.pigeon_focused_id)
-    ui_hex = str(getattr(st.theme, "ui", "#ff0013") or "#ff0013")
-    # Button / deselected swatch — solid fill for every tile face.
-    fill_hex = str(getattr(st.theme, "deselected", "#202020") or "#202020")
-    ui_bgr = _hex_to_bgr(ui_hex)
-    fill_bgr = _hex_to_bgr(fill_hex)
-    white = (255, 255, 255)
+    root = _svg_tree_from_path(path)
+    apply_pigeon_settings_svg_state(root, st)
+    _hide_pymupdf_clip_victims(root)
+    _disable_embedded_settings_background_layers(root)
+    _prune_display_none(root)
+    from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
 
-    out = np.zeros((DESIGN_H, DESIGN_W, 4), dtype=np.uint8)
-    out[:, :, 3] = 255
-    # Same slanted theme plate used by main / preferences / color settings.
-    from pigeon.widgets.main_settings import _draw_container_background_bgra
-
-    _draw_container_background_bgra(
-        out,
-        ui_hex=ui_hex,
-        assets_dir=assets_dir,
+    ui_bgra = rasterize_settings_svg_bgra(
+        root,
+        width=DESIGN_W,
+        height=DESIGN_H,
+        font_mode="preferences",
     )
+    _draw_color_icon_clipped(ui_bgra, path)
+    _draw_wifi_icon_clipped(ui_bgra)
+    _draw_update_icon_clipped(ui_bgra)
+    bg = _full_theme_bgra(st, assets_dir=assets_dir, path=path)
+    return _composite_bgra_over_bgra(bg, ui_bgra)
 
-    # Header: SETTINGS / Pigeon (left), version meta (right).
-    settings_p, sw, sh = _text_patch(
-        "SETTINGS", _HEADER_SETTINGS_SIZE, (255, 255, 255, 255), bold=True
+
+def clear_pigeon_settings_render_caches() -> None:
+    _SVG_TREE_TEMPLATES.clear()
+    _THEME_BG_CACHE.clear()
+    _COLOR_GRAD_CACHE.clear()
+
+
+def factory_reset_pigeon_persisted_state() -> None:
+    """Erase persisted customizations / pairings and restore defaults on disk."""
+    from pigeon.app_state import (
+        clear_all_persisted_devices_and_targets,
+        clear_last_apple_tv,
+        clear_last_receiver,
+        pop_app_state_keys,
     )
-    _paste_bgra(out, settings_p, _HEADER_X, _HEADER_SETTINGS_Y)
-    pigeon_p, _pw, _ph = _text_patch(
-        "Pigeon", _HEADER_PIGEON_SIZE, (220, 220, 220, 255), bold=False
+    from pigeon.media_folders import purge_directory_contents
+    from pigeon.runtime_paths import (
+        pigeon_pulled_media_dir,
+        pigeon_reformatted_media_dir,
+        pigeon_state_dir,
     )
-    _paste_bgra(out, pigeon_p, _HEADER_X, _HEADER_PIGEON_Y)
-
-    ver = str(getattr(st, "version_string", "") or "").strip()
-    if ver and not ver.lower().startswith("v"):
-        meta = f"MAIN {ver}"
-    elif ver:
-        meta = f"MAIN {ver.lstrip('vV').lstrip('.')}"
-    else:
-        meta = "MAIN"
-    meta_p, mw, _mh = _text_patch(
-        meta, _HEADER_META_SIZE, (255, 255, 255, 255), bold=False
+    from pigeon.widgets.preferences_settings import (
+        DEFAULT_ZONE_WIDGETS,
+        write_now_playing_zone_widgets,
     )
-    _paste_bgra(out, meta_p, DESIGN_W - _HEADER_X - mw, _HEADER_META_Y)
+    from pigeon.widgets.ui_color_settings import write_ui_color_keys
 
-    # BACK affordance: underline SETTINGS when focused.
-    if focused == "pigeon_back":
-        import cv2
-
-        y = _HEADER_SETTINGS_Y + sh + 4
-        cv2.line(
-            out,
-            (_HEADER_X, y),
-            (_HEADER_X + sw, y),
-            (*ui_bgr, 255),
-            3,
-            lineType=cv2.LINE_AA,
-        )
-
-    for i, tile in enumerate(_TILES):
-        x, y = _tile_origin(i)
-        selected = focused == tile.focus_id
-        face_bgr = ui_bgr if selected else fill_bgr
-        icon_color = white
-        if selected:
-            label_rgba = (*ui_bgr[::-1], 255)  # BGR→RGB for Pillow fill
-        else:
-            label_rgba = (255, 255, 255, 255)
-
-        # Cell buffer: filled rounded face + icon, then mask corners.
-        cell = np.zeros((_TILE, _TILE, 4), dtype=np.uint8)
-        _draw_rounded_rect_fill(
-            cell,
-            x=0,
-            y=0,
-            w=_TILE,
-            h=_TILE,
-            radius=_CORNER,
-            color_bgr=face_bgr,
-        )
-        _draw_tile_icon(cell, tile.icon, icon_color)
-        _apply_rounded_mask(cell, _CORNER)
-        _paste_bgra(out, cell, x, y)
-
-        border = ui_bgr if selected else white
-        _draw_rounded_rect_outline(
-            out,
-            x=x,
-            y=y,
-            w=_TILE,
-            h=_TILE,
-            radius=_CORNER,
-            color_bgr=border,
-            thickness=_STROKE,
-        )
-        _draw_corner_brackets(
-            out,
-            x=x + 4,
-            y=y + 4,
-            w=_TILE - 8,
-            h=_TILE - 8,
-            length=_BRACKET,
-            color_bgr=border,
-            thickness=2,
-        )
-
-        # Update badge on ABOUT when an update is available.
-        if tile.focus_id == "about_button" and bool(getattr(st, "update_available", False)):
-            _draw_badge(
-                out,
-                cx=x + _TILE - 6,
-                cy=y + 6,
-                text="1",
-                fill_bgr=ui_bgr,
-            )
-
-        lab_p, lw, lh = _text_patch(
-            tile.label, _LABEL_SIZE, label_rgba, bold=True
-        )
-        _paste_bgra(
-            out,
-            lab_p,
-            x + (_TILE - lw) // 2,
-            y + _TILE + _LABEL_GAP,
-        )
-
-    return out
+    clear_all_persisted_devices_and_targets()
+    try:
+        clear_last_apple_tv()
+    except Exception:
+        pass
+    try:
+        clear_last_receiver()
+    except Exception:
+        pass
+    pop_app_state_keys(
+        "settings_ui_colors",
+        "now_playing_zone_widgets",
+        "display_par_mode",
+        "roku_ecp_base_url",
+        "tmdb_quality_ok_count",
+        "tmdb_quality_fail_count",
+        "source_toggles",
+    )
+    write_ui_color_keys(
+        {"accent": "white", "ui": "red", "button": "black"},
+        persist=True,
+    )
+    write_now_playing_zone_widgets(DEFAULT_ZONE_WIDGETS)
+    try:
+        purge_directory_contents(pigeon_pulled_media_dir())
+    except Exception:
+        pass
+    try:
+        purge_directory_contents(pigeon_reformatted_media_dir())
+    except Exception:
+        pass
+    for name in ("pyatv_credentials",):
+        try:
+            p = pigeon_state_dir() / name
+            if p.is_file():
+                p.unlink()
+        except OSError:
+            pass
 
 
 __all__ = [
     "apply_pigeon_settings_svg_state",
+    "clear_pigeon_settings_render_caches",
     "default_pigeon_settings_svg_path",
+    "factory_reset_pigeon_persisted_state",
     "normalize_pigeon_focus_id",
     "pigeon_focus_ring",
     "render_pigeon_settings_bgra",
