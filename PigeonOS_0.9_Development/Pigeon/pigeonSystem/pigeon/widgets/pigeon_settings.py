@@ -131,9 +131,9 @@ _SELECTABLE_TILES: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "metadata_button",
-        "settings_pigeon_07_metadata_text_group",
-        "settings_pigeon_07_metadata_button",
-        "settings_pigeon_07_metadata_text",
+        "settings_pigeon_07_player_text_group",
+        "settings_pigeon_07_player_button",
+        "settings_pigeon_07_player_text",
     ),
     (
         "hdmi_button",
@@ -151,7 +151,7 @@ _SELECTABLE_TILES: tuple[tuple[str, str, str, str], ...] = (
 
 _STATUS_ICONS: tuple[tuple[str, str], ...] = (
     ("wifi", "settings_pigeon_06_wifi_status_icon"),
-    ("metadata", "settings_pigeon_07_metadata_status_icon"),
+    ("metadata", "settings_pigeon_07_player_status_icon"),
     ("hdmi", "settings_pigeon_08_hdmi_status_icon"),
     ("audio", "settings_pigeon_09_audio_status_icon"),
 )
