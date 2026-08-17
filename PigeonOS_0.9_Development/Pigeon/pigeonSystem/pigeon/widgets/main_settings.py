@@ -945,9 +945,9 @@ class MainSettingsState:
         self.metadata_debug_page = 0
 
     def navigate_metadata_debug(self, *, forward: bool = True) -> None:
-        """Step player → hdmi → pigeon; clamp at the ends (no wrap)."""
+        """Cycle player → hdmi → pigeon, wrapping in both directions."""
         step = 1 if forward else -1
-        self.metadata_debug_page = max(0, min(2, int(self.metadata_debug_page) + step))
+        self.metadata_debug_page = (int(self.metadata_debug_page) + step) % 3
 
     def exit_pigeon_settings(self) -> None:
         self.close_update_popup()
