@@ -488,6 +488,9 @@ class MainSettingsState:
     source_hdmi_on: bool = True
     source_audio_on: bool = True
     show_preferences: bool = False
+    # Metadata inspector ([4]): pages 0=player, 1=hdmi, 2=pigeon.
+    show_metadata_debug: bool = False
+    metadata_debug_page: int = 0
     # "zones" = navigation A; "widgets" = navigation B after a zone is activated.
     preferences_nav: str = "zones"
     preferences_focus_index: int = 0
@@ -895,6 +898,7 @@ class MainSettingsState:
         self.close_update_popup()
         self.close_preferences()
         self.close_ui_color()
+        self.close_metadata_debug()
         load_persisted_theme_into_state(self)
         try:
             from pigeon.source_toggles import apply_toggles_to_settings_state
@@ -920,9 +924,35 @@ class MainSettingsState:
         # Prefetch update availability so the badge is ready without opening the popup.
         self.pigeon_needs_update_prefetch = True
 
+    def open_metadata_debug(self) -> None:
+        """Open the metadata inspector ([4]) on its first page (player)."""
+        if not self.show_pigeon_settings:
+            self.enter_pigeon_settings()
+        self.close_update_popup()
+        self.close_preferences()
+        self.close_ui_color()
+        self.show_metadata_debug = True
+        self.metadata_debug_page = 0
+        try:
+            from pigeon.hdmi_ocr import probe_hdmi_presence
+
+            probe_hdmi_presence(force=True)
+        except Exception:
+            pass
+
+    def close_metadata_debug(self) -> None:
+        self.show_metadata_debug = False
+        self.metadata_debug_page = 0
+
+    def navigate_metadata_debug(self, *, forward: bool = True) -> None:
+        """Step player → hdmi → pigeon; clamp at the ends (no wrap)."""
+        step = 1 if forward else -1
+        self.metadata_debug_page = max(0, min(2, int(self.metadata_debug_page) + step))
+
     def exit_pigeon_settings(self) -> None:
         self.close_update_popup()
         self.close_preferences()
+        self.close_metadata_debug()
         self.show_pigeon_settings = False
         self.pigeon_needs_update_prefetch = False
         self.ensure_focus_ring()
@@ -1249,6 +1279,9 @@ class MainSettingsState:
     def navigate_pigeon(self, *, forward: bool = True) -> None:
         from pigeon.widgets.pigeon_settings import pigeon_focus_ring
 
+        if self.show_metadata_debug:
+            self.navigate_metadata_debug(forward=forward)
+            return
         if self.show_ui_color:
             self.navigate_ui_color(forward=forward)
             return
@@ -4411,6 +4444,26 @@ def _disable_embedded_settings_background_layers(root: ET.Element) -> None:
                 _set_visible(el, False)
     _hide_container_stripe_rects(root)
     _remove_canvas_background_rect(root)
+    # Illustrator exports sometimes bake the canvas + diagonal stripes into
+    # plain ``Layer_NN`` groups (e.g. settings_pigeon_ui_color 0815): sweep the
+    # whole tree for slanted stripe rects and full-canvas plates so the shared
+    # code-drawn theme background stays visible underneath.
+    parents = _parent_map(root)
+    for el in list(root.iter()):
+        if not el.tag.endswith("rect"):
+            continue
+        transform = el.get("transform") or _style_prop(el.get("style") or "", "transform")
+        is_slant_stripe = _parse_svg_slant_transform(transform) is not None
+        try:
+            w = float(el.get("width") or 0.0)
+            h = float(el.get("height") or 0.0)
+        except ValueError:
+            w = h = 0.0
+        is_canvas_plate = w >= 790.0 and h >= 470.0
+        if is_slant_stripe or is_canvas_plate:
+            parent = parents.get(el)
+            if parent is not None:
+                parent.remove(el)
     for lid in ("settings_background", "background"):
         el = _find_by_logical_id(root, lid)
         if el is not None:
@@ -6202,6 +6255,19 @@ class MainSettingsWidget:
                 if oldest != compose_key:
                     self._kb_composed_cache.pop(oldest, None)
 
+    def _metadata_debug_sig(self) -> tuple[object, ...]:
+        """Metadata inspector page + a live-data token (repaint on change)."""
+        st = self._state
+        if not st.show_metadata_debug:
+            return (False,)
+        try:
+            from pigeon.widgets.metadata_debug import metadata_debug_data
+
+            data_token = hash(repr(metadata_debug_data()))
+        except Exception:
+            data_token = 0
+        return (True, int(st.metadata_debug_page), data_token)
+
     def _main_state_sig(self) -> tuple[object, ...]:
         st = self._state
         if st.show_pigeon_settings or st.show_preferences:
@@ -6285,6 +6351,7 @@ class MainSettingsWidget:
             bool(st.source_audio_on),
             bool(st.wifi_configured),
             bool(st.show_preferences),
+            self._metadata_debug_sig(),
             str(st.preferences_nav or ""),
             int(st.preferences_focus_index),
             int(st.preferences_active_zone),
@@ -7820,6 +7887,11 @@ class MainSettingsWidget:
             return f"keyboard:{result}"
 
         if st.show_pigeon_settings:
+            if st.show_metadata_debug:
+                # EXIT is the only control — land back on the pigeon settings grid.
+                st.close_metadata_debug()
+                self.invalidate()
+                return "metadata_debug_exit"
             if st.show_ui_color:
                 action = st.activate_ui_color()
                 self._cached_bgra = None
@@ -8055,7 +8127,26 @@ class MainSettingsWidget:
                 if structure != self._focus_cache_structure:
                     self._focus_frame_cache.clear()
                     self._focus_cache_structure = structure
-                if st.show_ui_color:
+                if st.show_metadata_debug:
+                    # Live debug page — render every frame signature change; the
+                    # sig carries a 1s token so values stay fresh.
+                    from pigeon.widgets.metadata_debug import (
+                        render_metadata_debug_bgra,
+                    )
+
+                    if (
+                        self._cached_main_bgra is not None
+                        and self._cached_main_sig == main_sig
+                    ):
+                        frame = self._cached_main_bgra
+                    else:
+                        frame = render_metadata_debug_bgra(
+                            st,
+                            assets_dir=self._assets_dir,
+                        )
+                        self._cached_main_bgra = frame
+                        self._cached_main_sig = main_sig
+                elif st.show_ui_color:
                     from pigeon.widgets.ui_color_settings import (
                         render_ui_color_settings_bgra,
                     )
