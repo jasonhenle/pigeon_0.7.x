@@ -5414,24 +5414,31 @@ def main() -> int:
                 "episode": p_episode,
             }
 
-            # --- hdmi: whatever OCR pulled off the video feed ---
-            h_season = lm.get("ocr_season")
-            h_episode_n = lm.get("ocr_episode")
+            # --- hdmi: whatever OCR pulled off the video feed. No capture card
+            # connected → red LED and no metadata at all (stale OCR fields may
+            # still sit in last_metadata after an unplug).
             h_episode = ""
-            try:
-                if h_season is not None and h_episode_n is not None:
-                    h_episode = f"S{int(h_season)} E{int(h_episode_n)}"
-                elif h_episode_n is not None:
-                    h_episode = f"E{int(h_episode_n)}"
-            except (TypeError, ValueError):
-                h_episode = ""
-            h_year = lm.get("ocr_year")
+            h_title = ""
+            h_year_s = ""
+            if hdmi_active:
+                h_season = lm.get("ocr_season")
+                h_episode_n = lm.get("ocr_episode")
+                try:
+                    if h_season is not None and h_episode_n is not None:
+                        h_episode = f"S{int(h_season)} E{int(h_episode_n)}"
+                    elif h_episode_n is not None:
+                        h_episode = f"E{int(h_episode_n)}"
+                except (TypeError, ValueError):
+                    h_episode = ""
+                h_title = str(lm.get("ocr_title") or "").strip()
+                h_year = lm.get("ocr_year")
+                h_year_s = str(int(h_year)) if isinstance(h_year, (int, float)) else ""
             hdmi_rows = {
                 "service": "",
                 "series": "",
-                "title": str(lm.get("ocr_title") or "").strip(),
+                "title": h_title,
                 "episode": h_episode,
-                "year": str(int(h_year)) if isinstance(h_year, (int, float)) else "",
+                "year": h_year_s,
             }
 
             # --- pigeon: the final verdict (search terms + confidence) ---

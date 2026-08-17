@@ -433,6 +433,30 @@ def note_hdmi_present(present: bool) -> None:
     _hdmi_present = bool(present)
 
 
+def _linux_usb_video_indices() -> list[int]:
+    """V4L2 indices of USB video devices — SoC codec/ISP nodes don't count.
+
+    Raspberry Pi exposes a dozen /dev/video* nodes (bcm2835 codec/ISP, HEVC
+    decoder) with nothing plugged in; a capture dongle is the only device
+    whose sysfs path routes through the USB bus.
+    """
+    import glob
+    import re as _re
+
+    out: list[int] = []
+    for sys_dir in sorted(glob.glob("/sys/class/video4linux/video*")):
+        m = _re.search(r"video(\d+)$", sys_dir)
+        if m is None:
+            continue
+        try:
+            real = os.path.realpath(os.path.join(sys_dir, "device"))
+        except OSError:
+            continue
+        if "/usb" in real:
+            out.append(int(m.group(1)))
+    return out
+
+
 def hdmi_capture_available() -> bool:
     """Non-blocking: True when a capture device is open or last seen."""
     global _hdmi_present
@@ -483,9 +507,7 @@ def _hdmi_probe_worker() -> None:
             named = _avfoundation_devices()
             present = any(_is_hdmi_camera(name, dtype) for _i, name, dtype in named)
         elif sys.platform.startswith("linux"):
-            import glob
-
-            present = bool(glob.glob("/dev/video*"))
+            present = bool(_linux_usb_video_indices())
         if not present and _cap is not None:
             try:
                 present = bool(_cap.isOpened())
@@ -577,6 +599,10 @@ def _candidate_capture_indices() -> list[int]:
     # Do not scan 0..3 on macOS — Continuity Camera often sits at index 1.
     if sys.platform == "darwin":
         return []
+    if sys.platform.startswith("linux"):
+        # Only USB devices — opening the Pi's SoC codec/ISP nodes fails with
+        # V4L2 "can't capture by index" noise and false presence.
+        return _linux_usb_video_indices()
     out = [CAPTURE_INDEX]
     for extra in (1, 2, 3):
         if extra not in out:
