@@ -7998,6 +7998,41 @@ def main() -> int:
                             font=S_FONT_SMALL,
                         ).pack(side=tk.LEFT, padx=(6, 0))
 
+        def _seed_current_apple_tv_from_streaming_slot() -> None:
+            """Keep the poll target in sync with the location's saved player.
+
+            ``current_apple_tv`` is initialized from ``last_apple_tv``. That key
+            can be missing (Mac state after a location-only save, or a raced
+            write) even when FAMILY ROOM still has Downstairs AppleTV. Without
+            an identifier the poll tick returns immediately and the inspector
+            / now-playing stay empty.
+            """
+            row = streaming_slot_holder[0]
+            if not isinstance(row, dict):
+                return
+            ident = str(row.get("identifier") or "").strip()
+            if not ident:
+                return
+            if str(current_apple_tv.get("identifier") or "").strip() == ident:
+                if not str(current_apple_tv.get("address") or "").strip():
+                    current_apple_tv["address"] = str(row.get("address") or "").strip()
+                return
+            current_apple_tv.clear()
+            current_apple_tv.update(
+                {
+                    "identifier": ident,
+                    "address": str(row.get("address") or "").strip(),
+                    "name": str(row.get("name") or "").strip(),
+                    "label": str(row.get("label") or "").strip(),
+                }
+            )
+            write_last_apple_tv(
+                identifier=ident,
+                address=str(row.get("address") or "").strip(),
+                name=str(row.get("name") or "").strip() or None,
+                label=str(row.get("label") or "").strip() or None,
+            )
+
         def describe_current_apple_tv(*, suffix: str | None = None) -> None:
             if current_apple_tv.get("name"):
                 play = f'Playback: {current_apple_tv["name"]}'
@@ -11138,6 +11173,8 @@ def main() -> int:
             if apple_tv_busy["active"]:
                 root.after(APPLE_TV_POLL_MS, _apple_tv_auto_poll_tick)
                 return
+            if not current_apple_tv.get("identifier"):
+                _seed_current_apple_tv_from_streaming_slot()
             if not current_apple_tv.get("identifier") or not _PIGEON_EXT:
                 _sync_streaming_badge_from_playback_sources(None)
                 _sync_status_bar_visibility_for_playback(None)
@@ -11979,6 +12016,7 @@ def main() -> int:
         merge_legacy_saved_receivers_into_av_slot()
         streaming_slot_holder[0] = read_saved_streaming_device()
         avr_slot_holder[0] = read_saved_av_receiver()
+        _seed_current_apple_tv_from_streaming_slot()
         # Prefer the location AV slot address over last_receiver — the latter can
         # linger on a stale IP after the Denon DHCP/address changes, which leaves
         # zone3 with an empty volume fraction (no red ring).
