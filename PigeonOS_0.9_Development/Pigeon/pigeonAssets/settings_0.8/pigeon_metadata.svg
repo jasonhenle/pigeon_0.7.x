@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1478.15 1513.77">
+  <defs>
+    <clipPath id="clippath">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-1">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-2">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-3">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-4">
+      <rect x="385.67" y="551.87" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+    <clipPath id="clippath-5">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" fill="none"/>
+    </clipPath>
+  </defs>
+  <g id="background">
+    <g id="background-2" data-name="background">
+      <rect x="350.39" y="441.07" width="813" height="480"/>
+    </g>
+    <g id="menu_container_6" data-name="menu container 6">
+      <g clip-path="url(#clippath)">
+        <rect x="421.48" y="891.38" width="1197.51" height="197.03" transform="translate(-392.9492 1143.7788) rotate(-50.35)" fill="#4c0006"/>
+      </g>
+    </g>
+    <g id="menu_container_5" data-name="menu container 5">
+      <g clip-path="url(#clippath-1)">
+        <rect x="295.8" y="821.14" width="1197.51" height="130.19" transform="translate(-358.6173 1009.5012) rotate(-50.35)" fill="#5e0009"/>
+      </g>
+    </g>
+    <g id="menu_container_4" data-name="menu container 4">
+      <g clip-path="url(#clippath-2)">
+        <rect x="189.05" y="723.4" width="1197.51" height="147.74" transform="translate(-328.75 895.11) rotate(-50.35)" fill="#77000e"/>
+      </g>
+    </g>
+    <g id="menu_container_3" data-name="menu container 3">
+      <g clip-path="url(#clippath-3)">
+        <rect x="94.05" y="652.93" width="1196.76" height="131.57" transform="translate(-302.79 793.24) rotate(-50.35)" fill="#930012"/>
+      </g>
+    </g>
+    <g id="menu_container_2" data-name="menu container 2">
+      <g clip-path="url(#clippath-4)">
+        <rect x="-9.65" y="559.61" width="1196.01" height="145.33" transform="translate(-273.89 681.83) rotate(-50.35)" fill="#b2000d"/>
+      </g>
+    </g>
+    <g id="menu_container_1" data-name="menu container 1">
+      <g clip-path="url(#clippath-5)">
+        <rect x="-139.5" y="424.73" width="1197.51" height="200.51" transform="translate(-238.01 543.6) rotate(-50.35)" fill="#ff0013"/>
+      </g>
+    </g>
+  </g>
+  <g id="metadata_source_group">
+    <g id="metadata_fields">
+      <text transform="translate(690.35 645.16)" fill="#f66" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0">se</tspan><tspan x="27.74" y="0" letter-spacing="0em">r</tspan><tspan x="38.25" y="0">vi</tspan><tspan x="57.74" y="0" letter-spacing="0em">c</tspan><tspan x="72.33" y="0">e = </tspan></text>
+      <text transform="translate(654.04 683.42)" fill="#f66" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0">series title = </tspan></text>
+      <text transform="translate(731.15 721.68)" fill="#f66" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0">title = </tspan></text>
+      <text transform="translate(629.18 759.94)" fill="#f66" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0">epis</tspan><tspan x="49.25" y="0" letter-spacing="0em">o</tspan><tspan x="64.8" y="0" letter-spacing="0em">de title = </tspan></text>
+      <text transform="translate(724.82 798.2)" fill="#f66" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0" letter-spacing="-.04em">y</tspan><tspan x="13.2" y="0" letter-spacing="0em">e</tspan><tspan x="28.46" y="0" letter-spacing="0em">ar = </tspan></text>
+    </g>
+    <g id="metadata_results">
+      <text transform="translate(860.24 645.4)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0" letter-spacing="0em">d</tspan><tspan x="15.53" y="0">is</tspan><tspan x="34.3" y="0" letter-spacing="0em">n</tspan><tspan x="48.53" y="0" letter-spacing="-.05em">e</tspan><tspan x="62.28" y="0">y+ </tspan></text>
+      <text transform="translate(860.24 683.66)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0" letter-spacing="-.03em">s</tspan><tspan x="11.76" y="0" letter-spacing="-.02em">t</tspan><tspan x="21.74" y="0" letter-spacing="0em">a</tspan><tspan x="37.32" y="0">r </tspan><tspan x="53.09" y="0" letter-spacing="-.02em">w</tspan><tspan x="74.62" y="0" letter-spacing="0em">a</tspan><tspan x="90.19" y="0" letter-spacing="0em">r</tspan><tspan x="100.73" y="0">s</tspan></text>
+      <text transform="translate(860.24 721.92)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0">em</tspan><tspan x="36.96" y="0" letter-spacing="0em">p</tspan><tspan x="52.37" y="0" letter-spacing="0em">i</tspan><tspan x="58.75" y="0" letter-spacing="-.01em">r</tspan><tspan x="68.74" y="0">e </tspan><tspan x="89.11" y="0" letter-spacing="-.03em">s</tspan><tspan x="100.87" y="0" letter-spacing="0em">t</tspan><tspan x="111.29" y="0">r</tspan><tspan x="121.61" y="0" letter-spacing="0em">i</tspan><tspan x="127.97" y="0" letter-spacing="-.04em">k</tspan><tspan x="141" y="0" letter-spacing="0em">e</tspan><tspan x="155.81" y="0">s </tspan><tspan x="173.71" y="0" letter-spacing="0em">b</tspan><tspan x="189.14" y="0" letter-spacing="0em">a</tspan><tspan x="204.62" y="0" letter-spacing="0em">c</tspan><tspan x="218.95" y="0">k </tspan></text>
+      <text transform="translate(860.24 760.18)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0">em</tspan><tspan x="36.96" y="0" letter-spacing="0em">p</tspan><tspan x="52.37" y="0" letter-spacing="0em">i</tspan><tspan x="58.75" y="0" letter-spacing="-.01em">r</tspan><tspan x="68.74" y="0">e </tspan><tspan x="89.11" y="0" letter-spacing="-.03em">s</tspan><tspan x="100.87" y="0" letter-spacing="0em">t</tspan><tspan x="111.29" y="0">r</tspan><tspan x="121.61" y="0" letter-spacing="0em">i</tspan><tspan x="127.97" y="0" letter-spacing="-.04em">k</tspan><tspan x="141" y="0" letter-spacing="0em">e</tspan><tspan x="155.81" y="0">s </tspan><tspan x="173.71" y="0" letter-spacing="0em">b</tspan><tspan x="189.14" y="0" letter-spacing="0em">a</tspan><tspan x="204.62" y="0" letter-spacing="0em">c</tspan><tspan x="218.95" y="0">k</tspan></text>
+      <text transform="translate(860.24 798.44)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0">1</tspan><tspan x="11.11" y="0" letter-spacing="-.01em">9</tspan><tspan x="25.99" y="0" letter-spacing="-.02em">8</tspan><tspan x="40.46" y="0">0 </tspan></text>
+    </g>
+    <g id="metadata_results_player">
+      <g id="metadata_results-2" data-name="metadata_results">
+        <text transform="translate(860.24 645.4)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0" letter-spacing="0em">d</tspan><tspan x="15.53" y="0">is</tspan><tspan x="34.3" y="0" letter-spacing="0em">n</tspan><tspan x="48.53" y="0" letter-spacing="-.05em">e</tspan><tspan x="62.28" y="0">y+ </tspan></text>
+        <text transform="translate(860.24 683.66)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0" letter-spacing="-.03em">s</tspan><tspan x="11.76" y="0" letter-spacing="-.02em">t</tspan><tspan x="21.74" y="0" letter-spacing="0em">a</tspan><tspan x="37.32" y="0">r </tspan><tspan x="53.09" y="0" letter-spacing="-.02em">w</tspan><tspan x="74.62" y="0" letter-spacing="0em">a</tspan><tspan x="90.19" y="0" letter-spacing="0em">r</tspan><tspan x="100.73" y="0">s</tspan></text>
+        <text transform="translate(860.24 721.92)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0">em</tspan><tspan x="36.96" y="0" letter-spacing="0em">p</tspan><tspan x="52.37" y="0" letter-spacing="0em">i</tspan><tspan x="58.75" y="0" letter-spacing="-.01em">r</tspan><tspan x="68.74" y="0">e </tspan><tspan x="89.11" y="0" letter-spacing="-.03em">s</tspan><tspan x="100.87" y="0" letter-spacing="0em">t</tspan><tspan x="111.29" y="0">r</tspan><tspan x="121.61" y="0" letter-spacing="0em">i</tspan><tspan x="127.97" y="0" letter-spacing="-.04em">k</tspan><tspan x="141" y="0" letter-spacing="0em">e</tspan><tspan x="155.81" y="0">s </tspan><tspan x="173.71" y="0" letter-spacing="0em">b</tspan><tspan x="189.14" y="0" letter-spacing="0em">a</tspan><tspan x="204.62" y="0" letter-spacing="0em">c</tspan><tspan x="218.95" y="0">k </tspan></text>
+        <text transform="translate(860.24 760.18)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0">em</tspan><tspan x="36.96" y="0" letter-spacing="0em">p</tspan><tspan x="52.37" y="0" letter-spacing="0em">i</tspan><tspan x="58.75" y="0" letter-spacing="-.01em">r</tspan><tspan x="68.74" y="0">e </tspan><tspan x="89.11" y="0" letter-spacing="-.03em">s</tspan><tspan x="100.87" y="0" letter-spacing="0em">t</tspan><tspan x="111.29" y="0">r</tspan><tspan x="121.61" y="0" letter-spacing="0em">i</tspan><tspan x="127.97" y="0" letter-spacing="-.04em">k</tspan><tspan x="141" y="0" letter-spacing="0em">e</tspan><tspan x="155.81" y="0">s </tspan><tspan x="173.71" y="0" letter-spacing="0em">b</tspan><tspan x="189.14" y="0" letter-spacing="0em">a</tspan><tspan x="204.62" y="0" letter-spacing="0em">c</tspan><tspan x="218.95" y="0">k</tspan></text>
+        <text transform="translate(860.24 798.44)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="24" font-style="italic" font-weight="700"><tspan x="0" y="0">1</tspan><tspan x="11.11" y="0" letter-spacing="-.01em">9</tspan><tspan x="25.99" y="0" letter-spacing="-.02em">8</tspan><tspan x="40.46" y="0">0 </tspan></text>
+      </g>
+    </g>
+    <g id="metadata_confidence">
+      <text transform="translate(801.09 645.4)" fill="#ffc0c0" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0" letter-spacing="0em">9</tspan><tspan x="14.88" y="0">5%</tspan></text>
+      <text transform="translate(801.09 683.66)" fill="#ffc0c0" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0">88%</tspan></text>
+      <text transform="translate(801.09 721.92)" fill="#ffc0c0" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0" letter-spacing="-.04em">7</tspan><tspan x="12.77" y="0">6%</tspan></text>
+      <text transform="translate(801.09 760.18)" fill="#ffc0c0" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0">90%</tspan></text>
+      <text transform="translate(801.09 798.44)" fill="#ffc0c0" font-family="SharpSans-Semibold, &apos;Sharp Sans&apos;" font-size="24" font-weight="600"><tspan x="0" y="0">80%</tspan></text>
+    </g>
+  </g>
+  <g id="metadata_icon_group">
+    <g id="metadata_pigeon_icon">
+      <rect id="settings_pigeon_07_metadata_button" x="422.15" y="617.6" width="172.47" height="172.47" rx="10.35" ry="10.35" fill="#424242" stroke="#0dff00" stroke-miterlimit="10" stroke-width="3"/>
+      <text id="settings_pigeon_07_metadata_icon" transform="translate(433.83 720.79)" fill="#fff" font-family="SharpSans-ExtraboldItalic, &apos;Sharp Sans&apos;" font-size="43.68" font-style="italic" font-weight="700"><tspan x="0" y="0" letter-spacing="0em">pi</tspan><tspan x="39.44" y="0" letter-spacing="0em">g</tspan><tspan x="67.52" y="0">eon</tspan></text>
+      <circle id="settings_pigeon_07_metadata_status_icon" cx="589.7" cy="622.38" r="22.94" fill="#0dff00"/>
+    </g>
+    <g id="metadata_hdmi_icon">
+      <g id="settings_pigeon_08_hdmi_text_group">
+        <rect id="settings_pigeon_09_hdmi_button" x="426.61" y="807.99" width="163.59" height="44.95" rx="5.64" ry="5.64" stroke="#000" stroke-miterlimit="10" stroke-width="7"/>
+        <text id="settings_pigeon_09_hdmi_text_text" transform="translate(477.95 843.57)" fill="#fff" font-family="Digital-7, Digital-7" font-size="38.22" isolation="isolate"><tspan x="0" y="0">hdmi</tspan></text>
+      </g>
+      <rect id="settings_pigeon_09_hdmi_button-2" data-name="settings_pigeon_09_hdmi_button" x="422.13" y="616.85" width="172.47" height="172.47" rx="10.35" ry="10.35" fill="#424242" stroke="#000" stroke-miterlimit="10" stroke-width="7"/>
+      <path id="settings_pigeon_08_hdmi_icon" d="M579.48,691.24c0-3.68-2.98-6.66-6.66-6.66h-124.7c-3.68,0-6.66,2.98-6.66,6.66v16.95c0,3.07,2.09,5.64,4.93,6.4l21.29,12.88h85.9l21.69-13.1c.66-.26,1.26-.64,1.79-1.08l.91-.55h-.3c1.12-1.2,1.81-2.79,1.81-4.55v-16.95Z" fill="#fff" stroke="#000" stroke-miterlimit="10" stroke-width="2"/>
+      <rect id="settings_pigeon_08_hdmi_line" x="460.26" y="696.6" width="103.08" height="10.52" rx="2.26" ry="2.26"/>
+      <circle id="settings_pigeon_08_hdmi_status_icon" cx="590.2" cy="621.63" r="22.94" fill="#0dff00"/>
+    </g>
+    <g id="metadata_player_icon">
+      <g id="settings_pigeon_07_player_group" data-name="settings pigeon 07 player group">
+        <g id="settings_pigeon_07_player_text_group" data-name="settings pigeon 07 player text group">
+          <rect id="settings_pigeon_07_player_button" data-name="settings pigeon 07 player button" x="426.63" y="807.89" width="163.55" height="45.12" rx="5.64" ry="5.64" stroke="#000" stroke-miterlimit="10" stroke-width="7"/>
+          <g id="settings_pigeon_07_player_text" data-name="settings pigeon 07 player_text" isolation="isolate">
+            <text transform="translate(454.91 843.64)" fill="#fff" font-family="Digital-7, Digital-7" font-size="38.21" isolation="isolate"><tspan x="0" y="0">player</tspan></text>
+          </g>
+        </g>
+        <g id="settings_pigeon_07_player_icon_group" data-name="settings pigeon 07 player icon group">
+          <rect id="settings_pigeon_07_player_button-2" data-name="settings pigeon 07 player button-2" x="422.15" y="616.81" width="172.43" height="172.43" rx="10.35" ry="10.35" fill="#424242" stroke="#000" stroke-miterlimit="10" stroke-width="7"/>
+          <g id="settings_pigeon_07_player_icon" data-name="settings pigeon 07 player icon" isolation="isolate">
+            <rect x="454.24" y="647.88" width="109.58" height="109.58" rx="8.99" ry="8.99" fill="#fff" stroke="#fff" stroke-miterlimit="10"/>
+            <text transform="translate(458.03 727.96)" fill="#424242" font-family="SharpSans-Bold, &apos;Sharp Sans&apos;" font-size="70.1" font-weight="700" isolation="isolate"><tspan x="0" y="0">&lt;/&gt;</tspan></text>
+          </g>
+        </g>
+        <circle id="settings_pigeon_07_player_status_icon" data-name="settings pigeon 07 player status icon" cx="589.67" cy="621.58" r="22.94" fill="#0dff00"/>
+      </g>
+    </g>
+  </g>
+  <g id="metadata_pigeon_version_text">
+    <text id="settings_pigeon_version_text" transform="translate(962.09 534.97)" fill="#fff" font-family="Digital-7, Digital-7" font-size="36" isolation="isolate"><tspan x="0" y="0" xml:space="preserve"> pigeon 0.7.81</tspan></text>
+  </g>
+  <g id="metadata_pigeon_back_group">
+    <path id="settings_pigeon_back_button" d="M401.76,498.14h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56h0Z" fill="#202020"/>
+    <path id="settings_pigeon_back_accent" d="M402.3,498.14h47.99c5.57,0,10.1,4.53,10.1,10.1v17.73c0,5.57-4.53,10.1-10.1,10.1h-48.99c-5.57,0-10.1-4.53-10.1-10.1v-16.73c0-6.13,4.97-11.1,11.1-11.1h0Z" fill="none" stroke="#fff" stroke-miterlimit="10"/>
+    <text id="settings_pigeon_back_text" transform="translate(403.84 526.81)" fill="#fff" font-family="Digital-7, Digital-7" font-size="29" isolation="isolate"><tspan x="0" y="0">exit</tspan></text>
+  </g>
+</svg>

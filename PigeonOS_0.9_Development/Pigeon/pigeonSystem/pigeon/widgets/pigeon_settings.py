@@ -384,13 +384,13 @@ def _sync_version_text(root: ET.Element, state: MainSettingsState) -> None:
 
 
 def _sync_info_label(root: ET.Element) -> None:
-    """Keep tile 02/03 labels in sync if art is re-exported (0814 wording)."""
+    """Keep tile 02/03 labels in sync if art is re-exported (0815 wording)."""
     text = _find_by_logical_id(root, "settings_pigeon_02_info_text")
     if text is not None:
         _set_text_content(text, "NOW PLAY")
     widgets = _find_by_logical_id(root, "settings_pigeon_03_general_text")
     if widgets is not None:
-        _set_text_content(widgets, "PREFERENCES")
+        _set_text_content(widgets, "GENERAL")
 
 
 def apply_pigeon_settings_svg_state(root: ET.Element, state: MainSettingsState) -> None:

@@ -5364,6 +5364,148 @@ def main() -> int:
                     _ln("  _raw=(see receiver_denon_telnet dump)")
             return rows
 
+        def _metadata_debug_provider() -> dict[str, object]:
+            """Rows for the [4] metadata inspector (player / hdmi / pigeon pages)."""
+            from pigeon.hdmi_ocr import hdmi_capture_available
+            from pigeon.source_toggles import source_enabled
+
+            lm = _view_four_display_metadata() or {}
+            metadata_on = _view_four_metadata_source_on()
+            try:
+                player_active = bool(metadata_on and _content_indicator_ok())
+            except Exception:
+                player_active = False
+            try:
+                hdmi_active = bool(source_enabled("hdmi")) and bool(
+                    hdmi_capture_available()
+                )
+            except Exception:
+                hdmi_active = False
+
+            rt = None
+            if metadata_on and lm:
+                try:
+                    from pigeon.raw_title import raw_title_from_metadata_dict
+
+                    rt = raw_title_from_metadata_dict(lm)
+                except Exception:
+                    rt = None
+
+            def _rt(field: str) -> str:
+                return str(getattr(rt, field, "") or "").strip() if rt is not None else ""
+
+            # --- player: network metadata exactly as the box broadcasts it ---
+            p_title = str(lm.get("title") or "").strip() if metadata_on else ""
+            p_series = (
+                str(lm.get("series_name") or "").strip() if metadata_on else ""
+            ) or _rt("layer_series_title")
+            is_tv = bool(p_series) or _rt("media_type_label").casefold() == "tv"
+            p_episode = (
+                (_rt("raw_episode_title") or _rt("layer_episode_title") or p_title)
+                if is_tv
+                else p_title
+            )
+            player_rows = {
+                "service": str(lm.get("app_name") or "").strip() if metadata_on else "",
+                "series": p_series,
+                "title": p_title,
+                "episode": p_episode,
+            }
+
+            # --- hdmi: whatever OCR pulled off the video feed ---
+            h_season = lm.get("ocr_season")
+            h_episode_n = lm.get("ocr_episode")
+            h_episode = ""
+            try:
+                if h_season is not None and h_episode_n is not None:
+                    h_episode = f"S{int(h_season)} E{int(h_episode_n)}"
+                elif h_episode_n is not None:
+                    h_episode = f"E{int(h_episode_n)}"
+            except (TypeError, ValueError):
+                h_episode = ""
+            h_year = lm.get("ocr_year")
+            hdmi_rows = {
+                "service": "",
+                "series": "",
+                "title": str(lm.get("ocr_title") or "").strip(),
+                "episode": h_episode,
+                "year": str(int(h_year)) if isinstance(h_year, (int, float)) else "",
+            }
+
+            # --- pigeon: the final verdict (search terms + confidence) ---
+            refined = str(
+                apple_tv_auto_state.get("last_tmdb_fetch_refined")
+                or apple_tv_auto_state.get("last_tmdb_fetch_input")
+                or ""
+            ).strip()
+            g_title = refined or _rt("raw_query") or p_title or hdmi_rows["title"]
+            g_year = ""
+            try:
+                from pigeon.tmdb_poster import split_query_and_year
+
+                cleaned, year = split_query_and_year(g_title)
+                if cleaned:
+                    g_title = cleaned.strip()
+                if year:
+                    g_year = str(year)
+            except Exception:
+                pass
+            if not g_year:
+                g_year = hdmi_rows["year"]
+            g_series = p_series
+            g_episode = ""
+            se_i, ep_i = getattr(rt, "season_index", None), getattr(rt, "episode_index", None)
+            if is_tv:
+                g_episode = _rt("layer_episode_title") or _rt("raw_episode_title")
+                if not g_episode and se_i is not None and ep_i is not None:
+                    g_episode = f"S{se_i} E{ep_i}"
+                g_episode = g_episode or h_episode
+            g_episode = g_episode or g_title
+            svc_label = str(streaming_badge_state.get("label") or "").strip()
+            pigeon_rows: dict[str, object] = {
+                "service": svc_label or player_rows["service"],
+                "series": g_series,
+                "title": g_title,
+                "episode": g_episode,
+                "year": g_year,
+            }
+            try:
+                from pigeon.display_confidence import scores_for_metadata
+
+                clk = apple_tv_playback_clock
+                advancing = bool(clk.get("has_sync") and clk.get("playing"))
+                scores = scores_for_metadata(
+                    lm,
+                    position_advancing=advancing,
+                    tmdb_matches=bool(_tmdb_info_current_and_available()),
+                    hdmi_on=bool(source_enabled("hdmi")),
+                    hdmi_present=hdmi_capture_available(),
+                )
+                pigeon_rows["confidence"] = {
+                    "service": scores.get("app"),
+                    "series": scores.get("identity"),
+                    "title": scores.get("identity"),
+                    "episode": scores.get("position"),
+                    "year": scores.get("art"),
+                }
+            except Exception:
+                pigeon_rows["confidence"] = {}
+
+            return {
+                "player": player_rows,
+                "hdmi": hdmi_rows,
+                "pigeon": pigeon_rows,
+                "player_active": player_active,
+                "hdmi_active": hdmi_active,
+            }
+
+        try:
+            from pigeon.widgets.metadata_debug import set_metadata_debug_data_provider
+
+            set_metadata_debug_data_provider(_metadata_debug_provider)
+        except Exception:
+            pass
+
         def _collect_view_four_source_lines() -> list[tuple[str, bool]]:
             """View 4 subview: best-effort file/stream stats from poll metadata + receiver text hints."""
             from math import gcd
@@ -12069,7 +12211,43 @@ def main() -> int:
             ch = getattr(event, "char", "") or ""
             if ch not in "145":
                 return None
-            nonlocal skip_cache
+            nonlocal skip_cache, dev_phase
+            st_md = main_settings_widget.state if main_settings_widget is not None else None
+            md_open = bool(
+                st_md is not None
+                and dev_phase == DevPhase.MAIN_SETTINGS
+                and st_md.show_metadata_debug
+            )
+            if md_open and ch != "4":
+                # Inspector is modal: EXIT (or [4] → legacy) are the only ways out.
+                _bump_pigeon_user_activity(event)
+                return "break"
+            if ch == "4" and st_md is not None:
+                if dev_phase == DevPhase.MAIN_SETTINGS and st_md.keyboard is not None:
+                    return None
+                if md_open:
+                    # [4] on the inspector → legacy metadata view (view 4).
+                    st_md.exit_pigeon_settings()
+                    main_settings_widget.invalidate()
+                    dev_phase = DevPhase.OFF
+                    display_view_holder[0] = DisplayView.FOUR
+                    view_four_subview_holder[0] = 0
+                else:
+                    # [4] anywhere (incl. legacy view 4) → open the inspector.
+                    st_md.open_metadata_debug()
+                    main_settings_widget.invalidate()
+                    if dev_phase != DevPhase.MAIN_SETTINGS:
+                        dev_phase = DevPhase.MAIN_SETTINGS
+                        try:
+                            main_settings_widget.prefetch_scans_for_settings()
+                        except Exception:
+                            pass
+                skip_cache = None
+                sync_developer_chrome()
+                _bump_pigeon_user_activity(event)
+                _capture_last_view_one_layout_from_live_view()
+                render_once()
+                return "break"
             if ch == "1" and display_view_holder[0] == DisplayView.ONE:
                 st_key = int(getattr(event, "state", 0))
                 sh_key = bool(st_key & 0x0001)

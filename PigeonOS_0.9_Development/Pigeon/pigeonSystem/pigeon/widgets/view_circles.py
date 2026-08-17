@@ -2251,18 +2251,10 @@ class ViewCirclesWidget:
         self._spin_vol_phase = float(self._state.volume_fraction)
 
     def _clock_now_for_display(self) -> datetime:
-        """Wall clock, or synthetic racing time while TMDb search is in flight."""
-        if not self._state.searching:
-            return datetime.now()
-        # Map phases → datetime fields consumed by tick / digital rendering.
-        hour_0_11 = int(self._spin_hour_phase) % 12
-        minute = int(self._spin_min_phase) % 60
-        second = int(self._spin_sec_phase) % 60
-        return datetime(2000, 1, 1, hour_0_11, minute, second)
+        """Wall clock. (Intro racing-clock animation removed — real values always.)"""
+        return datetime.now()
 
     def _volume_fraction_for_display(self) -> float:
-        if self._state.searching:
-            return float(self._spin_vol_phase % 1.0)
         if self._state.volume_muted:
             return 0.0
         return float(self._state.volume_fraction)
@@ -2458,21 +2450,9 @@ class ViewCirclesWidget:
         self._last_tick_mono = now
         prev_angle = self._state.search_angle_deg
         self._state.search_angle_deg = advance_angle_deg(prev_angle, dt)
-        prev_sec = int(self._spin_sec_phase)
-        prev_min = int(self._spin_min_phase)
-        prev_hour = int(self._spin_hour_phase)
-        prev_vol = int(self._spin_vol_phase * 40.0)
-        self._spin_sec_phase += dt * _CLOCK_SPIN_SEC_RATE
-        self._spin_min_phase += dt * _CLOCK_SPIN_MIN_RATE
-        self._spin_hour_phase += dt * _CLOCK_SPIN_HOUR_RATE
-        self._spin_vol_phase += dt * _CLOCK_SPIN_VOL_RATE
-        spun = (
-            int(self._spin_sec_phase) != prev_sec
-            or int(self._spin_min_phase) != prev_min
-            or int(self._spin_hour_phase) != prev_hour
-            or int(self._spin_vol_phase * 40.0) != prev_vol
-            or int(round(prev_angle / 10.0))
-            != int(round(self._state.search_angle_deg / 10.0))
+        # Intro racing clock/volume removed: only the search spinner animates.
+        spun = int(round(prev_angle / 10.0)) != int(
+            round(self._state.search_angle_deg / 10.0)
         )
         if spun:
             self.clear_cache()

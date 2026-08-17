@@ -110,6 +110,11 @@ with zipfile.ZipFile(zip_path) as zf:
         target.parent.mkdir(parents=True, exist_ok=True)
         with zf.open(info) as src, open(target, "wb") as dst:
             dst.write(src.read())
+        # zipfile does not restore Unix modes; keep +x so rsync -a does not
+        # strip it from installed launchers (systemd execs them directly).
+        mode = (info.external_attr >> 16) & 0o7777
+        if mode:
+            target.chmod(mode)
 PY
 
 EXTRACT="${WORKDIR}/extract"
