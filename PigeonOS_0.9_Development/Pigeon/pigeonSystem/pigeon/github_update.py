@@ -418,6 +418,24 @@ def _find_app_root_in_tree(root: Path) -> Path | None:
     return None
 
 
+def _restore_installer_exec_bits(install_root: Path) -> None:
+    """Re-apply +x to installed launchers.
+
+    ``zipfile.extractall`` drops Unix modes, and ``rsync -a`` then copies the
+    stripped permissions over the install — systemd execs run_pigeon_0_9.sh
+    directly, so a missing +x leaves the service in a 203/EXEC restart loop.
+    """
+    inst = install_root / _INSTALLER_DIR
+    if not inst.is_dir():
+        return
+    for p in inst.iterdir():
+        if p.suffix in (".sh", ".command") or p.name in ("Run-Pigeon", "Install-Pigeon"):
+            try:
+                p.chmod(p.stat().st_mode | 0o755)
+            except OSError:
+                pass
+
+
 def _rsync_merge(source: Path, dest: Path) -> tuple[bool, str]:
     excludes = [
         "pigeonSystem/.venv",
@@ -708,6 +726,7 @@ def apply_github_update(
         ok, msg = _rsync_merge(app_src, install_root)
         if not ok:
             return ApplyUpdateResult(False, f"Could not install update: {msg}")
+        _restore_installer_exec_bits(install_root)
 
         _report_progress(progress, 0.80, "Installing assets…")
         ok_a, msg_a = ensure_required_assets(

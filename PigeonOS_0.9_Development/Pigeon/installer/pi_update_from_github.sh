@@ -74,6 +74,11 @@ with zipfile.ZipFile(zip_path) as zf:
         target.parent.mkdir(parents=True, exist_ok=True)
         with zf.open(info) as src, open(target, "wb") as dst:
             dst.write(src.read())
+        # zipfile does not restore Unix modes; keep +x so rsync -a does not
+        # strip it from installed launchers (systemd execs them directly).
+        mode = (info.external_attr >> 16) & 0o7777
+        if mode:
+            target.chmod(mode)
 PY
 
 EXTRACT="${WORKDIR}/extract"
@@ -106,6 +111,14 @@ rsync -a \
 if [[ -d "${SRC}/pigeonAssets" ]]; then
   echo "==> Refreshing pigeonAssets (status bar, logos, poster chrome)…"
   rsync -a "${SRC}/pigeonAssets/" "${INSTALL_DIR}/pigeonAssets/"
+fi
+
+# Belt and braces: systemd execs run_pigeon_0_9.sh directly, so a stripped +x
+# leaves the service in a 203/EXEC restart loop.
+if [[ -d "${INSTALL_DIR}/installer" ]]; then
+  chmod +x "${INSTALL_DIR}/installer/"*.sh 2>/dev/null || true
+  chmod +x "${INSTALL_DIR}/installer/"*.command 2>/dev/null || true
+  chmod +x "${INSTALL_DIR}/installer/Run-Pigeon" "${INSTALL_DIR}/installer/Install-Pigeon" 2>/dev/null || true
 fi
 
 # shellcheck source=common.sh
