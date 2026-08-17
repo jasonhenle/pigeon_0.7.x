@@ -386,6 +386,9 @@ def apply_ui_color_svg_state(root: ET.Element, state: MainSettingsState) -> None
         for sw in swatches:
             _set_icon_visible(root, sw.icon_id, sw.key == chosen)
 
+    # Accent outline on the swatch container is turned off (back accent stays).
+    _set_visible(_find_by_logical_id(root, "color_container_accent"), False)
+
     _sync_back_button(root, selected=(nav == "classes" and focused == "back"))
 
 def _full_theme_bgra(

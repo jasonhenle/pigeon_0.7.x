@@ -183,6 +183,17 @@ KEYBOARD_NUMERIC_IP_SVG = "keyboard_numeric_ip.svg"
 _HEX_RE = re.compile(r"^#?[0-9A-Fa-f]{6}$")
 _AI_SUFFIX_RE = re.compile(r"_\d{20,}_?$")
 
+# Accent outlines hidden on settings_main tiles (exit / back accents stay).
+_HIDDEN_MAIN_ACCENT_IDS = frozenset(
+    {
+        "main_dual_accent",
+        "main_03.02_dual_button_accent",
+        "main_box1_accent",
+        "main_box2_accent",
+        "main_box3_accent",
+    }
+)
+
 # Primary nav ring (left/right). Network picker joins only when visible.
 _PRIMARY_FOCUS_CANDIDATES: tuple[str, ...] = (
     "main_exit_button",
@@ -5673,8 +5684,12 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
     # Prefer the logical-id index over a full-tree normalize walk on every paint.
     for logical, els in _logical_id_index(root).items():
         if logical.endswith("_accent") or re.search(r"_accent(_|$)", logical):
+            hide = logical in _HIDDEN_MAIN_ACCENT_IDS
             for el in els:
-                _apply_accent_paint(el, theme.accent)
+                if hide:
+                    _set_visible(el, False)
+                else:
+                    _apply_accent_paint(el, theme.accent)
         if logical.endswith("_icon") or "_icon_" in logical:
             for el in els:
                 _apply_ui_brand_paint(el, theme.ui)
