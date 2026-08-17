@@ -5396,10 +5396,12 @@ def main() -> int:
 
             # --- player: network metadata exactly as the box broadcasts it ---
             p_title = str(lm.get("title") or "").strip() if metadata_on else ""
-            p_series = (
-                str(lm.get("series_name") or "").strip() if metadata_on else ""
-            ) or _rt("layer_series_title")
-            is_tv = bool(p_series) or _rt("media_type_label").casefold() == "tv"
+            p_series = str(lm.get("series_name") or "").strip() if metadata_on else ""
+            is_tv = bool(p_series) or "tv" in _rt("media_type_label").casefold()
+            if is_tv and not p_series:
+                # layer_series_title falls back to the plain title for movies,
+                # so only trust it once we know this is episodic content.
+                p_series = _rt("layer_series_title")
             p_episode = (
                 (_rt("raw_episode_title") or _rt("layer_episode_title") or p_title)
                 if is_tv

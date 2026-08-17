@@ -6616,6 +6616,13 @@ class MainSettingsWidget:
             self._cached_bgra = None
             self._cached_sig = None
             self._paste_fully_opaque = None
+            if st.show_metadata_debug:
+                # Inspector pages render live; a grid focus bitmap here would
+                # be served by bgra_frame() as the "current" frame and make
+                # arrow presses appear to exit to the settings grid.
+                self._cached_main_bgra = None
+                self._cached_main_sig = None
+                return
             focus_key = self._focus_cache_key()
             structure = self._structure_sig()
             if (
