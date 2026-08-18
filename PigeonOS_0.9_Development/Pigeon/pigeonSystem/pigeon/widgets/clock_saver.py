@@ -5,7 +5,6 @@ Layout from ``pigeonAssets/clocksaver.svg``:
   • ``hhmmss_text`` — Digital-7 HH:MM:SS
   • ``high_temp`` / ``low_temp`` — daily °F for the configured ZIP
   • ``degrees_left_stroke`` / ``degrees_rifght_stroke`` — stroke-only ° marks
-  • ``sun_fill`` / ``moon`` — day/night icons
 """
 
 from __future__ import annotations

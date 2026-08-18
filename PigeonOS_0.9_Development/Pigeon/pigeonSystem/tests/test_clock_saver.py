@@ -35,11 +35,20 @@ class ClockSaverSvgTests(unittest.TestCase):
         right = cs._find_by_logical_id(
             root, "degrees_right_stroke", "degrees_rifght_stroke"
         )
+        high = cs._find_by_logical_id(root, "high_temp")
+        low = cs._find_by_logical_id(root, "low_temp")
         self.assertIsNotNone(left)
         self.assertIsNotNone(right)
+        self.assertIsNotNone(high)
+        self.assertIsNotNone(low)
         self.assertEqual((left.get("fill") or "").lower(), "none")
         self.assertEqual((right.get("fill") or "").lower(), "none")
         self.assertEqual((left.get("stroke") or "").lower(), "#58ff00")
+        # Sun/moon glyphs removed from the art; keep only temp + degree marks.
+        self.assertIsNone(cs._find_by_logical_id(root, "sun_fill", "moon"))
+        self.assertIn("338", high.get("transform") or "")
+        self.assertEqual((high.get("font-size") or "").strip(), "31.93")
+        self.assertEqual((low.get("font-size") or "").strip(), "31.93")
 
     def test_composite_returns_full_frame(self) -> None:
         (frame, rect), (empty, _er) = cs.clock_saver_composite_bgra(
