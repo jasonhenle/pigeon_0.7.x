@@ -611,7 +611,8 @@
 <!-- Copyright: Copyright 2026 Adobe System Incorporated. All rights reserved. -->
 <font-face font-family="SharpSans-Extrabold" units-per-em="1000" underline-position="-75" underline-thickness="50"/>
 <missing-glyph horiz-adv-x="697" d="M54,730l589,0l0,-730l-589,0M229,170l239,0l0,390l-239,0z"/>
-<glyph unicode="" horiz-adv-x="227"/>
+<glyph unicode="
+" horiz-adv-x="227"/>
 <glyph unicode=" " horiz-adv-x="227"/>
 <glyph unicode="!" horiz-adv-x="280" d="M90,230C79,293 70,355 63,416C56,477 53,541 53,608l0,122l174,0l0,-122C227,541 224,477 218,416C211,355 202,293 191,230M42,87C42,116 51,140 69,159C87,177 111,186 140,186C169,186 193,177 211,159C229,140 238,116 238,87C238,58 229,34 211,16C193,-2 169,-11 140,-11C110,-11 86,-2 69,16C51,34 42,58 42,87z"/>
 <glyph unicode="&quot;" horiz-adv-x="386" d="M92,470C89,476 85,485 81,498C76,510 72,523 68,538C63,553 60,568 57,584C54,599 52,613 52,626l0,104l126,0l0,-104C178,613 176,599 173,584C170,568 166,553 162,538C157,523 153,509 148,497C143,485 140,476 137,470M248,470C245,476 241,485 237,498C232,510 228,523 224,538C219,553 216,568 213,584C210,599 208,613 208,626l0,104l127,0l0,-104C335,613 333,599 330,584C327,568 323,553 318,538C313,523 309,509 304,497C299,485 296,476 293,470z"/>
@@ -1328,7 +1329,8 @@
 <!-- Copyright: Copyright 2026 Adobe System Incorporated. All rights reserved. -->
 <font-face font-family="SharpSans-Semibold" units-per-em="1000" underline-position="-75" underline-thickness="50"/>
 <missing-glyph horiz-adv-x="715" d="M74,730l567,0l0,-730l-567,0M183,104l350,0l0,522l-350,0z"/>
-<glyph unicode="" horiz-adv-x="240"/>
+<glyph unicode="
+" horiz-adv-x="240"/>
 <glyph unicode=" " horiz-adv-x="240"/>
 <glyph unicode="!" horiz-adv-x="244" d="M93,218C90,245 87,274 84,306C81,338 78,371 76,406C74,440 72,475 71,510C70,545 69,580 69,613l0,117l107,0l0,-117C176,580 175,545 174,510C173,475 171,440 169,406C167,371 165,338 162,306C159,274 155,245 152,218M46,60C46,82 53,100 68,115C82,130 100,137 122,137C145,137 163,130 178,115C192,100 199,82 199,60C199,38 192,20 178,5C163,-10 145,-17 122,-17C99,-17 81,-10 67,5C53,20 46,38 46,60z"/>
 <glyph unicode="&quot;" horiz-adv-x="333" d="M85,500C83,506 80,515 77,528C74,540 71,553 68,568C65,582 62,596 60,610C58,624 57,636 57,646l0,84l88,0l0,-84C145,636 144,624 142,610C139,596 137,582 134,568C131,553 127,540 124,528C121,515 118,506 116,500M217,500C215,506 212,515 209,528C206,540 203,553 200,568C197,582 194,596 192,610C190,624 189,636 189,646l0,84l88,0l0,-84C277,636 276,624 274,610C271,596 269,582 266,568C263,553 259,540 256,528C253,515 250,506 248,500z"/>
@@ -3013,32 +3015,16 @@
 	</g>
 	<g id="main_x5F_box3_x5F_search_x5F_icon">
 		<g id="main_x5F_box3_x5F_search_x5F_left_x5F_eplipse_x5F_selected">
-			<defs>
-				
-					<rect id="SVGID_00000163066306387916544290000001450666553336752562_" x="513.757" y="226.658" transform="matrix(0.7071 -0.7071 0.7071 0.7071 -20.5555 500.8803)" width="161.162" height="97.19"/>
-			</defs>
-			<clipPath id="SVGID_00000163073210122908715940000017315952165891111871_">
-				<use xlink:href="#SVGID_00000163066306387916544290000001450666553336752562_"  style="overflow:visible;"/>
-			</clipPath>
-			
-				<circle style="clip-path:url(#SVGID_00000163073210122908715940000017315952165891111871_);fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" cx="644.32" cy="309.323" r="32.247"/>
+			<path style="fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" d="M615.178,323.129 A32.247,32.247 0 0 1 658.126,280.181"/>
 		</g>
 		<g id="main_x5F_box3_x5F_search_x5F_right_x5F_ellipse_x5F_selected">
-			<defs>
-				
-					<rect id="SVGID_00000021799739728334719990000006254978549607965109_" x="611.72" y="294.799" transform="matrix(-0.7071 0.7071 -0.7071 -0.7071 1424.6483 96.6791)" width="161.162" height="97.19"/>
-			</defs>
-			<clipPath id="SVGID_00000041278753403032410020000017753126965026091155_">
-				<use xlink:href="#SVGID_00000021799739728334719990000006254978549607965109_"  style="overflow:visible;"/>
-			</clipPath>
-			
-				<circle style="clip-path:url(#SVGID_00000041278753403032410020000017753126965026091155_);fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" cx="644.32" cy="309.323" r="32.247"/>
+			<path style="fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" d="M672.806,294.209 A32.247,32.247 0 0 1 629.206,337.809"/>
 		</g>
 		<polygon id="main_x5F_box3_x5F_search_x5F_left_x5F_triangle_x5F_selected" style="fill:#202020;" points="627.144,313.652 
 			624.102,327.888 620.746,342.054 609.938,332.302 599.349,322.312 613.198,317.828 		"/>
 		<polygon id="main_x5F_box3_x5F_search_x5F_right_x5F_triangle_x5F_selected" style="fill:#202020;" points="660.49,305.156 
 			663.531,290.92 666.887,276.754 677.696,286.506 688.285,296.495 674.436,300.979 		"/>
-		<text transform="matrix(1 0 0 1 638.381 320.9117)" style="font-family:'Digital-7'; font-size:35px;">+</text>
+		<text id="box3_x5F_04.31_x5F_add_x5F__x2B__x5F_icon_x5F_selected" transform="matrix(1 0 0 1 638.381 320.9117)" style="fill:#202020; font-family:'Digital-7'; font-size:35px;">+</text>
 	</g>
 	<g id="main_x5F_box3_x5F_device_x5F_group">
 		<g id="main_x5F_box3_x5F_pigeon_x5F_logo_x5F_icon">
@@ -3146,32 +3132,16 @@
 	</g>
 	<g id="main_x5F_box2_x5F_search_x5F_icon">
 		<g id="main_x5F_box2_x5F_search_x5F_left_x5F_eplipse_x5F_selected">
-			<defs>
-				
-					<rect id="SVGID_00000050628307359960884890000007503104074816792460_" x="268.757" y="226.658" transform="matrix(0.7071 -0.7071 0.7071 0.7071 -92.3143 327.6391)" width="161.162" height="97.19"/>
-			</defs>
-			<clipPath id="SVGID_00000075874507568804035050000001056277686243392412_">
-				<use xlink:href="#SVGID_00000050628307359960884890000007503104074816792460_"  style="overflow:visible;"/>
-			</clipPath>
-			
-				<circle style="clip-path:url(#SVGID_00000075874507568804035050000001056277686243392412_);fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" cx="399.32" cy="309.323" r="32.247"/>
+			<path style="fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" d="M370.178,323.129 A32.247,32.247 0 0 1 413.126,280.181"/>
 		</g>
 		<g id="main_x5F_box2_x5F_search_x5F_right_x5F_ellipse_x5F_selected">
-			<defs>
-				
-					<rect id="SVGID_00000180358660107975243200000015087305010603532478_" x="366.72" y="294.799" transform="matrix(-0.7071 0.7071 -0.7071 -0.7071 1006.4072 269.9203)" width="161.162" height="97.19"/>
-			</defs>
-			<clipPath id="SVGID_00000092453998752203994250000005603155571096909730_">
-				<use xlink:href="#SVGID_00000180358660107975243200000015087305010603532478_"  style="overflow:visible;"/>
-			</clipPath>
-			
-				<circle style="clip-path:url(#SVGID_00000092453998752203994250000005603155571096909730_);fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" cx="399.32" cy="309.323" r="32.247"/>
+			<path style="fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" d="M427.806,294.209 A32.247,32.247 0 0 1 384.206,337.809"/>
 		</g>
 		<polygon id="main_x5F_box2_x5F_search_x5F_left_x5F_triangle_x5F_selected" style="fill:#202020;" points="382.144,313.652 
 			379.102,327.888 375.746,342.054 364.938,332.302 354.349,322.312 368.198,317.828 		"/>
 		<polygon id="main_x5F_box2_x5F_search_x5F_right_x5F_triangle_x5F_selected" style="fill:#202020;" points="415.49,305.156 
 			418.531,290.92 421.887,276.754 432.696,286.506 443.285,296.495 429.436,300.979 		"/>
-		<text transform="matrix(1 0 0 1 393.381 320.9117)" style="font-family:'Digital-7'; font-size:35px;">+</text>
+		<text id="box2_x5F_04.31_x5F_add_x5F__x2B__x5F_icon_x5F_selected" transform="matrix(1 0 0 1 393.381 320.9117)" style="fill:#202020; font-family:'Digital-7'; font-size:35px;">+</text>
 	</g>
 	<g id="main_x5F_box2_x5F_device_x5F_group_00000150093386486051222730000011129798409554927509_">
 		
@@ -3264,32 +3234,16 @@
 	</g>
 	<g id="main_x5F_box1_x5F_search_x5F_icon">
 		<g id="main_x5F_box1_x5F_search_x5F_left_x5F_eplipse_x5F_selected">
-			<defs>
-				
-					<rect id="SVGID_00000061469129831581243980000012442761089936272513_" x="23.757" y="226.658" transform="matrix(0.7071 -0.7071 0.7071 0.7071 -164.0732 154.3979)" width="161.162" height="97.19"/>
-			</defs>
-			<clipPath id="SVGID_00000118391704808495764080000003997516009137182113_">
-				<use xlink:href="#SVGID_00000061469129831581243980000012442761089936272513_"  style="overflow:visible;"/>
-			</clipPath>
-			
-				<circle style="clip-path:url(#SVGID_00000118391704808495764080000003997516009137182113_);fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" cx="154.32" cy="309.323" r="32.247"/>
+			<path style="fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" d="M125.178,323.129 A32.247,32.247 0 0 1 168.126,280.181"/>
 		</g>
 		<g id="main_x5F_box1_x5F_search_x5F_right_x5F_ellipse_x5F_selected">
-			<defs>
-				
-					<rect id="SVGID_00000168835408716884612860000007747563978158964395_" x="121.72" y="294.799" transform="matrix(-0.7071 0.7071 -0.7071 -0.7071 588.1661 443.1614)" width="161.162" height="97.19"/>
-			</defs>
-			<clipPath id="SVGID_00000118368261267006074190000007725872526310932626_">
-				<use xlink:href="#SVGID_00000168835408716884612860000007747563978158964395_"  style="overflow:visible;"/>
-			</clipPath>
-			
-				<circle style="clip-path:url(#SVGID_00000118368261267006074190000007725872526310932626_);fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" cx="154.32" cy="309.323" r="32.247"/>
+			<path style="fill:none;stroke:#202020;stroke-width:8;stroke-miterlimit:10;" d="M182.806,294.209 A32.247,32.247 0 0 1 139.206,337.809"/>
 		</g>
 		<polygon id="main_x5F_box1_x5F_search_x5F_left_x5F_triangle_x5F_selected" style="fill:#202020;" points="137.144,313.652 
 			134.102,327.888 130.746,342.054 119.938,332.302 109.349,322.312 123.198,317.828 		"/>
 		<polygon id="main_x5F_box1_x5F_search_x5F_right_x5F_triangle_x5F_selected" style="fill:#202020;" points="170.49,305.156 
 			173.531,290.92 176.887,276.754 187.696,286.506 198.285,296.495 184.436,300.979 		"/>
-		<text transform="matrix(1 0 0 1 148.381 320.9117)" style="font-family:'Digital-7'; font-size:35px;">+</text>
+		<text id="box1_x5F_04.31_x5F_add_x5F__x2B__x5F_icon_x5F_selected" transform="matrix(1 0 0 1 148.381 320.9117)" style="fill:#202020; font-family:'Digital-7'; font-size:35px;">+</text>
 	</g>
 	<g id="main_x5F_box1_x5F_device_x5F_group">
 		
@@ -3346,26 +3300,10 @@
 		<g id="main_x5F_box2_x5F_add_x5F_search_x5F_icon">
 			<g id="main_x5F_box2_x5F_search_x5F_icon_00000005964471361451763990000003348706691413795721_">
 				<g id="main_x5F_box1_x5F_search_x5F_left_x5F_eplipse_x5F_selected_00000117645271372667299810000011965643957477301951_">
-					<defs>
-						
-							<rect id="SVGID_00000140726856557864477810000017388027602352025728_" x="269.883" y="215.801" transform="matrix(0.7071 -0.7071 0.7071 0.7071 -84.3075 325.2555)" width="161.162" height="97.19"/>
-					</defs>
-					<clipPath id="SVGID_00000170988657893955587920000006711704562995586724_">
-						<use xlink:href="#SVGID_00000140726856557864477810000017388027602352025728_"  style="overflow:visible;"/>
-					</clipPath>
-					
-						<circle style="clip-path:url(#SVGID_00000170988657893955587920000006711704562995586724_);fill:none;stroke:#FFFFFF;stroke-width:9;stroke-miterlimit:10;" cx="400.446" cy="298.466" r="32.247"/>
+					<path style="fill:none;stroke:#FFFFFF;stroke-width:9;stroke-miterlimit:10;" d="M371.304,312.272 A32.247,32.247 0 0 1 414.252,269.324"/>
 				</g>
 				<g id="main_x5F_box1_x5F_search_x5F_right_x5F_ellipse_x5F_selected_00000153704259043270877590000013354780258278062782_">
-					<defs>
-						
-							<rect id="SVGID_00000094579181292798600510000004978326802275190921_" x="367.847" y="283.942" transform="matrix(-0.7071 0.7071 -0.7071 -0.7071 1000.6527 250.59)" width="161.162" height="97.19"/>
-					</defs>
-					<clipPath id="SVGID_00000119813600588136937280000013132067508470633352_">
-						<use xlink:href="#SVGID_00000094579181292798600510000004978326802275190921_"  style="overflow:visible;"/>
-					</clipPath>
-					
-						<circle style="clip-path:url(#SVGID_00000119813600588136937280000013132067508470633352_);fill:none;stroke:#FFFFFF;stroke-width:9;stroke-miterlimit:10;" cx="400.446" cy="298.466" r="32.247"/>
+					<path style="fill:none;stroke:#FFFFFF;stroke-width:9;stroke-miterlimit:10;" d="M428.932,283.352 A32.247,32.247 0 0 1 385.332,326.952"/>
 				</g>
 				
 					<polygon id="main_x5F_box1_x5F_search_x5F_left_x5F_triangle_x5F_selected_00000004546107464436398780000002875334484378346882_" style="fill:#FFFFFF;" points="

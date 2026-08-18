@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.font_paths import (
     resolve_digital7_font,
+    resolve_ui_font_bold,
     resolve_ui_font_extrabold,
     resolve_ui_font_extrabold_italic,
     resolve_ui_font_semibold,
@@ -43,6 +44,7 @@ _MATRIX_RE = re.compile(
 class SettingsFontRole(str, Enum):
     DIGITAL7 = "digital7"
     SHARP_SEMIBOLD = "semibold"
+    SHARP_BOLD = "bold"
     SHARP_EXTRABOLD = "extrabold"
     SHARP_EXTRABOLD_ITALIC = "extrabold_italic"
 
@@ -247,6 +249,8 @@ def _font_role_from_svg_family(text_el: ET.Element) -> SettingsFontRole:
         return SettingsFontRole.SHARP_EXTRABOLD_ITALIC
     if "extrabold" in family:
         return SettingsFontRole.SHARP_EXTRABOLD
+    if "bold" in family:
+        return SettingsFontRole.SHARP_BOLD
     if "semibold" in family or "medium" in family:
         return SettingsFontRole.SHARP_SEMIBOLD
     if "sharp" in family or "myriad" in family:
@@ -441,6 +445,8 @@ def _font_path_for_role(role: SettingsFontRole) -> str | None:
         return resolve_ui_font_extrabold_italic() or resolve_ui_font_extrabold()
     if role == SettingsFontRole.SHARP_EXTRABOLD:
         return resolve_ui_font_extrabold() or resolve_ui_font_semibold()
+    if role == SettingsFontRole.SHARP_BOLD:
+        return resolve_ui_font_bold() or resolve_ui_font_semibold()
     return resolve_ui_font_semibold()
 
 

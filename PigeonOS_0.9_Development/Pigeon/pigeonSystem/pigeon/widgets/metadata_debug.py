@@ -14,21 +14,26 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+from PIL import ImageFont
 
 from pigeon.design import DESIGN_H, DESIGN_W
 from pigeon.widgets.main_settings import (
     MainSettingsState,
+    _MENU_CONTAINER_BBOX,
     _composite_bgra_over_bgra,
     _disable_embedded_settings_background_layers,
     _find_by_logical_id,
     _prune_display_none,
     _set_paint,
     _set_visible,
+    _truncate_text_to_width,
 )
 
 # Same Illustrator board crop as settings_pigeon.svg so the panel lines up
@@ -44,7 +49,18 @@ METADATA_DEBUG_PAGES: tuple[str, ...] = ("player", "hdmi", "pigeon")
 # Row order matches the five field labels in the SVG (top → bottom).
 _ROW_KEYS: tuple[str, ...] = ("service", "series", "title", "episode", "year")
 
-_ROW_TEXT_MAX_CHARS = 26
+# Artboard x of ``metadata_results`` (leaves a column for the % scores).
+_RESULT_X_WITH_CONF_SVG = 860.24
+# Artboard x of ``metadata_confidence`` — sit results here when % is hidden.
+_RESULT_X_FLUSH_SVG = 801.09
+# Keep italic values inside the shared red plate (bbox x1 = 777 design px).
+_RESULT_RIGHT_PAD_SVG = 14.0
+_RESULT_FONT_SIZE_PX = 24
+
+_TRANSLATE_RE = re.compile(
+    r"translate\(\s*([-\d.]+)(?:[,\s]+([-\d.]+))?\s*\)",
+    re.IGNORECASE,
+)
 
 # (path, mtime_ns) → parsed template; deepcopy on return (callers mutate).
 _SVG_TREE_TEMPLATES: dict[tuple[str, int], ET.Element] = {}
@@ -121,11 +137,49 @@ def _set_flat_text(text_el: ET.Element | None, value: str) -> None:
 
 def _row_value(rows: dict[str, Any], key: str) -> str:
     val = str(rows.get(key) or "").strip()
-    if not val:
-        return "—"
-    if len(val) > _ROW_TEXT_MAX_CHARS:
-        return val[: _ROW_TEXT_MAX_CHARS - 1].rstrip() + "…"
-    return val
+    return val if val else "—"
+
+
+def _result_x_svg(*, show_confidence: bool) -> float:
+    return _RESULT_X_WITH_CONF_SVG if show_confidence else _RESULT_X_FLUSH_SVG
+
+
+def _result_max_right_svg() -> float:
+    vb_x = _METADATA_VIEWBOX[0]
+    return vb_x + float(_MENU_CONTAINER_BBOX[2]) - _RESULT_RIGHT_PAD_SVG
+
+
+def _set_translate_x(el: ET.Element, x: float) -> None:
+    transform = el.get("transform") or ""
+    match = _TRANSLATE_RE.search(transform)
+    y = float(match.group(2) or 0.0) if match else 0.0
+    next_t = f"translate({x:.2f} {y:.2f})"
+    if match:
+        el.set("transform", _TRANSLATE_RE.sub(next_t, transform, count=1))
+    else:
+        el.set("transform", next_t)
+
+
+@lru_cache(maxsize=1)
+def _result_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    from pigeon.font_paths import resolve_ui_font_extrabold, resolve_ui_font_extrabold_italic
+
+    path = resolve_ui_font_extrabold_italic() or resolve_ui_font_extrabold()
+    if path:
+        try:
+            return ImageFont.truetype(str(path), _RESULT_FONT_SIZE_PX)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+def _fit_result_text(value: str, *, x_svg: float) -> str:
+    if value == "—":
+        return value
+    max_w_svg = max(8.0, _result_max_right_svg() - x_svg)
+    max_w_px = max(8, int(round(max_w_svg * DESIGN_W / _METADATA_VIEWBOX[2])))
+    fitted = _truncate_text_to_width(value, max_width_px=max_w_px, font=_result_font())
+    return fitted or "—"
 
 
 def _confidence_label(conf: dict[str, Any], key: str) -> str:
@@ -192,6 +246,8 @@ def apply_metadata_debug_svg_state(
 
     rows = data.get(page)
     rows = rows if isinstance(rows, dict) else {}
+    show_confidence = page == "pigeon"
+    result_x = _result_x_svg(show_confidence=show_confidence)
     field_texts = _group_texts(root, "metadata_fields")
     result_texts = _group_texts(root, "metadata_results")
     for i, key in enumerate(_ROW_KEYS):
@@ -201,11 +257,15 @@ def apply_metadata_debug_svg_state(
         if i < len(result_texts):
             _set_visible(result_texts[i], show_row)
             if show_row:
-                _set_flat_text(result_texts[i], _row_value(rows, key))
+                _set_translate_x(result_texts[i], result_x)
+                _set_flat_text(
+                    result_texts[i],
+                    _fit_result_text(_row_value(rows, key), x_svg=result_x),
+                )
 
     # Per-row confidence column: pigeon page only.
     conf_group = _find_by_logical_id(root, "metadata_confidence")
-    if page == "pigeon":
+    if show_confidence:
         _set_visible(conf_group, True)
         conf = rows.get("confidence")
         conf = conf if isinstance(conf, dict) else {}
@@ -261,8 +321,9 @@ def render_metadata_debug_bgra(
     if not path.is_file():
         raise FileNotFoundError(f"metadata debug SVG not found: {path}")
     st = state if state is not None else MainSettingsState()
+    payload = data if data is not None else metadata_debug_data()
     root = _svg_tree_from_path(path)
-    apply_metadata_debug_svg_state(root, st, data if data is not None else metadata_debug_data())
+    apply_metadata_debug_svg_state(root, st, payload)
     _disable_embedded_settings_background_layers(root)
     _prune_display_none(root)
     from pigeon.widgets.settings_svg_text import rasterize_settings_svg_bgra
@@ -274,9 +335,93 @@ def render_metadata_debug_bgra(
         font_mode="preferences",
     )
     bg = _full_theme_bgra(st, assets_dir=assets_dir, path=path)
-    return _composite_bgra_over_bgra(bg, ui_bgra)
+    out = _composite_bgra_over_bgra(bg, ui_bgra)
+    page_idx = max(0, min(len(METADATA_DEBUG_PAGES) - 1, int(st.metadata_debug_page)))
+    page = METADATA_DEBUG_PAGES[page_idx]
+    ocr_lines = _ocr_lines_from_data(payload if isinstance(payload, dict) else {}, page)
+    if ocr_lines:
+        _draw_hdmi_ocr_dump_bgra(out, ocr_lines)
+    return out
 
 
 def clear_metadata_debug_render_caches() -> None:
     _SVG_TREE_TEMPLATES.clear()
     _THEME_BG_CACHE.clear()
+
+
+_OCR_DUMP_MAX_LINES = 8
+_OCR_DUMP_FONT_PX = 16
+_OCR_DUMP_LINE_GAP = 4
+_OCR_DUMP_PAD_X = 28
+_OCR_DUMP_PAD_Y = 8
+
+
+def _ocr_lines_from_data(data: dict[str, Any], page: str) -> list[str]:
+    if page != "hdmi":
+        return []
+    rows = data.get("hdmi")
+    rows = rows if isinstance(rows, dict) else {}
+    raw = rows.get("ocr_lines")
+    if isinstance(raw, list):
+        lines = [str(x).strip() for x in raw if str(x or "").strip()]
+    else:
+        blob = str(raw or "").strip()
+        lines = [ln.strip() for ln in blob.splitlines() if ln.strip()] if blob else []
+    # Always surface status crumbs when OCR is empty so the dump proves the path.
+    if not lines:
+        status = str(rows.get("ocr_status") or "").strip()
+        reason = str(rows.get("ocr_reason") or "").strip()
+        if status:
+            lines.append(f"[{status}]")
+        if reason:
+            lines.append(f"reason={reason}")
+        if not lines:
+            lines.append("(no OCR text yet)")
+    return lines[:_OCR_DUMP_MAX_LINES]
+
+
+def _draw_hdmi_ocr_dump_bgra(bgra: np.ndarray, lines: list[str]) -> None:
+    """Paint raw OCR lines in the black band below the red system plate."""
+    if not lines:
+        return
+    from PIL import Image, ImageDraw
+
+    from pigeon.font_paths import resolve_ui_font_semibold
+    from pigeon.widgets.main_settings import _MENU_CONTAINER_BBOX
+
+    x0, _y0, x1, y1 = _MENU_CONTAINER_BBOX
+    region_top = int(y1) + _OCR_DUMP_PAD_Y
+    region_bottom = DESIGN_H - 6
+    if region_top >= region_bottom:
+        return
+    path = resolve_ui_font_semibold()
+    try:
+        font = (
+            ImageFont.truetype(str(path), _OCR_DUMP_FONT_PX)
+            if path
+            else ImageFont.load_default()
+        )
+    except OSError:
+        font = ImageFont.load_default()
+    max_w = max(24, int(x1 - x0) - 2 * _OCR_DUMP_PAD_X)
+    rgba = np.ascontiguousarray(bgra[:, :, [2, 1, 0, 3]])
+    img = Image.fromarray(rgba)
+    draw = ImageDraw.Draw(img)
+    y = region_top
+    line_h = _OCR_DUMP_FONT_PX + _OCR_DUMP_LINE_GAP
+    for raw in lines:
+        if y + line_h > region_bottom:
+            break
+        text = _truncate_text_to_width(str(raw), max_width_px=max_w, font=font)
+        draw.text(
+            (x0 + _OCR_DUMP_PAD_X, y),
+            text,
+            font=font,
+            fill=(255, 255, 255, 230),
+        )
+        y += line_h
+    out = np.asarray(img)
+    bgra[:, :, 0] = out[:, :, 2]
+    bgra[:, :, 1] = out[:, :, 1]
+    bgra[:, :, 2] = out[:, :, 0]
+    bgra[:, :, 3] = out[:, :, 3]

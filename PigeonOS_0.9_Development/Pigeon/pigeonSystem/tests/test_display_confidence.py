@@ -53,42 +53,7 @@ class OcrScheduleTests(unittest.TestCase):
     def tearDown(self) -> None:
         ho.reset_ocr_schedule()
 
-    def test_rests_when_playing_and_position_advances(self) -> None:
-        md = {
-            "device_state": "Playing",
-            "query": "Ted Lasso",
-            "content_key": "ted",
-            "identity_source": "pyatv",
-            "position": 10.0,
-        }
-        self.assertEqual(ho.decide_ocr_reason(md, now=100.0), "confirm")
-        md = dict(md)
-        md["position"] = 16.0
-        self.assertIsNone(ho.decide_ocr_reason(md, now=106.0))
-
-    def test_stays_alert_when_playback_missing(self) -> None:
-        md = {
-            "device_state": "Paused",
-            "query": "Ted Lasso",
-            "content_key": "ted",
-            "identity_source": "pyatv",
-            "position": 10.0,
-        }
-        self.assertEqual(ho.decide_ocr_reason(md, now=100.0), "pause")
-        self.assertEqual(ho.decide_ocr_reason(md, now=106.0), "watch")
-
-    def test_stays_alert_when_position_stalled(self) -> None:
-        md = {
-            "device_state": "Playing",
-            "query": "Ted Lasso",
-            "content_key": "ted",
-            "identity_source": "pyatv",
-            "position": 10.0,
-        }
-        self.assertEqual(ho.decide_ocr_reason(md, now=100.0), "confirm")
-        self.assertEqual(ho.decide_ocr_reason(md, now=106.0), "watch")
-
-    def test_ocr_in_charge_keeps_scanning(self) -> None:
+    def test_keeps_ocr_until_tmdb_ready(self) -> None:
         md = {
             "device_state": "Idle",
             "query": "",
@@ -97,6 +62,82 @@ class OcrScheduleTests(unittest.TestCase):
         }
         self.assertEqual(ho.decide_ocr_reason(md, now=100.0), "no_metadata")
         self.assertEqual(ho.decide_ocr_reason(md, now=106.0), "no_metadata")
+
+    def test_watches_every_five_seconds_after_title(self) -> None:
+        md = {
+            "device_state": "Playing",
+            "query": "Ted Lasso",
+            "content_key": "ted",
+            "identity_source": "pyatv",
+            "position": 10.0,
+        }
+        self.assertEqual(ho.decide_ocr_reason(md, now=100.0), "watch")
+        self.assertIsNone(ho.decide_ocr_reason(md, now=102.0))
+        self.assertEqual(ho.decide_ocr_reason(md, now=106.0), "watch")
+
+    def test_pause_still_triggers(self) -> None:
+        md = {
+            "device_state": "Playing",
+            "query": "Ted Lasso",
+            "content_key": "ted",
+            "identity_source": "pyatv",
+            "position": 10.0,
+        }
+        self.assertEqual(ho.decide_ocr_reason(md, now=100.0), "watch")
+        md = dict(md)
+        md["device_state"] = "Paused"
+        self.assertEqual(ho.decide_ocr_reason(md, now=106.0), "pause")
+
+    def test_frame_fingerprint_counts_unchanged_streak(self) -> None:
+        import numpy as np
+
+        frame_a = np.full((108, 192, 3), 40, dtype=np.uint8)
+        frame_b = np.full((108, 192, 3), 200, dtype=np.uint8)
+        self.assertTrue(ho._note_frame_fingerprint(frame_a))
+        self.assertEqual(ho.hdmi_unchanged_streak(), 0)
+        self.assertFalse(ho._note_frame_fingerprint(frame_a))
+        self.assertEqual(ho.hdmi_unchanged_streak(), 1)
+        self.assertFalse(ho._note_frame_fingerprint(frame_a))
+        self.assertEqual(ho.hdmi_unchanged_streak(), 2)
+        self.assertTrue(ho._note_frame_fingerprint(frame_b))
+        self.assertEqual(ho.hdmi_unchanged_streak(), 0)
+        self.assertFalse(ho.hdmi_clock_saver_due())
+
+    def test_clock_saver_due_after_streak(self) -> None:
+        ho._schedule.consecutive_unchanged = ho.CLOCK_SAVER_OCR_STREAK
+        self.assertTrue(ho.hdmi_clock_saver_due())
+
+
+class TitleDecisionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from pigeon.title_decision import reset_title_decisions
+
+        reset_title_decisions()
+
+    def tearDown(self) -> None:
+        from pigeon.title_decision import reset_title_decisions
+
+        reset_title_decisions()
+
+    def test_records_and_explains(self) -> None:
+        from pigeon.title_decision import (
+            apply_decision_to_metadata,
+            decision_from_metadata,
+            latest_title_decision,
+            record_title_decision,
+        )
+
+        d = record_title_decision(
+            "The Crown",
+            source="ocr",
+            reason="HDMI OCR filled an empty player title",
+        )
+        self.assertIn("The Crown", d.explain())
+        self.assertIn("ocr", d.explain())
+        md: dict = {}
+        apply_decision_to_metadata(md, d)
+        self.assertEqual(decision_from_metadata(md), d.explain())
+        self.assertIs(latest_title_decision(), d)
 
 
 class OcrIdentityHandoffTests(unittest.TestCase):

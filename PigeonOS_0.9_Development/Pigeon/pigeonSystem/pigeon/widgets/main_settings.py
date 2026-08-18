@@ -9,6 +9,7 @@ and selection recoloring. Text entry opens the shared settings keyboard overlay
 from __future__ import annotations
 
 import io
+import math
 import os
 import re
 import time
@@ -1861,12 +1862,12 @@ def _apply_wifi_onboarding_search_layers(root: ET.Element, state: MainSettingsSt
 
 
 def _hide_wifi_onboarding_search_svg_glyphs(root: ET.Element) -> None:
-    """Hide clipped SVG circles/polygons; glyphs are drawn as BGRA overlays."""
+    """Hide leftover clip-path circles. Stroke arcs + filled triangles stay in the SVG."""
     search_group = _wifi_onboarding_search_group(root)
     if search_group is None:
         return
     for el in search_group.iter():
-        if el.tag.endswith("circle") or el.tag.endswith("polygon"):
+        if el.tag.endswith("circle"):
             _set_visible(el, False)
 
 
@@ -1875,11 +1876,129 @@ def _hide_wifi_onboarding_search_svg_circles(root: ET.Element) -> None:
     _hide_wifi_onboarding_search_svg_glyphs(root)
 
 
+_SVG_ARC_PATH_RE = re.compile(
+    r"M\s*([-\d.]+)(?:\s*,\s*|\s+)([-\d.]+)\s*"
+    r"A\s*([-\d.]+)(?:\s*,\s*|\s+)([-\d.]+)\s+"
+    r"([-\d.]+)\s+(\d)\s+(\d)\s+"
+    r"([-\d.]+)(?:\s*,\s*|\s+)([-\d.]+)",
+    re.IGNORECASE,
+)
+
+
+def _svg_arc_center_and_angles(
+    x1: float,
+    y1: float,
+    rx: float,
+    ry: float,
+    phi_deg: float,
+    fa: int,
+    fs: int,
+    x2: float,
+    y2: float,
+) -> tuple[float, float, float, float] | None:
+    """Endpoint-parameterized SVG arc → center + start/end degrees (0=east, y-down)."""
+    rx, ry = abs(rx), abs(ry)
+    if rx < 1e-6 or ry < 1e-6:
+        return None
+    phi = math.radians(phi_deg)
+    cos_p, sin_p = math.cos(phi), math.sin(phi)
+    dx = (x1 - x2) / 2.0
+    dy = (y1 - y2) / 2.0
+    x1p = cos_p * dx + sin_p * dy
+    y1p = -sin_p * dx + cos_p * dy
+    lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry)
+    if lam > 1.0:
+        scale = math.sqrt(lam)
+        rx *= scale
+        ry *= scale
+    num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
+    den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
+    coef = 0.0 if den <= 1e-12 else math.sqrt(max(0.0, num / den))
+    if fa == fs:
+        coef = -coef
+    cxp = coef * rx * y1p / ry
+    cyp = coef * -ry * x1p / rx
+    cx = cos_p * cxp - sin_p * cyp + (x1 + x2) / 2.0
+    cy = sin_p * cxp + cos_p * cyp + (y1 + y2) / 2.0
+    start = math.degrees(math.atan2(y1 - cy, x1 - cx)) % 360.0
+    end = math.degrees(math.atan2(y2 - cy, x2 - cx)) % 360.0
+    return cx, cy, start, end
+
+
+def _wedge_clip_corners(
+    cx: float,
+    cy: float,
+    radius: float,
+    start_deg: float,
+    end_deg: float,
+    *,
+    clockwise: bool,
+    pad: float,
+) -> tuple[tuple[float, float], ...]:
+    """Pie wedge covering a stroked arc so OpenCV can clip a ring to that sweep."""
+    sweep = (end_deg - start_deg) % 360.0 if clockwise else (start_deg - end_deg) % 360.0
+    if sweep <= 0.0:
+        sweep = 360.0
+    n = max(12, int(sweep / 4.0) + 1)
+    outer = radius + pad
+    pts: list[tuple[float, float]] = [(cx, cy)]
+    step = sweep / n if clockwise else -sweep / n
+    for i in range(n + 1):
+        ang = math.radians(start_deg + step * i)
+        pts.append((cx + outer * math.cos(ang), cy + outer * math.sin(ang)))
+    return tuple(pts)
+
+
+def _path_stroke_width(el: ET.Element) -> float:
+    style = el.get("style") or ""
+    sw_m = re.search(r"stroke-width\s*:\s*([-\d.]+)", style, re.IGNORECASE)
+    if sw_m:
+        return float(sw_m.group(1))
+    try:
+        return float(el.get("stroke-width") or 8.0)
+    except ValueError:
+        return 8.0
+
+
+def _arc_spec_from_search_path(el: ET.Element) -> _OnboardingSearchArcSpec | None:
+    """Stroke-only ellipse arc path (no clip-path) → spinner overlay spec."""
+    parsed = _SVG_ARC_PATH_RE.search(el.get("d") or "")
+    if parsed is None:
+        return None
+    x1, y1 = float(parsed.group(1)), float(parsed.group(2))
+    rx, ry = float(parsed.group(3)), float(parsed.group(4))
+    phi = float(parsed.group(5))
+    fa, fs = int(parsed.group(6)), int(parsed.group(7))
+    x2, y2 = float(parsed.group(8)), float(parsed.group(9))
+    converted = _svg_arc_center_and_angles(x1, y1, rx, ry, phi, fa, fs, x2, y2)
+    if converted is None:
+        return None
+    cx, cy, start_deg, end_deg = converted
+    radius = (abs(rx) + abs(ry)) / 2.0
+    stroke_w = _path_stroke_width(el)
+    corners = _wedge_clip_corners(
+        cx,
+        cy,
+        radius,
+        start_deg,
+        end_deg,
+        clockwise=bool(fs),
+        pad=stroke_w,
+    )
+    return _OnboardingSearchArcSpec(
+        cx_svg=cx,
+        cy_svg=cy,
+        radius_svg=radius,
+        stroke_svg=stroke_w,
+        clip_corners_svg=corners,
+    )
+
+
 def _discover_search_arc_specs_in_group(
     root: ET.Element,
     search_group: ET.Element,
 ) -> tuple[_OnboardingSearchArcSpec, ...]:
-    """Clip-masked ring arcs from a search-icon subtree (box columns + onboarding)."""
+    """Ring arcs from a search-icon subtree (path strokes, or legacy clip-path circles)."""
     parents = _parent_map(root)
     if _is_subtree_hidden(search_group, parents):
         return ()
@@ -1892,12 +2011,20 @@ def _discover_search_arc_specs_in_group(
             continue
         rect_el: ET.Element | None = None
         circle_el: ET.Element | None = None
+        path_el: ET.Element | None = None
         for node in el.iter():
             tag = node.tag.rsplit("}", 1)[-1]
             if tag == "rect" and node.get("width") and node.get("height"):
                 rect_el = node
             if tag == "circle" and node.get("cx") and node.get("r"):
                 circle_el = node
+            if tag == "path" and "A" in (node.get("d") or "").upper():
+                path_el = node
+        if path_el is not None:
+            spec = _arc_spec_from_search_path(path_el)
+            if spec is not None:
+                specs.append(spec)
+            continue
         if rect_el is None or circle_el is None:
             continue
         try:
@@ -2812,6 +2939,24 @@ def _set_text_content(el: ET.Element | None, text: str) -> None:
             t.text = text
 
 
+def _hide_add_search_glyphs(root: ET.Element) -> None:
+    """Hide plus/arrow search art so it cannot bleed through PIN / overlay screens."""
+    for lid in (
+        "main_box1_search_icon",
+        "main_box2_search_icon",
+        "main_box3_search_icon",
+        "main_box2_add_search_icon",
+        "main_box2_+_icon",
+        "welcome_to_pigeon_group",
+    ):
+        _set_visible(_find_by_logical_id(root, lid), False)
+    search_group = _wifi_onboarding_search_group(root)
+    if search_group is not None:
+        _set_visible(search_group, False)
+    for box_num in (1, 2, 3):
+        _hide_box_search_animation_layers(root, box_num)
+
+
 def _apply_keyboard_layer_visibility(root: ET.Element, state: MainSettingsState) -> None:
     """While the keyboard is open, hide chrome under the overlay."""
     if not state.keyboard_open and not state.wifi_connecting:
@@ -2841,9 +2986,7 @@ def _apply_keyboard_layer_visibility(root: ET.Element, state: MainSettingsState)
             "main_box2_+_icon",
         ):
             _set_visible(_find_by_logical_id(root, lid), False)
-        search_group = _wifi_onboarding_search_group(root)
-        if search_group is not None:
-            _set_visible(search_group, False)
+        _hide_add_search_glyphs(root)
         for lid in _DUAL_LOCATION_ICON_IDS:
             _set_visible(_find_by_logical_id(root, lid), False)
         _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
@@ -2864,12 +3007,16 @@ def _apply_keyboard_layer_visibility(root: ET.Element, state: MainSettingsState)
             "main_box1_device_group",
             "main_box2_device_group",
             "main_box3_device_group",
+            "main_box1",
+            "main_box2",
+            "main_box3",
             "main_box1_container",
             "main_box2_container",
             "main_box3_container",
             "main_box2_add_search_icon",
         ):
             _set_visible(_find_by_logical_id(root, lid), False)
+        _hide_add_search_glyphs(root)
         for lid in _DUAL_LOCATION_ICON_IDS:
             _set_visible(_find_by_logical_id(root, lid), False)
         _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
@@ -3742,13 +3889,9 @@ def _hide_svg_wifi_icons(root: ET.Element) -> None:
 
 
 def _hide_box_column_search_svg_circles(root: ET.Element) -> None:
-    """Hide column search ring circles; OpenCV redraws them with rect clip masks.
-
-    Triangles and ``+`` stay in the SVG (PyMuPDF renders those correctly). Stroke-only
-    ``clip-path`` circles become full rings under PyMuPDF, so they must not rasterize.
-    """
+    """Hide leftover clip-path ring circles. Stroke arc paths rasterize correctly."""
     parents = _parent_map(root)
-    for box_num in (2, 3):
+    for box_num in (1, 2, 3):
         search_icon = _find_box_column_search_icon(root, box_num)
         if search_icon is None or _is_subtree_hidden(search_icon, parents):
             continue
@@ -3763,25 +3906,31 @@ def _collect_box_search_arc_overlays(
     *,
     focused_logical: str,
 ) -> list[_BoxSearchArcOverlay]:
-    """Arc specs + stroke colors for visible idle box2/box3 search icons."""
+    """Arc specs + stroke colors for visible idle box search icons.
+
+    Path-stroked ellipses rasterize correctly; only legacy clip-path circles
+    need an OpenCV redraw. Skip entirely while a keyboard overlay is up so the
+    add/search arrows cannot bleed through the PIN pad.
+    """
+    if state.keyboard_open:
+        return []
     parents = _parent_map(root)
     overlays: list[_BoxSearchArcOverlay] = []
-    for box_num in (2, 3):
+    for box_num in (1, 2, 3):
         search_icon = _find_box_column_search_icon(root, box_num)
         if search_icon is None or _is_subtree_hidden(search_icon, parents):
             continue
-        panel = state._box_panel(box_num)
+        if not any(el.tag.endswith("circle") for el in search_icon.iter()):
+            continue
+        panel = state._box_panel(box_num) if box_num in (2, 3) else None
+        scanning = bool(panel is not None and panel.scanning and panel.active)
         # Rotating spinner path draws its own glyph; skip static arcs.
-        if panel.scanning and panel.active and not bool(
-            getattr(state, "spinner_glyph_capture", False)
-        ):
+        if scanning and not bool(getattr(state, "spinner_glyph_capture", False)):
             continue
         specs = _discover_search_arc_specs_in_group(root, search_icon)
         if not specs:
             continue
-        selected = focused_logical == f"main_box{box_num}_button" or (
-            panel.scanning and panel.active
-        )
+        selected = focused_logical == f"main_box{box_num}_button" or scanning
         color_bgr = _hex_to_bgr("#202020" if selected else "#ffffff")
         overlays.append(_BoxSearchArcOverlay(specs=specs, color_bgr=color_bgr))
     return overlays
@@ -4830,10 +4979,14 @@ def _force_layer_white(el: ET.Element) -> None:
 
 
 def _apply_wifi_search_glyph_layers(search_group: ET.Element) -> None:
-    """WiFi search art: filled star triangles (ring strokes drawn as BGRA overlays)."""
+    """WiFi search art: ellipse paths are stroke-only; triangles are fill-only."""
     for el in search_group.iter():
-        if el.tag.endswith("polygon"):
-            _set_paint(el, fill="#000000", stroke="none")
+        tag = el.tag.rsplit("}", 1)[-1]
+        fill, stroke = _iter_style_fill_stroke(el)
+        if tag == "polygon":
+            _set_paint(el, fill=fill or "#ffffff", stroke="none")
+        elif tag in ("circle", "path"):
+            _set_paint(el, fill="none", stroke=stroke or "#ffffff")
 
 
 def _hide_wifi_search_glyphs(root: ET.Element) -> None:
@@ -4849,7 +5002,7 @@ def _apply_wifi_search_icon_styles(
     focused: str,
     theme: SettingsTheme,
 ) -> None:
-    """Onboarding search rings stay black; ``+`` follows selection contrast."""
+    """Onboarding search rings stay stroke-only; ``+`` follows selection contrast."""
     add_group = _find_by_logical_id(root, "main_box2_add_search_icon")
     if add_group is None:
         return
@@ -5265,14 +5418,17 @@ def _apply_box_search_icon_glyph_styles(
     *,
     color: str = "#202020",
 ) -> None:
-    """Ellipses: stroke only. Arrow triangles: fill only."""
+    """Ellipses: stroke only. Arrow triangles and ``+``: fill only."""
     if search_icon is None:
         return
     for el in search_icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
-        if tag == "circle":
+        logical = _normalize_logical(el.get("id") or "")
+        if tag in ("circle", "path"):
             _set_paint(el, fill="none", stroke=color)
-        elif tag == "polygon" and "triangle" in _normalize_logical(el.get("id") or ""):
+        elif tag == "polygon" and "triangle" in logical:
+            _set_paint(el, fill=color, stroke="none")
+        elif tag == "text":
             _set_paint(el, fill=color, stroke="none")
 
 
@@ -5285,15 +5441,14 @@ def _set_box_search_plus_visible(search_icon: ET.Element | None, visible: bool) 
 
 
 def _show_box_search_icon_vectors(search_icon: ET.Element | None) -> None:
-    """Show SVG triangles; ring circles stay hidden (OpenCV clip redraw)."""
+    """Show filled triangles/plus and stroke arcs; hide leftover clip-path circles."""
     if search_icon is None:
         return
     for el in search_icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
-        if tag == "polygon":
+        if tag in ("polygon", "path", "text"):
             _set_visible(el, True)
         elif tag == "circle":
-            # PyMuPDF ignores circle clip-path → full rings; hide for OpenCV redraw.
             _set_visible(el, False)
 
 
@@ -5303,7 +5458,7 @@ def _hide_box_search_icon_vectors(search_icon: ET.Element | None) -> None:
         return
     for el in search_icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
-        if tag in ("circle", "polygon"):
+        if tag in ("circle", "polygon", "path"):
             _set_visible(el, False)
 
 
@@ -5313,33 +5468,25 @@ def _apply_box_search_icon_variant(
     selected: bool,
     show_plus: bool = True,
 ) -> None:
-    """Paint box column search art (black glyphs on white pill, white on black).
+    """Paint box column add/search art (black glyphs on white pill, white on black).
 
-    Ellipse/triangle layers are Illustrator-named ``*_selected`` but have no
-    ``*_deselected`` twins — keep groups present and only recolor. Ring circles
-    are stroke-only with rect ``clip-path``; PyMuPDF drops those clips, so circles
-    are hidden before rasterize and redrawn via OpenCV (triangles stay in SVG).
+    Plus and triangles are fills; ellipse arcs are strokes. Keep groups present
+    and only recolor. Leftover clip-path circles stay hidden.
     """
     if search_icon is None:
         return
     color = "#202020" if selected else "#ffffff"
     _apply_box_search_icon_glyph_styles(search_icon, color=color)
-    # Keep ellipse clip groups in the tree for geometry discovery; hide circles.
     for el in search_icon.iter():
         if el is search_icon:
             continue
         logical = _normalize_logical(el.get("id") or "")
-        if "ellipse" in logical or "eplipse" in logical:
+        tag = el.tag.rsplit("}", 1)[-1]
+        if "ellipse" in logical or "eplipse" in logical or tag == "path":
             _set_visible(el, True)
-        if el.tag.endswith("circle"):
+        if tag == "circle":
             _set_visible(el, False)
-    plus_visible = bool(show_plus and not selected)
-    _set_box_search_plus_visible(search_icon, plus_visible)
-    if plus_visible:
-        for el in search_icon.iter():
-            if not el.tag.endswith("text"):
-                continue
-            _set_paint(el, fill=COLOR_SELECTED)
+    _set_box_search_plus_visible(search_icon, bool(show_plus))
 
 
 def _apply_box_result_text_style(
@@ -5705,11 +5852,7 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
         for lid in _DUAL_LOCATION_ICON_IDS:
             _set_visible(_find_by_logical_id(root, lid), False)
         _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
-        _set_visible(_find_by_logical_id(root, "welcome_to_pigeon_group"), False)
-        _set_visible(_find_by_logical_id(root, "main_box2_add_search_icon"), False)
-        search_group = _wifi_onboarding_search_group(root)
-        if search_group is not None:
-            _set_visible(search_group, False)
+        _hide_add_search_glyphs(root)
     hide_loc_svg = (
         (state.keyboard_open and kb_target in ("location", "network", "device_name", "pin", "wifi_logout"))
         or state.wifi_connecting
@@ -5922,8 +6065,7 @@ def render_main_settings_bgra(
     onboarding_arc_specs = geom["onboarding_arcs"]  # type: ignore[assignment]
     onboarding_triangle_specs = geom["onboarding_tris"]  # type: ignore[assignment]
     wifi_layouts = geom["wifi_layouts"]  # type: ignore[assignment]
-    # Box search rings: discover clip geometry while circles still exist, then
-    # strip them before PyMuPDF (which ignores clip-path → full rings).
+    # Box search rings: path strokes rasterize; leftover clip-path circles are hidden.
     box_search_arc_overlays = _collect_box_search_arc_overlays(
         root, st, focused_logical=focused_logical
     )

@@ -250,7 +250,7 @@ def _sync_selectable_tile(
 
 
 def _sync_hdmi_icon(root: ET.Element, *, dimmed: bool) -> None:
-    """Gray the HDMI plug glyph when the dongle is missing or the source is off."""
+    """Gray the HDMI plug glyph when there is no live signal or the source is off."""
     group = _find_by_logical_id(root, "settings_pigeon_08_hdmi_icon_group")
     if group is None:
         return
@@ -296,7 +296,7 @@ def _metadata_status_ok(state: MainSettingsState) -> bool:
 
 
 def _hdmi_device_present(state: MainSettingsState) -> bool:
-    """True when the HDMI capture dongle is plugged in."""
+    """True when HDMI can currently deliver a video frame to Pigeon."""
     try:
         from pigeon.hdmi_ocr import hdmi_capture_available
 
@@ -308,7 +308,7 @@ def _hdmi_device_present(state: MainSettingsState) -> bool:
 
 
 def _hdmi_status_ok(state: MainSettingsState) -> bool:
-    """Green when HDMI is enabled and the capture dongle is present."""
+    """Green when HDMI is enabled and a live signal can reach Pigeon."""
     if not _source_on(state, "hdmi"):
         return False
     return _hdmi_device_present(state)

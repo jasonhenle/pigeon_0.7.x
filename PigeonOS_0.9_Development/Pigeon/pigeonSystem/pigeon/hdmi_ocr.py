@@ -22,9 +22,17 @@ PREFERRED_WIDTH = 1920
 PREFERRED_HEIGHT = 1080
 PAUSE_OCR_MIN_INTERVAL_S = 60.0
 NO_METADATA_RETRY_S = 5.0
+# After TMDb has a title (or art is up), re-check HDMI every this many seconds.
+WATCH_OCR_INTERVAL_S = 5.0
 POSITION_STALL_S = 5.0
 POSITION_ADVANCE_EPS = 0.2
 OCR_TITLE_CONFIRM_HITS = 2
+# Unchanged HDMI frames in a row before HDMI-driven clock saver arms.
+CLOCK_SAVER_OCR_STREAK = 24
+# Mean abs diff (0–255) above this → frame considered changed.
+_FRAME_DIFF_MEAN_MIN = 6.0
+_FRAME_FP_W = 48
+_FRAME_FP_H = 27
 TITLE_MIN_HEIGHT = 40
 TOP_RIGHT_X, TOP_RIGHT_Y, TOP_RIGHT_W, TOP_RIGHT_H = 0.52, 0.0, 0.48, 0.30
 
@@ -54,6 +62,26 @@ _SKIP_NAME_HINTS = (
 OnClues = Callable[[OcrClues], None]
 
 
+_OCR_FIELD_KEYS = (
+    "ocr_title",
+    "ocr_lines",
+    "ocr_season",
+    "ocr_episode",
+    "ocr_year",
+    "ocr_runtime_min",
+    "ocr_extras",
+    "ocr_reason",
+    "ocr_agrees",
+    "ocr_at",
+    "ocr_status",
+    "ocr_capture",
+    "ocr_pending_title",
+    "ocr_pending_hits",
+    "ocr_frame_changed",
+    "ocr_unchanged_streak",
+)
+
+
 @dataclass
 class OcrSchedule:
     was_paused: bool = False
@@ -64,13 +92,16 @@ class OcrSchedule:
     last_position: float | None = None
     last_position_change_mono: float = 0.0
     in_flight: bool = False
+    last_frame_fp: Any = None
+    consecutive_unchanged: int = 0
+    last_frame_changed: bool = False
 
 
 _schedule = OcrSchedule()
 
 
 def reset_ocr_schedule() -> None:
-    """Clear cadence / position memory (tests, HDMI off)."""
+    """Clear cadence / position / frame memory (tests, HDMI off)."""
     global _schedule
     _schedule = OcrSchedule()
 
@@ -88,6 +119,64 @@ def _position_is_advancing(md: Mapping[str, Any], now: float) -> bool:
         _schedule.last_position_change_mono = now
         return True
     return (now - _schedule.last_position_change_mono) < POSITION_STALL_S
+
+
+def hdmi_unchanged_streak() -> int:
+    """How many consecutive OCR reads saw an unchanged HDMI frame."""
+    return int(_schedule.consecutive_unchanged)
+
+
+def hdmi_clock_saver_due() -> bool:
+    """True after ``CLOCK_SAVER_OCR_STREAK`` unchanged HDMI frames in a row."""
+    return int(_schedule.consecutive_unchanged) >= CLOCK_SAVER_OCR_STREAK
+
+
+def hdmi_last_frame_changed() -> bool:
+    """True when the most recent OCR frame differed from the prior fingerprint."""
+    return bool(_schedule.last_frame_changed)
+
+
+def _frame_fingerprint(frame) -> Any:
+    """Small grayscale downsample used to detect HDMI content changes."""
+    try:
+        import cv2
+        import numpy as np
+
+        if frame is None or not getattr(frame, "size", 0):
+            return None
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        small = cv2.resize(
+            gray, (_FRAME_FP_W, _FRAME_FP_H), interpolation=cv2.INTER_AREA
+        )
+        return small.astype(np.float32)
+    except Exception:
+        return None
+
+
+def _note_frame_fingerprint(frame) -> bool:
+    """Compare ``frame`` to the last OCR fingerprint. Returns True if changed."""
+    fp = _frame_fingerprint(frame)
+    prev = _schedule.last_frame_fp
+    changed = True
+    if fp is not None and prev is not None:
+        try:
+            import numpy as np
+
+            diff = float(np.mean(np.abs(fp - prev)))
+            changed = diff >= _FRAME_DIFF_MEAN_MIN
+        except Exception:
+            changed = True
+    if fp is not None:
+        _schedule.last_frame_fp = fp
+    if changed:
+        _schedule.consecutive_unchanged = 0
+        _schedule.last_frame_changed = True
+    else:
+        _schedule.consecutive_unchanged = int(_schedule.consecutive_unchanged) + 1
+        _schedule.last_frame_changed = False
+    return bool(_schedule.last_frame_changed)
+
+
 _lock = threading.Lock()
 _cap = None
 _cap_index: int | None = None
@@ -97,7 +186,12 @@ _av_devices_cache: list[tuple[int, str, str]] | None = None
 _hdmi_present: bool | None = None
 _hdmi_probe_mono: float = 0.0
 _hdmi_probe_in_flight: bool = False
-_HDMI_PROBE_TTL_S = 8.0
+_hdmi_no_signal_hits: int = 0
+_HDMI_PROBE_TTL_S = 1.5
+# Near-black, near-flat frames (typical HDMI-unplug output from a USB dongle).
+_NO_SIGNAL_MEAN_MAX = 8.0
+_NO_SIGNAL_STD_MAX = 4.0
+_NO_SIGNAL_HITS_TO_DROP = 2
 
 
 def _can_pass_to_tmdb(md: Mapping[str, Any]) -> bool:
@@ -118,12 +212,17 @@ def _can_pass_to_tmdb(md: Mapping[str, Any]) -> bool:
     return False
 
 
-def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = None) -> str | None:
+def decide_ocr_reason(
+    metadata: Mapping[str, Any] | None,
+    now: float | None = None,
+    *,
+    tmdb_up: bool = False,
+) -> str | None:
     """When should we look at HDMI?
 
-    ``no_metadata`` — player title is missing; OCR is in charge.
-    ``watch`` — playback undetected or position stalled; stay alert for the next card.
-    ``confirm`` — content key changed and we already have a title.
+    ``no_metadata`` — keep OCR'ing until there is a title TMDb will accept.
+    ``watch`` — TMDb already has (or can get) content; re-check every 5s for a
+    new / different screen (image fingerprint + OCR text).
     ``pause`` — rising pause edge (at most once a minute).
     """
     now = time.monotonic() if now is None else now
@@ -131,12 +230,11 @@ def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = No
     ds = str(md.get("device_state") or "").lower()
     paused = "paused" in ds or ds.endswith("pause")
     content_key = str(md.get("content_key") or "") or None
-    tmdb_ready = _can_pass_to_tmdb(md)
-    from pigeon.display_confidence import ocr_is_in_charge, playback_detected
+    tmdb_ready = _can_pass_to_tmdb(md) or bool(tmdb_up)
 
-    ocr_owns = ocr_is_in_charge(md, hdmi_present=hdmi_capture_available())
-    advancing = _position_is_advancing(md, now)
-    stay_alert = (not playback_detected(md)) or (not advancing)
+    # Keep position cadence warm for other callers even though schedule no longer
+    # gates OCR on stall alone.
+    _position_is_advancing(md, now)
 
     key_changed = content_key != _schedule.last_content_key
     if key_changed:
@@ -148,24 +246,19 @@ def decide_ocr_reason(metadata: Mapping[str, Any] | None, now: float | None = No
         _schedule.last_pause_ocr_mono = now
         return "pause"
 
-    if key_changed:
-        if not tmdb_ready or ocr_owns:
-            _schedule.last_no_meta_ocr_mono = now
-            return "no_metadata"
-        if content_key and content_key != _schedule.last_confirm_key:
-            _schedule.last_confirm_key = content_key
-            return "confirm"
-
-    due = (now - _schedule.last_no_meta_ocr_mono) >= NO_METADATA_RETRY_S
-    if not due:
-        return None
-    if ocr_owns or not tmdb_ready:
+    # New content identity without a usable title → OCR immediately.
+    if key_changed and not tmdb_ready:
         _schedule.last_no_meta_ocr_mono = now
         return "no_metadata"
-    if stay_alert:
-        _schedule.last_no_meta_ocr_mono = now
-        return "watch"
-    return None
+
+    interval = NO_METADATA_RETRY_S if not tmdb_ready else WATCH_OCR_INTERVAL_S
+    due = (now - _schedule.last_no_meta_ocr_mono) >= interval
+    if not due:
+        return None
+    _schedule.last_no_meta_ocr_mono = now
+    if not tmdb_ready:
+        return "no_metadata"
+    return "watch"
 
 
 def request_ocr(reason: str, on_done: OnClues) -> bool:
@@ -178,6 +271,8 @@ def request_ocr(reason: str, on_done: OnClues) -> bool:
     except Exception:
         pass
     if not hdmi_capture_available():
+        # Keep probing so a re-plug (or signal return) can turn the LED green.
+        probe_hdmi_presence()
         return False
     with _lock:
         if _schedule.in_flight:
@@ -201,20 +296,29 @@ def _ocr_worker(reason: str, on_done: OnClues) -> None:
         if frame is None:
             _last_capture_label = "none"
             clues = OcrClues(reason=reason, extras=["capture_unavailable"])
+            _schedule.last_frame_changed = True
+            _schedule.consecutive_unchanged = 0
         elif not _configure_tesseract():
             h, w = frame.shape[:2]
             name = _device_name(int(_cap_index)) if _cap_index is not None else ""
             _last_capture_label = f"{_cap_index} {name} {w}x{h}".strip()
+            changed = _note_frame_fingerprint(frame)
             clues = OcrClues(
                 reason=reason,
-                extras=[_tesseract_error or "tesseract_unavailable"],
+                extras=[
+                    _tesseract_error or "tesseract_unavailable",
+                    "frame_changed" if changed else "frame_same",
+                ],
             )
         else:
             h, w = frame.shape[:2]
             name = _device_name(int(_cap_index)) if _cap_index is not None else ""
             _last_capture_label = f"{_cap_index} {name} {w}x{h}".strip()
+            changed = _note_frame_fingerprint(frame)
             lines = _ocr_lines(frame)
             clues = clues_from_lines(lines, reason=reason)
+            clues.extras = list(clues.extras or [])
+            clues.extras.append("frame_changed" if changed else "frame_same")
     except Exception:
         clues = OcrClues(reason=reason, extras=["ocr_error"])
     finally:
@@ -243,6 +347,12 @@ def apply_clues_to_metadata(
         extra0 = str(out["ocr_extras"][0])
     if extra0 in ("capture_unavailable", "tesseract_unavailable", "ocr_error"):
         out["ocr_status"] = extra0
+        if extra0 == "capture_unavailable":
+            # HDMI cannot feed Pigeon — drop stale OCR so it cannot look live.
+            for key in _OCR_FIELD_KEYS:
+                if key in ("ocr_status", "ocr_reason", "ocr_extras", "ocr_at"):
+                    continue
+                out.pop(key, None)
     elif str(out.get("ocr_title") or "").strip() or (
         isinstance(out.get("ocr_lines"), list) and out["ocr_lines"]
     ):
@@ -251,6 +361,8 @@ def apply_clues_to_metadata(
         out["ocr_status"] = "no_text"
     if _last_capture_label:
         out["ocr_capture"] = _last_capture_label
+    out["ocr_frame_changed"] = bool(_schedule.last_frame_changed)
+    out["ocr_unchanged_streak"] = int(_schedule.consecutive_unchanged)
     return out
 
 
@@ -296,6 +408,17 @@ def apply_ocr_title_as_identity(metadata: dict[str, Any]) -> bool:
         mark_identity(metadata, source="ocr", confidence=OCR_IDENTITY)
         metadata["ocr_pending_title"] = ""
         metadata["ocr_pending_hits"] = 0
+        try:
+            from pigeon.title_decision import apply_decision_to_metadata, record_title_decision
+
+            decision = record_title_decision(
+                guess,
+                source="ocr",
+                reason="HDMI OCR filled an empty player title",
+            )
+            apply_decision_to_metadata(metadata, decision)
+        except Exception:
+            pass
         return True
     if current.casefold() == guess.casefold():
         mark_identity(metadata, source="ocr", confidence=OCR_IDENTITY)
@@ -318,25 +441,19 @@ def apply_ocr_title_as_identity(metadata: dict[str, Any]) -> bool:
     mark_identity(metadata, source="ocr", confidence=OCR_IDENTITY)
     metadata["ocr_pending_title"] = ""
     metadata["ocr_pending_hits"] = 0
+    try:
+        from pigeon.title_decision import apply_decision_to_metadata, record_title_decision
+
+        decision = record_title_decision(
+            guess,
+            source="ocr",
+            reason=f"HDMI OCR confirmed a new title after {OCR_TITLE_CONFIRM_HITS} matching reads",
+            extras={"replaced": current},
+        )
+        apply_decision_to_metadata(metadata, decision)
+    except Exception:
+        pass
     return True
-
-
-_OCR_FIELD_KEYS = (
-    "ocr_title",
-    "ocr_lines",
-    "ocr_season",
-    "ocr_episode",
-    "ocr_year",
-    "ocr_runtime_min",
-    "ocr_extras",
-    "ocr_reason",
-    "ocr_agrees",
-    "ocr_at",
-    "ocr_status",
-    "ocr_capture",
-    "ocr_pending_title",
-    "ocr_pending_hits",
-)
 
 
 def copy_ocr_fields(src: Mapping[str, Any] | None, dest: dict[str, Any]) -> None:
@@ -354,20 +471,26 @@ def clear_ocr_fields(dest: dict[str, Any]) -> None:
         dest.pop(key, None)
 
 
-def release_capture() -> None:
-    """Free the HDMI capture device so another process can use it."""
-    global _cap, _cap_index
-    reset_ocr_schedule()
-    with _lock:
-        cap = _cap
-        _cap = None
-        _cap_index = None
+def _drop_open_capture() -> None:
+    """Close the OpenCV handle without resetting OCR cadence."""
+    global _cap, _cap_index, _av_devices_cache
+    cap = _cap
+    _cap = None
+    _cap_index = None
+    _av_devices_cache = None
     if cap is None:
         return
     try:
         cap.release()
     except Exception:
         pass
+
+
+def release_capture() -> None:
+    """Free the HDMI capture device so another process can use it."""
+    reset_ocr_schedule()
+    with _lock:
+        _drop_open_capture()
 
 
 _tesseract_error = ""
@@ -428,9 +551,11 @@ def _is_hdmi_camera(name: str, dtype: str = "") -> bool:
 
 
 def note_hdmi_present(present: bool) -> None:
-    """Remember whether the HDMI dongle is plugged in (settings LED)."""
-    global _hdmi_present
+    """Remember whether HDMI can currently deliver a video frame (settings LED)."""
+    global _hdmi_present, _hdmi_no_signal_hits
     _hdmi_present = bool(present)
+    if present:
+        _hdmi_no_signal_hits = 0
 
 
 def _linux_usb_video_indices() -> list[int]:
@@ -458,25 +583,17 @@ def _linux_usb_video_indices() -> list[int]:
 
 
 def hdmi_capture_available() -> bool:
-    """Non-blocking: True when a capture device is open or last seen."""
-    global _hdmi_present
-    if _cap is not None:
-        try:
-            if _cap.isOpened():
-                _hdmi_present = True
-                return True
-        except Exception:
-            pass
-    if _hdmi_present is not None:
-        return bool(_hdmi_present)
-    cached = _av_devices_cache
-    if cached is not None:
-        return any(_is_hdmi_camera(name, dtype) for _i, name, dtype in cached)
-    return False
+    """True when HDMI can currently deliver a video frame to Pigeon.
+
+    An open OpenCV handle is not enough: after the cable is pulled the capture
+    often stays ``isOpened()`` (and the USB dongle may still enumerate), which
+    used to leave the settings LED green while OCR was impossible.
+    """
+    return bool(_hdmi_present)
 
 
 def probe_hdmi_presence(*, force: bool = False) -> bool:
-    """Return last known presence; refresh the device list in the background."""
+    """Return last known presence; refresh capture/signal in the background."""
     global _hdmi_probe_in_flight, _hdmi_probe_mono
     now = time.monotonic()
     stale = (
@@ -496,24 +613,114 @@ def probe_hdmi_presence(*, force: bool = False) -> bool:
     return hdmi_capture_available()
 
 
-def _hdmi_probe_worker() -> None:
-    global _hdmi_present, _hdmi_probe_in_flight, _hdmi_probe_mono, _av_devices_cache
+def _frame_has_video_signal(frame) -> bool:
+    """False for empty / near-black frames that cannot yield HDMI metadata."""
+    if frame is None or not getattr(frame, "size", 0):
+        return False
     try:
-        present = False
-        if sys.platform == "darwin":
-            # Enumerate into a fresh list; only replace the cache on success so a
-            # failed Swift run cannot leave other readers with no device names.
-            _av_devices_cache = None
-            named = _avfoundation_devices()
-            present = any(_is_hdmi_camera(name, dtype) for _i, name, dtype in named)
-        elif sys.platform.startswith("linux"):
-            present = bool(_linux_usb_video_indices())
-        if not present and _cap is not None:
-            try:
-                present = bool(_cap.isOpened())
-            except Exception:
-                present = False
-        _hdmi_present = present
+        import numpy as np
+
+        arr = np.asarray(frame)
+        if arr.size == 0:
+            return False
+        if arr.ndim == 3:
+            gray = (
+                arr[..., 0].astype(np.float32) * 0.114
+                + arr[..., 1].astype(np.float32) * 0.587
+                + arr[..., 2].astype(np.float32) * 0.299
+            )
+        else:
+            gray = arr.astype(np.float32)
+        step_y = max(1, int(gray.shape[0]) // 36)
+        step_x = max(1, int(gray.shape[1]) // 64)
+        sample = gray[::step_y, ::step_x]
+        mean = float(sample.mean())
+        std = float(sample.std())
+        return mean > _NO_SIGNAL_MEAN_MAX or std > _NO_SIGNAL_STD_MAX
+    except Exception:
+        return True
+
+
+def _hdmi_device_enumerated() -> bool:
+    """True when a capture dongle is listed (USB present; signal not required)."""
+    global _av_devices_cache
+    if sys.platform == "darwin":
+        _av_devices_cache = None
+        named = _avfoundation_devices()
+        return any(_is_hdmi_camera(name, dtype) for _i, name, dtype in named)
+    if sys.platform.startswith("linux"):
+        return bool(_linux_usb_video_indices())
+    cached = _av_devices_cache
+    if cached is not None:
+        return any(_is_hdmi_camera(name, dtype) for _i, name, dtype in cached)
+    return False
+
+
+def _note_frame_signal(frame) -> bool:
+    """Update presence from one grabbed frame. True when the frame has signal."""
+    global _hdmi_no_signal_hits
+    if frame is None or not getattr(frame, "size", 0):
+        _hdmi_no_signal_hits = 0
+        note_hdmi_present(False)
+        return False
+    if _frame_has_video_signal(frame):
+        note_hdmi_present(True)
+        return True
+    _hdmi_no_signal_hits += 1
+    if _hdmi_no_signal_hits >= _NO_SIGNAL_HITS_TO_DROP:
+        note_hdmi_present(False)
+        return False
+    return bool(_hdmi_present)
+
+
+def _read_open_capture():
+    """One ``cap.read()`` from the current handle. ``None`` if it failed."""
+    cap = _cap
+    if cap is None:
+        return None
+    try:
+        if not cap.isOpened():
+            return None
+        ok, frame = cap.read()
+    except Exception:
+        return None
+    if not ok or frame is None or not getattr(frame, "size", 0):
+        return None
+    return frame
+
+
+def _probe_hdmi_now() -> bool:
+    """Check live HDMI signal; enumeration is a fallback when capture is dead.
+
+    Fast path: read the already-open device (catches HDMI cable unplug without
+    waiting on Swift / sysfs). An open handle alone never counts as present.
+    """
+    if _schedule.in_flight:
+        return bool(_hdmi_present)
+
+    frame = _read_open_capture()
+    if frame is not None:
+        return _note_frame_signal(frame)
+
+    if _cap is not None:
+        _drop_open_capture()
+        note_hdmi_present(False)
+
+    if not _hdmi_device_enumerated():
+        note_hdmi_present(False)
+        return False
+
+    peeked = _grab_frame()
+    if peeked is None:
+        note_hdmi_present(False)
+        return False
+    return bool(_hdmi_present)
+
+
+def _hdmi_probe_worker() -> None:
+    global _hdmi_probe_in_flight, _hdmi_probe_mono
+    try:
+        _probe_hdmi_now()
         _hdmi_probe_mono = time.monotonic()
     finally:
         with _lock:
@@ -678,15 +885,11 @@ def _grab_frame():
     ok, frame = _cap.read()
     if not ok or frame is None or not getattr(frame, "size", 0):
         note_hdmi_present(False)
-        try:
-            _cap.release()
-        except Exception:
-            pass
-        _cap = None
-        _cap_index = None
-        _av_devices_cache = None
+        _drop_open_capture()
         return None
-    note_hdmi_present(True)
+    if not _note_frame_signal(frame):
+        # Keep the handle open so a later probe can see the cable return.
+        return None
     return frame
 
 

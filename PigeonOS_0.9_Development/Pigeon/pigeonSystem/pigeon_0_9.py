@@ -544,9 +544,9 @@ CLOCK_SAVER_BACKDROP_DIM = 0.3
 CLOCK_SAVER_POSITION_STALL_GRACE_S = 5.0
 # When player poll metadata stays unchanged for this long **and** no local Pigeon
 # controls were used for the same span, force the clock saver on (independent of the
-# 300 s UI+device idle path and independent of TMDb art). Content/title/app/state/position
-# changes refresh the stamp; so does any control via ``_bump_pigeon_user_activity``.
-# No TMDb / no position does **not** block this — idle or empty metadata still ages out.
+# 300 s UI+device idle path). Position not advancing is the primary signal; HDMI
+# frame/title changes also refresh the stamp. When metadata is driving the saver,
+# the HDMI 24-OCR streak rule is ignored.
 CLOCK_SAVER_METADATA_IDLE_AFTER_S = 120.0
 
 # Idle composite cadence when video is paused (lower than live playback).
@@ -2115,6 +2115,8 @@ def main() -> int:
             "tmdb_exhausted_identity": None,
             # HDMI OCR is another metadata source (confirm / fill / pause check).
             "ocr_in_flight": False,
+            # Last human-readable title decision (also mirrored on last_metadata).
+            "last_title_decision": None,
         }
         tmdb_retry_rule_idx = [0]
         tmdb_adv_manual_btn_holder: list[tk.Button | None] = [None]
@@ -2997,6 +2999,31 @@ def main() -> int:
                     pass
             return False
 
+        def _metadata_drives_clock_saver() -> bool:
+            """True when player metadata (not HDMI OCR streak) owns clock-saver idle.
+
+            Position progress is the primary signal. When metadata is driving, the
+            HDMI 24-OCR unchanged-frame rule is ignored.
+            """
+            try:
+                from pigeon.source_toggles import source_enabled
+
+                if not source_enabled("metadata"):
+                    return False
+            except Exception:
+                pass
+            if bool(apple_tv_playback_clock.get("has_sync")):
+                return True
+            md = apple_tv_auto_state.get("last_metadata")
+            if not isinstance(md, dict):
+                return False
+            try:
+                from pigeon.display_confidence import player_metadata_adequate
+
+                return bool(player_metadata_adequate(md))
+            except Exception:
+                return bool(str(md.get("query") or md.get("title") or "").strip())
+
         def _clock_saver_active(now: float) -> bool:
             if clock_saver_composite_bgra is None:
                 return False
@@ -3005,9 +3032,9 @@ def main() -> int:
             # Do not require ``scene_enabled``: view ONE now-playing (circles) commonly
             # runs with the video scene off, and the saver must still arm there.
             _apply_position_stall_grace_to_clock_saver(now)
+            # TMDb art dismisses the boot saver, but does not block idle / position stall.
             if _tmdb_info_current_and_available():
                 _boot_clock_saver_until_playback[0] = False
-                return False
             # Boot: if nothing is playing after splash, stay on the saver until playback
             # starts or a local control dismisses it.
             if _boot_clock_saver_until_playback[0]:
@@ -3016,9 +3043,19 @@ def main() -> int:
                     _note_metadata_activity(now)
                 elif startup_ph[0] is None or _splash_reveal_clock[0]:
                     return True
-            # Content metadata unchanged for 2 min → saver until content changes **or**
-            # any local Pigeon control is used (``_bump_pigeon_user_activity`` refreshes
-            # both stamps). Does not require TMDb art, position sync, or volume quiet.
+            # HDMI-only: 24 consecutive unchanged OCR frames → saver.
+            # Ignored while player metadata is driving (position is authoritative).
+            if not _metadata_drives_clock_saver():
+                try:
+                    from pigeon.hdmi_ocr import hdmi_clock_saver_due
+                    from pigeon.source_toggles import source_enabled
+
+                    if source_enabled("hdmi") and hdmi_clock_saver_due():
+                        return True
+                except Exception:
+                    pass
+            # Content metadata + HDMI unchanged for 2 min → saver until content changes
+            # **or** any local Pigeon control is used. Position not advancing is primary.
             lma = float(last_metadata_activity_mono[0])
             meta_age = (now - lma) if lma > 0.0 else 0.0
             ui_age = now - float(last_pigeon_user_activity_mono[0])
@@ -3115,7 +3152,35 @@ def main() -> int:
             # View ONE now-playing may run with scene off; still allow the idle saver.
             if (not scene_enabled) and ev != DisplayView.ONE:
                 return False
+            if clock_saver_force_on[0]:
+                return True
             return _clock_saver_active(now)
+
+        def _toggle_clock_saver_force(event: tk.Event | None = None) -> str | None:
+            """Global [2]: force clock saver on/off (digit 2 is not a display-view hotkey)."""
+            nonlocal skip_cache
+            if event is not None and _widget_accepts_typing(event.widget):
+                return None
+            if not _PIGEON_EXT or clock_saver_composite_bgra is None:
+                return None
+            now = time.monotonic()
+            showing = bool(_clock_saver_for_compose(now))
+            if showing or clock_saver_force_on[0]:
+                clock_saver_force_on[0] = False
+                _boot_clock_saver_until_playback[0] = False
+                _bump_pigeon_user_activity(event)
+                _note_metadata_activity(now)
+                _bump_clock_saver_significant_device()
+            else:
+                clock_saver_force_on[0] = True
+                if event is not None:
+                    _bump_pigeon_user_activity(event)
+            skip_cache = None
+            try:
+                render_once()
+            except Exception:
+                pass
+            return "break"
 
         def _app_logo_clock_saver_style_now() -> bool:
             """Dim, row-2–top app logo layout when there is no TMDb still (letterbox master) in saver contexts."""
@@ -3194,6 +3259,8 @@ def main() -> int:
         }
         prev_dev_phase_for_location_toast: list[DevPhase] = [DevPhase.OFF]
         clock_saver_peek_until_mono: list[float] = [0.0]
+        # Manual [2] force: True = show saver until toggled off (ignores idle timers).
+        clock_saver_force_on: list[bool] = [False]
         black_photo: ImageTk.PhotoImage | None = None
         label_live_photo: list[ImageTk.PhotoImage | None] = [None]
         _render_after_id: list[str | None] = [None]
@@ -5262,6 +5329,16 @@ def main() -> int:
                     src = str(lm_rt.get("identity_source") or "").strip()
                     if src:
                         _ln(f"identity.source={src!r}")
+                    try:
+                        from pigeon.title_decision import decision_from_metadata
+
+                        why = decision_from_metadata(lm_rt) or str(
+                            apple_tv_auto_state.get("last_title_decision") or ""
+                        ).strip()
+                        if why:
+                            _ln(f"title.decision={why}")
+                    except Exception:
+                        pass
                     pending = str(lm_rt.get("ocr_pending_title") or "").strip()
                     if pending:
                         _ln(f"identity.pending={pending!r}")
@@ -5439,6 +5516,9 @@ def main() -> int:
                 "title": h_title,
                 "episode": h_episode,
                 "year": h_year_s,
+                "ocr_lines": list(lm.get("ocr_lines") or []) if hdmi_active else [],
+                "ocr_status": str(lm.get("ocr_status") or "").strip() if hdmi_active else "",
+                "ocr_reason": str(lm.get("ocr_reason") or "").strip() if hdmi_active else "",
             }
 
             # --- pigeon: the final verdict (search terms + confidence) ---
@@ -5478,6 +5558,16 @@ def main() -> int:
                 "episode": g_episode,
                 "year": g_year,
             }
+            try:
+                from pigeon.title_decision import decision_from_metadata
+
+                why = decision_from_metadata(lm) or str(
+                    apple_tv_auto_state.get("last_title_decision") or ""
+                ).strip()
+                if why:
+                    pigeon_rows["decision"] = why
+            except Exception:
+                pass
             try:
                 from pigeon.display_confidence import scores_for_metadata
 
@@ -6320,6 +6410,12 @@ def main() -> int:
             skip_cache = None
             sync_developer_chrome()
             if dev_phase == DevPhase.MAIN_SETTINGS:
+                try:
+                    from pigeon.weather import DEFAULT_WEATHER_ZIP, refresh_weather
+
+                    refresh_weather(zip_code=DEFAULT_WEATHER_ZIP, force=True)
+                except Exception:
+                    pass
                 render_once()
             return "break"
 
@@ -6963,6 +7059,24 @@ def main() -> int:
             apple_tv_auto_state["last_tmdb_fetch_refined"] = q
             apple_tv_auto_state["last_tmdb_fetch_prefer"] = prefer_n
             apple_tv_auto_state["tmdb_fetch_in_flight"] = True
+            try:
+                from pigeon.title_decision import (
+                    apply_decision_to_metadata,
+                    record_title_decision,
+                )
+
+                decision = record_title_decision(
+                    q,
+                    source="tmdb",
+                    reason=f"spawned TMDb search (prefer={prefer_n})",
+                    extras={"input": q_in, "prefer": prefer_n},
+                )
+                apple_tv_auto_state["last_title_decision"] = decision.explain()
+                md_dec = apple_tv_auto_state.get("last_metadata")
+                if isinstance(md_dec, dict):
+                    apply_decision_to_metadata(md_dec, decision)
+            except Exception:
+                pass
             try:
                 from pigeon.pi_diagnostics import append_pigeon_log
 
@@ -11097,6 +11211,7 @@ def main() -> int:
                 apply_clues_to_metadata,
                 apply_ocr_title_as_identity,
                 hdmi_capture_available,
+                hdmi_last_frame_changed,
             )
             from pigeon.tmdb_poster import is_degenerate_tmdb_query
 
@@ -11120,6 +11235,14 @@ def main() -> int:
             identity_changed = apply_ocr_title_as_identity(merged)
             merged["content_key"] = _content_key_from_metadata(merged)
             apple_tv_auto_state["last_metadata"] = merged
+            # Meaningful HDMI screen change postpones the 2-minute metadata-idle saver.
+            if hdmi_last_frame_changed() or identity_changed:
+                _note_metadata_activity()
+                _bump_clock_saver_significant_device()
+            if identity_changed:
+                apple_tv_auto_state["last_title_decision"] = str(
+                    merged.get("title_decision") or ""
+                ).strip() or apple_tv_auto_state.get("last_title_decision")
             agrees = bool(merged.get("ocr_agrees"))
             guess = str(clues.title_guess or "").strip()
             reason = str(clues.reason or "")
@@ -11144,7 +11267,7 @@ def main() -> int:
                 pass
 
         def _schedule_hdmi_ocr_from_poll(metadata: dict[str, object]) -> None:
-            """OCR when the player has no title, playback is stalled, or on pause."""
+            """OCR until TMDb has a title, then every 5s to catch a new screen."""
             try:
                 from pigeon.source_toggles import source_enabled
 
@@ -11156,7 +11279,10 @@ def main() -> int:
                 from pigeon.hdmi_ocr import decide_ocr_reason, request_ocr
             except Exception:
                 return
-            reason = decide_ocr_reason(metadata)
+            reason = decide_ocr_reason(
+                metadata,
+                tmdb_up=bool(_tmdb_info_current_and_available()),
+            )
             if not reason:
                 return
             if apple_tv_auto_state.get("ocr_in_flight"):
@@ -11430,6 +11556,32 @@ def main() -> int:
                                 mark_identity(
                                     merged_md, source="pyatv", confidence=PYATV_IDENTITY
                                 )
+                                try:
+                                    from pigeon.title_decision import (
+                                        apply_decision_to_metadata,
+                                        record_title_decision,
+                                    )
+
+                                    q_py = str(
+                                        merged_md.get("query")
+                                        or merged_md.get("title")
+                                        or ""
+                                    ).strip()
+                                    prev_dec = str(
+                                        merged_md.get("title_decision_title") or ""
+                                    ).strip()
+                                    if q_py and q_py.casefold() != prev_dec.casefold():
+                                        decision = record_title_decision(
+                                            q_py,
+                                            source="pyatv",
+                                            reason="player metadata supplied a usable title",
+                                        )
+                                        apply_decision_to_metadata(merged_md, decision)
+                                        apple_tv_auto_state["last_title_decision"] = (
+                                            decision.explain()
+                                        )
+                                except Exception:
+                                    pass
                             if source_enabled("hdmi"):
                                 # content_key includes the OCR-filled query, so it
                                 # changes on the next poll and used to drop clues.
@@ -12350,6 +12502,9 @@ def main() -> int:
         for _dv_ch in ("1", "4", "5"):
             root.bind_all(f"<KeyPress-{_dv_ch}>", on_display_view_digit)
 
+        # [2] is free (display views use 1/4/5 only) — force clock saver on/off.
+        root.bind_all("<KeyPress-2>", _toggle_clock_saver_force)
+
         def on_arrow_remote(event: tk.Event) -> str | None:
             if _widget_accepts_typing(event.widget):
                 return None
@@ -12702,6 +12857,12 @@ def main() -> int:
             dev_phase = DevPhase.MAIN_SETTINGS
             try:
                 main_settings_widget.prefetch_scans_for_settings()
+            except Exception:
+                pass
+            try:
+                from pigeon.weather import DEFAULT_WEATHER_ZIP, refresh_weather
+
+                refresh_weather(zip_code=DEFAULT_WEATHER_ZIP, force=True)
             except Exception:
                 pass
             skip_cache = None

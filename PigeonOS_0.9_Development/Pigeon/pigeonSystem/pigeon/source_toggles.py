@@ -63,7 +63,7 @@ def apply_toggles_to_settings_state(state: Any) -> None:
     state.source_metadata_on = flags["metadata"]
     state.source_hdmi_on = flags["hdmi"]
     state.source_audio_on = flags["audio"]
-    # HDMI LED follows the dongle, not the toggle.
+    # HDMI LED follows a live video signal, not the toggle or a stale handle.
     try:
         from pigeon.hdmi_ocr import hdmi_capture_available
 
