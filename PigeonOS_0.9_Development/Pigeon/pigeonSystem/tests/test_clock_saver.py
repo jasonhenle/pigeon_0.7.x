@@ -51,20 +51,53 @@ class ClockSaverSvgTests(unittest.TestCase):
         self.assertEqual(rect, (0, 0, cs.DESIGN_W, cs.DESIGN_H))
         self.assertEqual(empty.shape[0], 1)
 
-    def test_fixed_cells_keep_block_width_stable(self) -> None:
-        """Narrow glyphs (1) and wide glyphs (0/8) must share one cell pitch."""
+    def test_matching_width_crops_skinny_glyphs(self) -> None:
+        """Full digits use matching width; 1 and : crop to half (25%+25%)."""
         font_path = cs.resolve_digital7_font() or cs.resolve_ui_font_bold()
         probe = ImageDraw.Draw(Image.new("RGBA", (4, 4)))
         font = cs._fit_digital7_fixed_cells(
             font_path,
-            8,
+            cs._HHMMSS_MATCHING_UNITS,
             max_w=700,
             max_h=200,
             prefer_sz=180,
         )
-        cell_w, _cell_h = cs._cell_metrics(probe, font, cs._HHMMSS_CHAR_SET)
-        for sample in ("11:11:11", "08:08:08", "00:00:00"):
-            self.assertEqual(len(sample) * cell_w, 8 * cell_w)
+        matching_w, _cell_h = cs._cell_metrics(probe, font, cs._HHMMSS_CHAR_SET)
+        l0, _t0, r0, _b0 = cs._char_bbox(probe, font, "0")
+        self.assertEqual(matching_w, max(1, r0 - l0))
+        half = max(1, int(round(0.5 * matching_w)))
+        for ch in "023456789":
+            self.assertEqual(cs._hhmmss_advance(matching_w, ch), matching_w)
+        for ch in cs._HHMMSS_SKINNY_CHARS:
+            self.assertEqual(cs._hhmmss_advance(matching_w, ch), half)
+        self.assertEqual(
+            cs._hhmmss_block_width(matching_w, "00:00:00"),
+            6 * matching_w + 2 * half,
+        )
+        self.assertEqual(
+            cs._hhmmss_block_width(matching_w, "11:11:11"),
+            8 * half,
+        )
+        self.assertGreater(cs._HHMMSS_MID_Y_SVG, cs._DATE_BASELINE_Y_SVG)
+        self.assertLess(cs._HHMMSS_MID_Y_SVG, cs._WEATHER_ICON_TOP_SVG)
+
+    def test_colons_locked_pairs_recenter(self) -> None:
+        """Colon X is fixed; HH/MM/SS pair widths shrink with skinny 1s."""
+        matching_w = 100
+        regions, colon_cx = cs._hhmmss_locked_scaffold(matching_w, 800)
+        regions2, colon_cx2 = cs._hhmmss_locked_scaffold(matching_w, 800)
+        self.assertEqual(colon_cx, colon_cx2)
+        self.assertEqual(regions, regions2)
+        # Scaffold bands are always two full matching cells wide.
+        for left, right in regions:
+            self.assertEqual(right - left, 2 * matching_w)
+        # Pair groups: full "08" vs skinny "11" — different widths, same band.
+        self.assertEqual(cs._hhmmss_pair_width(matching_w, "08"), 2 * matching_w)
+        self.assertEqual(
+            cs._hhmmss_pair_width(matching_w, "11"),
+            2 * cs._hhmmss_advance(matching_w, "1"),
+        )
+        self.assertEqual(cs._parse_hhmmss_pairs("12:34:56"), ("12", "34", "56"))
 
 
 class WeatherCacheTests(unittest.TestCase):

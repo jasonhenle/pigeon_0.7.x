@@ -49,13 +49,20 @@ _EMPTY_PATCH = np.zeros((1, 1, 4), dtype=np.uint8)
 _ARTBOARD_CX = 805.89 * 0.5
 _ARTBOARD_W = 805.89
 _ARTBOARD_H = 481.0
-# Illustrator baseline / size for ``hhmmss_text`` (fixed-cell redraw uses these).
-_HHMMSS_BASELINE_Y_SVG = 273.79
+# Date baseline + weather icon top (clocksaver.svg); time is vertically centered
+# in the open band between them so weather chrome stays put.
+_DATE_BASELINE_Y_SVG = 91.98
+_WEATHER_ICON_TOP_SVG = 324.51
+_HHMMSS_MID_Y_SVG = (_DATE_BASELINE_Y_SVG + _WEATHER_ICON_TOP_SVG) * 0.5
 _HHMMSS_FONT_SIZE_SVG = 231.0
 _HHMMSS_CHAR_SET = "0123456789:"
-# Slight horizontal inset so the 8-slot block stays inside the plate.
+# Digital-7 “2-pixel” glyphs — only use the middle column of a matching cell.
+_HHMMSS_SKINNY_CHARS = frozenset({"1", ":"})
+# Worst-case ``HH:MM:SS`` width in matching cells: 6 full digits + 2 half-colons.
+_HHMMSS_MATCHING_UNITS = 7.0
+# Slight horizontal inset so the block stays inside the plate.
 _HHMMSS_SIDE_PAD_PX = 28
-# Max fraction of design width the fixed-cell block may occupy.
+# Max fraction of design width the time block may occupy.
 _HHMMSS_MAX_WIDTH_FRAC = 0.92
 
 
@@ -292,26 +299,96 @@ def _char_bbox(
 def _cell_metrics(
     draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont, char_set: str
 ) -> tuple[int, int]:
-    max_w = 1
+    """Matching cell pitch from digit ``0``; height from the full clock charset.
+
+    Most Digital-7 digits fill a 1×2 faux-pixel rectangle. Skinny glyphs
+    (``1``, ``:``) only use the middle column; layout crops 25% off each side
+    of their matching cell so they advance at half width.
+    """
+    l0, _t0, r0, _b0 = _char_bbox(draw, font, "0")
+    cell_w = max(1, r0 - l0)
     max_h = 1
     for ch in char_set:
-        l, t, r, b = _char_bbox(draw, font, ch)
-        max_w = max(max_w, r - l)
+        _l, t, _r, b = _char_bbox(draw, font, ch)
         max_h = max(max_h, b - t)
-    return max_w, max_h
+    return cell_w, max_h
+
+
+def _hhmmss_advance(matching_w: int, ch: str) -> int:
+    """Horizontal advance for one clock glyph in matching-cell units.
+
+    Full digits keep the matching width. Two-pixel glyphs (``1``, ``:``) crop
+    25% from each side of that cell, so they occupy 50% of the matching width.
+    """
+    w = max(1, int(matching_w))
+    if ch in _HHMMSS_SKINNY_CHARS:
+        return max(1, int(round(0.5 * w)))
+    return w
+
+
+def _hhmmss_block_width(matching_w: int, text: str) -> int:
+    return sum(_hhmmss_advance(matching_w, ch) for ch in text)
+
+
+def _parse_hhmmss_pairs(time_text: str) -> tuple[str, str, str]:
+    """Split a clock string into ``(HH, MM, SS)`` digit pairs."""
+    s = str(time_text or "").strip() or "00:00:00"
+    if len(s) >= 8 and s[2] == ":" and s[5] == ":":
+        return s[0:2], s[3:5], s[6:8]
+    digits = [c for c in s if c.isdigit()]
+    while len(digits) < 6:
+        digits.append("0")
+    d = "".join(digits[:6])
+    return d[0:2], d[2:4], d[4:6]
+
+
+def _hhmmss_pair_width(matching_w: int, pair: str) -> int:
+    return sum(_hhmmss_advance(matching_w, ch) for ch in pair)
+
+
+def _hhmmss_locked_scaffold(
+    matching_w: int, canvas_w: int
+) -> tuple[
+    tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+    tuple[int, int],
+]:
+    """Fixed colon anchors and HH/MM/SS bands from a full-digit scaffold.
+
+    Scaffold (centered on ``canvas_w``)::
+
+        [HH slot = 2 full][colon half][MM slot][colon half][SS slot]
+
+    Colons stay at absolute X forever. Each digit pair is later centered as a
+    group inside its ``[left, right)`` band.
+    """
+    mw = max(1, int(matching_w))
+    colon_w = _hhmmss_advance(mw, ":")
+    pair_slot = 2 * mw
+    block_w = 3 * pair_slot + 2 * colon_w
+    block_x = (int(canvas_w) - block_w) // 2
+    c0 = block_x + pair_slot
+    c1 = c0 + colon_w + pair_slot
+    regions = (
+        (block_x, c0),
+        (c0 + colon_w, c1),
+        (c1 + colon_w, block_x + block_w),
+    )
+    # Glyph center X for each locked colon (half-width slot).
+    colon_cx = (c0 + colon_w // 2, c1 + colon_w // 2)
+    return regions, colon_cx
 
 
 def _fit_digital7_fixed_cells(
     path: str | None,
-    num_slots: int,
+    matching_units: float,
     *,
     max_w: int,
     max_h: int,
     prefer_sz: int,
     min_sz: int = 12,
 ) -> ImageFont.ImageFont:
-    """Largest Digital-7 size that keeps ``num_slots`` equal cells inside the box."""
-    if max_w < 4 or max_h < 4 or num_slots < 1:
+    """Largest Digital-7 size that fits ``matching_units`` matching cells in the box."""
+    if max_w < 4 or max_h < 4 or matching_units <= 0:
         return _load_font(path, min_sz)
     lo, hi = min_sz, max(prefer_sz, max_h, 24)
     best = _load_font(path, min_sz)
@@ -320,12 +397,34 @@ def _fit_digital7_fixed_cells(
         mid = (lo + hi) // 2
         f = _load_font(path, mid)
         cw, ch = _cell_metrics(probe, f, _HHMMSS_CHAR_SET)
-        if num_slots * cw <= max_w and ch <= max_h:
+        if matching_units * cw <= max_w and ch <= max_h:
             best = f
             lo = mid + 1
         else:
             hi = mid - 1
     return best
+
+
+def _draw_pair_in_region(
+    draw: ImageDraw.ImageDraw,
+    *,
+    pair: str,
+    region: tuple[int, int],
+    matching_w: int,
+    cy: int,
+    font: ImageFont.ImageFont,
+    color: tuple[int, int, int, int],
+) -> None:
+    """Center a two-digit group horizontally inside ``region`` (colon boundaries)."""
+    left, right = region
+    span = max(1, right - left)
+    pair_w = _hhmmss_pair_width(matching_w, pair)
+    x = left + max(0, (span - pair_w) // 2)
+    for glyph in pair:
+        adv = _hhmmss_advance(matching_w, glyph)
+        cx = x + adv // 2
+        draw.text((cx, cy), glyph, font=font, fill=color, anchor="mm")
+        x += adv
 
 
 def _draw_hhmmss_fixed_cells(
@@ -334,14 +433,18 @@ def _draw_hhmmss_fixed_cells(
     *,
     color: tuple[int, int, int, int],
 ) -> None:
-    """Paint ``HH:MM:SS`` with equal horizontal slots so Digital-7 never shifts."""
-    s = str(time_text or "").strip() or "00:00:00"
-    n = max(1, len(s))
+    """Paint ``HH:MM:SS`` as three pairs between two screen-locked colons.
+
+    Matching cell widths still apply (skinny ``1`` / ``:`` at half width).
+    Colon X positions come from a full-digit scaffold and never move. Each of
+    HH, MM, and SS shifts as a group to stay centered in the band the colons
+    (and outer edges) define.
+    """
+    pairs = _parse_hhmmss_pairs(time_text)
     font_path = resolve_digital7_font() or resolve_ui_font_bold()
-    sx = float(DESIGN_W) / _ARTBOARD_W
     sy = float(DESIGN_H) / _ARTBOARD_H
     prefer_sz = max(24, int(round(_HHMMSS_FONT_SIZE_SVG * sy)))
-    baseline_y = int(round(_HHMMSS_BASELINE_Y_SVG * sy))
+    mid_y = int(round(_HHMMSS_MID_Y_SVG * sy))
     max_w = max(
         64,
         int(round(DESIGN_W * _HHMMSS_MAX_WIDTH_FRAC)) - 2 * _HHMMSS_SIDE_PAD_PX,
@@ -349,7 +452,7 @@ def _draw_hhmmss_fixed_cells(
     max_h = max(24, int(round(prefer_sz * 1.15)))
     font = _fit_digital7_fixed_cells(
         font_path,
-        n,
+        _HHMMSS_MATCHING_UNITS,
         max_w=max_w,
         max_h=max_h,
         prefer_sz=prefer_sz,
@@ -357,14 +460,23 @@ def _draw_hhmmss_fixed_cells(
     rgba = np.ascontiguousarray(bgra[:, :, [2, 1, 0, 3]])
     img = Image.fromarray(rgba)
     draw = ImageDraw.Draw(img)
-    cell_w, cell_h = _cell_metrics(draw, font, _HHMMSS_CHAR_SET)
-    block_w = n * cell_w
-    block_x = (DESIGN_W - block_w) // 2
-    # SVG text used a baseline; center glyphs on a mid-line near that baseline.
-    cy = baseline_y - max(1, cell_h // 5)
-    for i, glyph in enumerate(s):
-        cx = block_x + i * cell_w + cell_w // 2
-        draw.text((cx, cy), glyph, font=font, fill=color, anchor="mm")
+    matching_w, _cell_h = _cell_metrics(draw, font, _HHMMSS_CHAR_SET)
+    regions, colon_cx = _hhmmss_locked_scaffold(matching_w, DESIGN_W)
+    cy = mid_y
+
+    for region, pair in zip(regions, pairs):
+        _draw_pair_in_region(
+            draw,
+            pair=pair,
+            region=region,
+            matching_w=matching_w,
+            cy=cy,
+            font=font,
+            color=color,
+        )
+    for cx in colon_cx:
+        draw.text((cx, cy), ":", font=font, fill=color, anchor="mm")
+
     out = np.asarray(img)
     bgra[:, :, 0] = out[:, :, 2]
     bgra[:, :, 1] = out[:, :, 1]
