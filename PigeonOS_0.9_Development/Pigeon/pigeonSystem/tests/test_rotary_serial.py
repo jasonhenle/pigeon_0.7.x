@@ -217,6 +217,13 @@ class StartListenerEnvTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PIGEON_ROTARY_SERIAL": "0"}):
             self.assertIsNone(rs.start_rotary_serial_listener(object()))
 
+    def test_uno_q_tcp_is_off_unless_enabled(self) -> None:
+        with mock.patch.dict(os.environ, {"PIGEON_ROTARY_TCP": ""}, clear=False):
+            os.environ.pop("PIGEON_ROTARY_TCP", None)
+            self.assertIsNone(rs._env_tcp_endpoint())
+        with mock.patch.dict(os.environ, {"PIGEON_ROTARY_TCP": "1"}):
+            self.assertEqual(rs._env_tcp_endpoint(), ("127.0.0.1", 7500))
+
 
 class DispatchReceiveStampTests(unittest.TestCase):
     def test_handle_line_uses_receive_time_not_callback_time(self) -> None:

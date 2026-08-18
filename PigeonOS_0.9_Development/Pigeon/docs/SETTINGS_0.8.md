@@ -1,25 +1,28 @@
-# Pigeon 0.8 Settings
+# Pigeon Settings (settings_main)
 
 ## Tab cycle
 
 | Press | Result |
 |-------|--------|
-| 1st Tab | Opens **main_settings** (SVG menu from `settings_main.svg`, drawn on the video canvas) |
-| 2nd Tab | Opens **legacy_settings** (Tk settings form; SVG sibling is `settings_0.7.svg`) |
-| 3rd Tab | Closes settings → OFF |
+| Tab / Shift+Tab / F9 / right-click | Toggle **settings_main** ↔ OFF |
 
-Never enters the design grid via Tab (grid remains key 5 / Shift+Tab / F9 paths).
+Never enters the design grid via Tab (grid remains key 5).
 
-While in **main_settings**: Left/Right move focus; Spacebar activates the focused control (`exit` returns to OFF). Activating **location** or **network** opens the text keyboard overlay (same Left/Right/Space controls).
+While in **settings_main**: Left/Right move focus; Spacebar activates the focused control (`exit` returns to OFF). Activating **location** or **network** opens the text keyboard overlay (same Left/Right/Space controls). Deeper pages (pigeon settings, preferences, update popup) stay on the same `DevPhase.MAIN_SETTINGS` composite.
 
-## Legacy vs main
+Preferences zone nav: zone1 → zone5 → **color** → BACK. The color control uses `settings_pigeon_preferences_color_*` layers (graphic selected/deselected + text pill).
+
+## Surfaces
 
 | Name | Module / surface | Asset |
 |------|------------------|-------|
-| **main_settings** | `pigeon/widgets/main_settings.py` + OpenCV composite | `pigeonAssets/settings_0.8/settings_main.svg` |
-| **legacy_settings** | Tk form in `pigeon_0_8.py`; SVG preview in `settings_page.py` | `settings_0.7.svg` |
+| **settings_main** | `pigeon/widgets/main_settings.py` + OpenCV composite | `pigeonAssets/settings_0.8/settings_main.svg` |
+| **pigeon settings** | `pigeon/widgets/pigeon_settings.py` (12-tile grid) | drawn in code (legacy `settings_pigeon.svg` unused) |
+| **preferences** | `pigeon/widgets/preferences_settings.py` | `pigeon_settings_preferences.svg` |
+| **update popup** | `pigeon/widgets/update_popup.py` | update SVG layers |
+| **keyboards** | `pigeon/widgets/settings_keyboard.py` | `keyboard_*.svg` |
 
-`DevPhase.MAIN_SETTINGS = 3`, `DevPhase.SETTINGS = 2` (legacy Tk).
+`DevPhase.MAIN_SETTINGS = 2` (SVG stack only). The legacy Tk settings form is no longer reachable.
 
 ## Assets
 
@@ -68,6 +71,6 @@ Selected button → green fill, black contrasting text/icons.
 Deselected button → black fill, green contrasting text/icons.  
 `text_pigeonVersion` stays black when present.
 
-**Fonts:** layers under `main_instructions` and all keyboard text use **Sharp Sans Semibold**; other UI text (device names, IPs, EXIT, location/network labels, etc.) uses **Digital-7 Regular**.
+**Fonts:** layers under `main_instructions` and all keyboard text use **Sharp Sans Semibold**; other UI text (device names, IPs, EXIT, location/network labels, etc.) use **Digital-7 Regular**.
 
 Design source of truth: `settingInstructions_0.8.0.numbers` (under `pigeonAssets/settings_0.8/` and optionally `docs/`).

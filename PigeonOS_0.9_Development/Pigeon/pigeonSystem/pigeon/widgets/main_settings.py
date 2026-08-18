@@ -9,11 +9,13 @@ and selection recoloring. Text entry opens the shared settings keyboard overlay
 from __future__ import annotations
 
 import io
+import math
 import os
 import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import IntEnum
 from functools import lru_cache
 from pathlib import Path
@@ -181,6 +183,17 @@ KEYBOARD_NUMERIC_IP_SVG = "keyboard_numeric_ip.svg"
 
 _HEX_RE = re.compile(r"^#?[0-9A-Fa-f]{6}$")
 _AI_SUFFIX_RE = re.compile(r"_\d{20,}_?$")
+
+# Accent outlines hidden on settings_main tiles (exit / back accents stay).
+_HIDDEN_MAIN_ACCENT_IDS = frozenset(
+    {
+        "main_dual_accent",
+        "main_03.02_dual_button_accent",
+        "main_box1_accent",
+        "main_box2_accent",
+        "main_box3_accent",
+    }
+)
 
 # Primary nav ring (left/right). Network picker joins only when visible.
 _PRIMARY_FOCUS_CANDIDATES: tuple[str, ...] = (
@@ -372,10 +385,20 @@ _CONTRAST_SWAP_CANDIDATES = frozenset(
 _UI_BRAND_COLORS = frozenset({COLOR_UI_DEFAULT.lower(), "#ff0013"})
 
 
+def _theme_swatch_hexes() -> frozenset[str]:
+    """Lazy import — ui_color palette expands button/accent swap candidates."""
+    try:
+        from pigeon.widgets.ui_color_settings import THEME_SWATCH_HEXES
+
+        return THEME_SWATCH_HEXES
+    except Exception:
+        return frozenset()
+
+
 def _is_ui_brand_color(hex_color: str | None) -> bool:
     if not hex_color:
         return False
-    return hex_color.lower() in _UI_BRAND_COLORS
+    return hex_color.lower() in (_UI_BRAND_COLORS | _ui_recolor_hexes())
 
 
 @dataclass(frozen=True)
@@ -465,6 +488,58 @@ class MainSettingsState:
     box3_ip_invalid: bool = False
     show_pigeon_settings: bool = False
     pigeon_focus_index: int = 0
+    # Silent GitHub poll when opening settings_pigeon (badge without popup).
+    pigeon_needs_update_prefetch: bool = False
+    # Status LEDs for tiles 6–9 (None → derive wifi/metadata; hdmi/audio follow toggles).
+    pigeon_metadata_ok: bool | None = None
+    pigeon_hdmi_ok: bool = False
+    pigeon_audio_ok: bool = False
+    # User toggles for WIFI / METADATA / HDMI / AUDIO (persisted in state.json).
+    source_wifi_on: bool = True
+    source_metadata_on: bool = True
+    source_hdmi_on: bool = True
+    source_audio_on: bool = True
+    show_preferences: bool = False
+    # Metadata inspector ([4]): pages 0=player, 1=hdmi, 2=pigeon.
+    show_metadata_debug: bool = False
+    metadata_debug_page: int = 0
+    # "zones" = navigation A; "widgets" = navigation B after a zone is activated.
+    preferences_nav: str = "zones"
+    preferences_focus_index: int = 0
+    preferences_active_zone: int = 0  # 1–5 while in widgets nav; else 0
+    preferences_zone_widgets: tuple[str, str, str, str, str] = (
+        "clock",
+        "poster",
+        "volume",
+        "cast_info",
+        "now_playing",
+    )
+    # Live playback progress 0..1 for prefs circular now-playing; None → idle demo.
+    preferences_np_progress: float | None = None
+    # When True, prefs preview uses live poster / volume / cast / bar (not SVG demos).
+    preferences_live_content: bool = False
+    preferences_poster_bgra: object | None = None  # np.ndarray | None
+    preferences_volume: str | None = None
+    preferences_volume_fraction: float | None = None
+    preferences_incoming: str | None = None
+    preferences_config: str | None = None
+    preferences_cast: tuple[tuple[str, str], ...] | None = None
+    preferences_elapsed_text: str | None = None
+    preferences_remaining_text: str | None = None
+    preferences_service_name: str | None = None
+    preferences_content_mode: str | None = None  # video | music
+    preferences_song_title: str | None = None
+    preferences_album_title: str | None = None
+    preferences_artist_title: str | None = None
+    # System color page (settings_pigeon_ui_color) — opened from preferences color.
+    show_ui_color: bool = False
+    # "classes" = accent/ui/button/back; "swatches" = colors within active class.
+    ui_color_nav: str = "classes"
+    ui_color_focus_index: int = 0
+    ui_color_active_class: str = ""  # accent | ui | button while in swatch nav
+    ui_color_accent_key: str = "white"
+    ui_color_ui_key: str = "red"
+    ui_color_button_key: str = "black"
     show_update_popup: bool = False
     update_popup_focus_index: int = 0
     update_available: bool = False
@@ -668,6 +743,7 @@ class MainSettingsState:
     def enter_location_picker(self) -> None:
         self.show_network_picker = False
         self.close_update_popup()
+        self.close_preferences()
         self.show_pigeon_settings = False
         self.show_location_picker = True
         self.renaming_location_id = ""
@@ -815,26 +891,355 @@ class MainSettingsState:
 
     @property
     def pigeon_focused_id(self) -> str:
-        from pigeon.widgets.pigeon_settings import pigeon_focus_ring
+        from pigeon.widgets.pigeon_settings import (
+            normalize_pigeon_focus_id,
+            pigeon_focus_ring,
+        )
 
         ring = pigeon_focus_ring()
-        return ring[int(self.pigeon_focus_index) % len(ring)]
+        return normalize_pigeon_focus_id(
+            ring[int(self.pigeon_focus_index) % len(ring)]
+        )
 
     def enter_pigeon_settings(self) -> None:
         from pigeon.widgets.pigeon_settings import pigeon_focus_ring
+        from pigeon.widgets.ui_color_settings import load_persisted_theme_into_state
 
         self.show_pigeon_settings = True
         self.show_box1_panel = False
         self.close_update_popup()
+        self.close_preferences()
+        self.close_ui_color()
+        self.close_metadata_debug()
+        load_persisted_theme_into_state(self)
+        try:
+            from pigeon.source_toggles import apply_toggles_to_settings_state
+
+            apply_toggles_to_settings_state(self)
+        except Exception:
+            pass
+        try:
+            from pigeon.hdmi_ocr import hdmi_capture_available, probe_hdmi_presence
+
+            self.pigeon_hdmi_ok = hdmi_capture_available()
+            probe_hdmi_presence(force=True)
+        except Exception:
+            pass
         ring = pigeon_focus_ring()
-        self.pigeon_focus_index = ring.index("prefs_button")
+        # Land on COLOR (first selectable tile); BACK remains in the ring.
+        if "color_button" in ring:
+            self.pigeon_focus_index = ring.index("color_button")
+        elif "general_button" in ring:
+            self.pigeon_focus_index = ring.index("general_button")
+        else:
+            self.pigeon_focus_index = 0
+        # Prefetch update availability so the badge is ready without opening the popup.
+        self.pigeon_needs_update_prefetch = True
+
+    def open_metadata_debug(self) -> None:
+        """Open the metadata inspector ([4]) on its first page (player)."""
+        if not self.show_pigeon_settings:
+            self.enter_pigeon_settings()
+        self.close_update_popup()
+        self.close_preferences()
+        self.close_ui_color()
+        self.show_metadata_debug = True
+        self.metadata_debug_page = 0
+        try:
+            from pigeon.hdmi_ocr import probe_hdmi_presence
+
+            probe_hdmi_presence(force=True)
+        except Exception:
+            pass
+
+    def close_metadata_debug(self) -> None:
+        self.show_metadata_debug = False
+        self.metadata_debug_page = 0
+
+    def navigate_metadata_debug(self, *, forward: bool = True) -> None:
+        """Cycle player → hdmi → pigeon, wrapping in both directions."""
+        step = 1 if forward else -1
+        self.metadata_debug_page = (int(self.metadata_debug_page) + step) % 3
 
     def exit_pigeon_settings(self) -> None:
         self.close_update_popup()
+        self.close_preferences()
+        self.close_metadata_debug()
         self.show_pigeon_settings = False
+        self.pigeon_needs_update_prefetch = False
         self.ensure_focus_ring()
         if "main_box1_button" in self.focus_ring:
             self.focus_index = self.focus_ring.index("main_box1_button")
+
+    def open_preferences(self) -> None:
+        """Open the now-playing zone widget selector (prefs / settings)."""
+        from pigeon.widgets.preferences_settings import (
+            preferences_zone_focus_ring,
+            read_now_playing_zone_widgets,
+        )
+
+        self.show_preferences = True
+        self.preferences_nav = "zones"
+        self.preferences_active_zone = 0
+        self.preferences_zone_widgets = read_now_playing_zone_widgets()
+        ring = preferences_zone_focus_ring()
+        # Land on zone1 — first editable target.
+        self.preferences_focus_index = ring.index("zone1") if "zone1" in ring else 0
+        try:
+            from pigeon.hdmi_ocr import hdmi_capture_available, probe_hdmi_presence
+
+            self.pigeon_hdmi_ok = hdmi_capture_available()
+            probe_hdmi_presence(force=True)
+        except Exception:
+            pass
+
+    def close_preferences(self) -> None:
+        self.close_ui_color()
+        self.show_preferences = False
+        self.preferences_nav = "zones"
+        self.preferences_active_zone = 0
+        self.preferences_focus_index = 0
+
+    def open_ui_color(self) -> None:
+        """Open the system color customizer (from preferences color control)."""
+        from pigeon.widgets.ui_color_settings import (
+            apply_color_keys_to_state,
+            read_ui_color_keys,
+            ui_color_class_focus_ring,
+        )
+
+        keys = read_ui_color_keys()
+        apply_color_keys_to_state(self, keys, persist=False)
+        self.show_ui_color = True
+        self.ui_color_nav = "classes"
+        self.ui_color_active_class = ""
+        ring = ui_color_class_focus_ring()
+        self.ui_color_focus_index = ring.index("accent") if "accent" in ring else 0
+
+    def close_ui_color(self) -> None:
+        self.show_ui_color = False
+        self.ui_color_nav = "classes"
+        self.ui_color_active_class = ""
+        self.ui_color_focus_index = 0
+
+    @property
+    def ui_color_focused_id(self) -> str:
+        from pigeon.widgets.ui_color_settings import (
+            ui_color_class_focus_ring,
+            ui_color_swatch_focus_ring,
+        )
+
+        if str(self.ui_color_nav or "") == "swatches":
+            ring = ui_color_swatch_focus_ring(str(self.ui_color_active_class or ""))
+        else:
+            ring = ui_color_class_focus_ring()
+        if not ring:
+            return "back"
+        return ring[int(self.ui_color_focus_index) % len(ring)]
+
+    def navigate_ui_color(self, *, forward: bool = True) -> None:
+        from pigeon.widgets.ui_color_settings import (
+            apply_color_keys_to_state,
+            ui_color_class_focus_ring,
+            ui_color_swatch_focus_ring,
+        )
+
+        step = 1 if forward else -1
+        if str(self.ui_color_nav or "") == "swatches":
+            cls = str(self.ui_color_active_class or "")
+            ring = ui_color_swatch_focus_ring(cls)
+            if not ring:
+                return
+            self.ui_color_focus_index = (
+                int(self.ui_color_focus_index) + step
+            ) % len(ring)
+            focused = ring[self.ui_color_focus_index]
+            keys = {
+                "accent": self.ui_color_accent_key,
+                "ui": self.ui_color_ui_key,
+                "button": self.ui_color_button_key,
+            }
+            if cls in keys:
+                keys[cls] = focused
+                # Live preview theme while browsing swatches (persist on activate).
+                apply_color_keys_to_state(self, keys, persist=False)
+            return
+        ring = ui_color_class_focus_ring()
+        if not ring:
+            return
+        self.ui_color_focus_index = (
+            int(self.ui_color_focus_index) + step
+        ) % len(ring)
+
+    def activate_ui_color(self) -> str:
+        """Handle activate on the system color page."""
+        from pigeon.widgets.preferences_settings import preferences_zone_focus_ring
+        from pigeon.widgets.ui_color_settings import (
+            apply_color_keys_to_state,
+            ui_color_class_focus_ring,
+            ui_color_swatch_focus_ring,
+        )
+
+        focused = self.ui_color_focused_id
+        if str(self.ui_color_nav or "") != "swatches":
+            if focused == "back":
+                self.close_ui_color()
+                # Return to preferences with the color control focused.
+                ring = preferences_zone_focus_ring()
+                if "color" in ring:
+                    self.preferences_focus_index = ring.index("color")
+                self.preferences_nav = "zones"
+                return "ui_color_back"
+            if focused in ("accent", "ui", "button"):
+                self.ui_color_nav = "swatches"
+                self.ui_color_active_class = focused
+                ring = ui_color_swatch_focus_ring(focused)
+                current = {
+                    "accent": self.ui_color_accent_key,
+                    "ui": self.ui_color_ui_key,
+                    "button": self.ui_color_button_key,
+                }.get(focused, ring[0] if ring else "")
+                if current in ring:
+                    self.ui_color_focus_index = ring.index(current)
+                else:
+                    self.ui_color_focus_index = 0
+                return f"ui_color_class:{focused}"
+            return "ui_color_noop"
+
+        # Swatch activate — commit color and return focus to the class label.
+        cls = str(self.ui_color_active_class or "")
+        keys = {
+            "accent": self.ui_color_accent_key,
+            "ui": self.ui_color_ui_key,
+            "button": self.ui_color_button_key,
+        }
+        if cls in keys and focused:
+            keys[cls] = focused
+        apply_color_keys_to_state(self, keys, persist=True)
+        self.ui_color_nav = "classes"
+        self.ui_color_active_class = ""
+        class_ring = ui_color_class_focus_ring()
+        if cls in class_ring:
+            self.ui_color_focus_index = class_ring.index(cls)
+        else:
+            self.ui_color_focus_index = 0
+        return f"ui_color_swatch:{cls}:{focused}"
+
+    @property
+    def preferences_focused_id(self) -> str:
+        from pigeon.widgets.preferences_settings import (
+            preferences_widget_focus_ring,
+            preferences_zone_focus_ring,
+        )
+
+        if str(self.preferences_nav or "") == "widgets":
+            ring = preferences_widget_focus_ring(int(self.preferences_active_zone))
+        else:
+            ring = preferences_zone_focus_ring()
+        if not ring:
+            return "exit"
+        return ring[int(self.preferences_focus_index) % len(ring)]
+
+    def navigate_preferences(self, *, forward: bool = True) -> None:
+        from pigeon.widgets.preferences_settings import (
+            preferences_widget_focus_ring,
+            preferences_zone_focus_ring,
+            write_now_playing_zone_widgets,
+        )
+
+        step = 1 if forward else -1
+        if str(self.preferences_nav or "") == "widgets":
+            zone = int(self.preferences_active_zone)
+            ring = preferences_widget_focus_ring(zone)
+            if not ring:
+                return
+            self.preferences_focus_index = (
+                int(self.preferences_focus_index) + step
+            ) % len(ring)
+            focused = ring[self.preferences_focus_index]
+            # Live-assign the focused widget (skip BACK). Preview only — persist on activate.
+            if focused != "exit" and 1 <= zone <= 5:
+                widgets = list(self.preferences_zone_widgets)
+                widgets[zone - 1] = focused
+                self.preferences_zone_widgets = (
+                    widgets[0],
+                    widgets[1],
+                    widgets[2],
+                    widgets[3],
+                    widgets[4],
+                )
+                write_now_playing_zone_widgets(
+                    self.preferences_zone_widgets, persist=False
+                )
+            return
+        ring = preferences_zone_focus_ring()
+        if not ring:
+            return
+        self.preferences_focus_index = (
+            int(self.preferences_focus_index) + step
+        ) % len(ring)
+
+    def activate_preferences(self) -> str:
+        """Handle activate while the preferences selector is open."""
+        from pigeon.widgets.preferences_settings import (
+            preferences_widget_focus_ring,
+            write_now_playing_zone_widgets,
+        )
+
+        focused = self.preferences_focused_id
+        if str(self.preferences_nav or "") != "widgets":
+            if focused == "exit":
+                self.close_preferences()
+                return "preferences_exit"
+            if focused == "color":
+                self.open_ui_color()
+                return "preferences_color"
+            if focused.startswith("zone"):
+                try:
+                    zone = int(focused.replace("zone", ""))
+                except ValueError:
+                    return "preferences_noop"
+                self.preferences_nav = "widgets"
+                self.preferences_active_zone = zone
+                ring = preferences_widget_focus_ring(zone)
+                current = (
+                    self.preferences_zone_widgets[zone - 1]
+                    if 1 <= zone <= 5
+                    else "exit"
+                )
+                if current in ring:
+                    self.preferences_focus_index = ring.index(current)
+                else:
+                    self.preferences_focus_index = 0
+                return f"preferences_zone:{zone}"
+            return "preferences_noop"
+
+        # Widget navigation — BACK always returns to pigeon settings.
+        if focused == "exit":
+            write_now_playing_zone_widgets(self.preferences_zone_widgets)
+            self.close_preferences()
+            return "preferences_exit"
+        # Confirm focused widget, persist, and return to zone navigation.
+        zone = int(self.preferences_active_zone)
+        if 1 <= zone <= 5 and focused and focused != "exit":
+            widgets = list(self.preferences_zone_widgets)
+            widgets[zone - 1] = focused
+            self.preferences_zone_widgets = (
+                widgets[0],
+                widgets[1],
+                widgets[2],
+                widgets[3],
+                widgets[4],
+            )
+        write_now_playing_zone_widgets(self.preferences_zone_widgets)
+        self.preferences_nav = "zones"
+        self.preferences_active_zone = 0
+        from pigeon.widgets.preferences_settings import preferences_zone_focus_ring
+
+        zring = preferences_zone_focus_ring()
+        zid = f"zone{zone}"
+        self.preferences_focus_index = zring.index(zid) if zid in zring else 0
+        return f"preferences_widget:{focused}"
 
     def open_update_popup(self) -> None:
         """Show the GitHub update popup and always start a fresh check.
@@ -886,6 +1291,15 @@ class MainSettingsState:
     def navigate_pigeon(self, *, forward: bool = True) -> None:
         from pigeon.widgets.pigeon_settings import pigeon_focus_ring
 
+        if self.show_metadata_debug:
+            self.navigate_metadata_debug(forward=forward)
+            return
+        if self.show_ui_color:
+            self.navigate_ui_color(forward=forward)
+            return
+        if self.show_preferences:
+            self.navigate_preferences(forward=forward)
+            return
         if self.show_update_popup:
             self.navigate_update_popup(forward=forward)
             return
@@ -1448,12 +1862,12 @@ def _apply_wifi_onboarding_search_layers(root: ET.Element, state: MainSettingsSt
 
 
 def _hide_wifi_onboarding_search_svg_glyphs(root: ET.Element) -> None:
-    """Hide clipped SVG circles/polygons; glyphs are drawn as BGRA overlays."""
+    """Hide leftover clip-path circles. Stroke arcs + filled triangles stay in the SVG."""
     search_group = _wifi_onboarding_search_group(root)
     if search_group is None:
         return
     for el in search_group.iter():
-        if el.tag.endswith("circle") or el.tag.endswith("polygon"):
+        if el.tag.endswith("circle"):
             _set_visible(el, False)
 
 
@@ -1462,11 +1876,129 @@ def _hide_wifi_onboarding_search_svg_circles(root: ET.Element) -> None:
     _hide_wifi_onboarding_search_svg_glyphs(root)
 
 
+_SVG_ARC_PATH_RE = re.compile(
+    r"M\s*([-\d.]+)(?:\s*,\s*|\s+)([-\d.]+)\s*"
+    r"A\s*([-\d.]+)(?:\s*,\s*|\s+)([-\d.]+)\s+"
+    r"([-\d.]+)\s+(\d)\s+(\d)\s+"
+    r"([-\d.]+)(?:\s*,\s*|\s+)([-\d.]+)",
+    re.IGNORECASE,
+)
+
+
+def _svg_arc_center_and_angles(
+    x1: float,
+    y1: float,
+    rx: float,
+    ry: float,
+    phi_deg: float,
+    fa: int,
+    fs: int,
+    x2: float,
+    y2: float,
+) -> tuple[float, float, float, float] | None:
+    """Endpoint-parameterized SVG arc → center + start/end degrees (0=east, y-down)."""
+    rx, ry = abs(rx), abs(ry)
+    if rx < 1e-6 or ry < 1e-6:
+        return None
+    phi = math.radians(phi_deg)
+    cos_p, sin_p = math.cos(phi), math.sin(phi)
+    dx = (x1 - x2) / 2.0
+    dy = (y1 - y2) / 2.0
+    x1p = cos_p * dx + sin_p * dy
+    y1p = -sin_p * dx + cos_p * dy
+    lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry)
+    if lam > 1.0:
+        scale = math.sqrt(lam)
+        rx *= scale
+        ry *= scale
+    num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
+    den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
+    coef = 0.0 if den <= 1e-12 else math.sqrt(max(0.0, num / den))
+    if fa == fs:
+        coef = -coef
+    cxp = coef * rx * y1p / ry
+    cyp = coef * -ry * x1p / rx
+    cx = cos_p * cxp - sin_p * cyp + (x1 + x2) / 2.0
+    cy = sin_p * cxp + cos_p * cyp + (y1 + y2) / 2.0
+    start = math.degrees(math.atan2(y1 - cy, x1 - cx)) % 360.0
+    end = math.degrees(math.atan2(y2 - cy, x2 - cx)) % 360.0
+    return cx, cy, start, end
+
+
+def _wedge_clip_corners(
+    cx: float,
+    cy: float,
+    radius: float,
+    start_deg: float,
+    end_deg: float,
+    *,
+    clockwise: bool,
+    pad: float,
+) -> tuple[tuple[float, float], ...]:
+    """Pie wedge covering a stroked arc so OpenCV can clip a ring to that sweep."""
+    sweep = (end_deg - start_deg) % 360.0 if clockwise else (start_deg - end_deg) % 360.0
+    if sweep <= 0.0:
+        sweep = 360.0
+    n = max(12, int(sweep / 4.0) + 1)
+    outer = radius + pad
+    pts: list[tuple[float, float]] = [(cx, cy)]
+    step = sweep / n if clockwise else -sweep / n
+    for i in range(n + 1):
+        ang = math.radians(start_deg + step * i)
+        pts.append((cx + outer * math.cos(ang), cy + outer * math.sin(ang)))
+    return tuple(pts)
+
+
+def _path_stroke_width(el: ET.Element) -> float:
+    style = el.get("style") or ""
+    sw_m = re.search(r"stroke-width\s*:\s*([-\d.]+)", style, re.IGNORECASE)
+    if sw_m:
+        return float(sw_m.group(1))
+    try:
+        return float(el.get("stroke-width") or 8.0)
+    except ValueError:
+        return 8.0
+
+
+def _arc_spec_from_search_path(el: ET.Element) -> _OnboardingSearchArcSpec | None:
+    """Stroke-only ellipse arc path (no clip-path) → spinner overlay spec."""
+    parsed = _SVG_ARC_PATH_RE.search(el.get("d") or "")
+    if parsed is None:
+        return None
+    x1, y1 = float(parsed.group(1)), float(parsed.group(2))
+    rx, ry = float(parsed.group(3)), float(parsed.group(4))
+    phi = float(parsed.group(5))
+    fa, fs = int(parsed.group(6)), int(parsed.group(7))
+    x2, y2 = float(parsed.group(8)), float(parsed.group(9))
+    converted = _svg_arc_center_and_angles(x1, y1, rx, ry, phi, fa, fs, x2, y2)
+    if converted is None:
+        return None
+    cx, cy, start_deg, end_deg = converted
+    radius = (abs(rx) + abs(ry)) / 2.0
+    stroke_w = _path_stroke_width(el)
+    corners = _wedge_clip_corners(
+        cx,
+        cy,
+        radius,
+        start_deg,
+        end_deg,
+        clockwise=bool(fs),
+        pad=stroke_w,
+    )
+    return _OnboardingSearchArcSpec(
+        cx_svg=cx,
+        cy_svg=cy,
+        radius_svg=radius,
+        stroke_svg=stroke_w,
+        clip_corners_svg=corners,
+    )
+
+
 def _discover_search_arc_specs_in_group(
     root: ET.Element,
     search_group: ET.Element,
 ) -> tuple[_OnboardingSearchArcSpec, ...]:
-    """Clip-masked ring arcs from a search-icon subtree (box columns + onboarding)."""
+    """Ring arcs from a search-icon subtree (path strokes, or legacy clip-path circles)."""
     parents = _parent_map(root)
     if _is_subtree_hidden(search_group, parents):
         return ()
@@ -1479,12 +2011,20 @@ def _discover_search_arc_specs_in_group(
             continue
         rect_el: ET.Element | None = None
         circle_el: ET.Element | None = None
+        path_el: ET.Element | None = None
         for node in el.iter():
             tag = node.tag.rsplit("}", 1)[-1]
             if tag == "rect" and node.get("width") and node.get("height"):
                 rect_el = node
             if tag == "circle" and node.get("cx") and node.get("r"):
                 circle_el = node
+            if tag == "path" and "A" in (node.get("d") or "").upper():
+                path_el = node
+        if path_el is not None:
+            spec = _arc_spec_from_search_path(path_el)
+            if spec is not None:
+                specs.append(spec)
+            continue
         if rect_el is None or circle_el is None:
             continue
         try:
@@ -2236,7 +2776,7 @@ def _apply_button_fill(group: ET.Element | None, *, selected: bool, theme: Setti
         if cur_fill in _BUTTON_FILL_CANDIDATES or cur_fill in (
             theme.selected.lower(),
             theme.deselected.lower(),
-        ):
+        ) or cur_fill in _theme_swatch_hexes():
             _set_paint(node, fill=fill)
 
 
@@ -2262,17 +2802,18 @@ def _apply_direct_glyph_contrast(
         fill, stroke = _iter_style_fill_stroke(node)
         if tag.endswith("text") and fill in (None, "none", "transparent"):
             fill = "#ffffff"
+        swap = _CONTRAST_SWAP_CANDIDATES | _theme_swatch_hexes()
         if (
             fill
             and fill not in ("none", "transparent")
-            and fill in _CONTRAST_SWAP_CANDIDATES
+            and fill in swap
             and not _is_ui_brand_color(fill)
         ):
             _set_paint(node, fill=color)
         if (
             stroke
             and stroke not in ("none", "transparent")
-            and stroke in _CONTRAST_SWAP_CANDIDATES
+            and stroke in swap
             and not _is_ui_brand_color(stroke)
         ):
             _set_paint(node, stroke=color)
@@ -2298,6 +2839,7 @@ def _apply_contrast_paint(
         contrast = theme.inactive
     else:
         contrast = theme.selected
+    swap = _CONTRAST_SWAP_CANDIDATES | _theme_swatch_hexes()
     for node in group.iter():
         nid = _normalize_logical(node.get("id") or "")
         if nid.endswith("_accent") or "_accent_" in nid:
@@ -2309,14 +2851,14 @@ def _apply_contrast_paint(
         if (
             fill
             and fill not in ("none", "transparent")
-            and fill in _CONTRAST_SWAP_CANDIDATES
+            and fill in swap
             and not _is_ui_brand_color(fill)
         ):
             _set_paint(node, fill=contrast)
         if (
             stroke
             and stroke not in ("none", "transparent")
-            and stroke in _CONTRAST_SWAP_CANDIDATES
+            and stroke in swap
             and not _is_ui_brand_color(stroke)
         ):
             _set_paint(node, stroke=contrast)
@@ -2325,15 +2867,58 @@ def _apply_contrast_paint(
 def _apply_accent_paint(group: ET.Element | None, accent: str) -> None:
     if group is None:
         return
+    accent_swap = frozenset(
+        {
+            "#ffffff",
+            "white",
+            COLOR_ACCENT_DEFAULT.lower(),
+            accent.lower(),
+        }
+    ) | _theme_swatch_hexes()
     for node in group.iter():
         fill, stroke = _iter_style_fill_stroke(node)
         if fill and fill not in ("none", "transparent"):
-            # Accents are typically stroked outlines; only replace white/theme-like fills.
-            if fill in ("#ffffff", "white", COLOR_ACCENT_DEFAULT.lower()):
+            if fill in accent_swap:
                 _set_paint(node, fill=accent)
         if stroke and stroke not in ("none", "transparent"):
-            if stroke in ("#ffffff", "white", COLOR_ACCENT_DEFAULT.lower()):
+            if stroke in accent_swap:
                 _set_paint(node, stroke=accent)
+
+
+def _ui_recolor_hexes() -> frozenset[str]:
+    """Hexes that count as the configurable UI/brand color on icon layers."""
+    try:
+        from pigeon.widgets.ui_color_settings import UI_SWATCH_HEXES
+
+        return _UI_BRAND_COLORS | UI_SWATCH_HEXES
+    except Exception:
+        return _UI_BRAND_COLORS | {"red"}
+
+
+def _apply_ui_brand_paint(group: ET.Element | None, ui_hex: str) -> None:
+    """Recolor UI/brand fills/strokes under an icon group to ``theme.ui``.
+
+    Child geometry often has no id (e.g. box2 play triangle polygon) — paint by
+    current brand/swatch hex, not by requiring each node to be named ``*_icon``.
+    """
+    if group is None:
+        return
+    ui = (ui_hex or COLOR_UI_DEFAULT).lower()
+    candidates = _ui_recolor_hexes() | {ui}
+    for node in group.iter():
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag not in ("path", "rect", "polygon", "polyline", "circle", "ellipse", "line"):
+            continue
+        fill, stroke = _iter_style_fill_stroke(node)
+        if fill and fill not in ("none", "transparent") and fill in candidates and fill != ui:
+            _set_paint(node, fill=ui_hex)
+        if (
+            stroke
+            and stroke not in ("none", "transparent")
+            and stroke in candidates
+            and stroke != ui
+        ):
+            _set_paint(node, stroke=ui_hex)
 
 
 def _set_text_content(el: ET.Element | None, text: str) -> None:
@@ -2352,6 +2937,24 @@ def _set_text_content(el: ET.Element | None, text: str) -> None:
                 t.text = text
         else:
             t.text = text
+
+
+def _hide_add_search_glyphs(root: ET.Element) -> None:
+    """Hide plus/arrow search art so it cannot bleed through PIN / overlay screens."""
+    for lid in (
+        "main_box1_search_icon",
+        "main_box2_search_icon",
+        "main_box3_search_icon",
+        "main_box2_add_search_icon",
+        "main_box2_+_icon",
+        "welcome_to_pigeon_group",
+    ):
+        _set_visible(_find_by_logical_id(root, lid), False)
+    search_group = _wifi_onboarding_search_group(root)
+    if search_group is not None:
+        _set_visible(search_group, False)
+    for box_num in (1, 2, 3):
+        _hide_box_search_animation_layers(root, box_num)
 
 
 def _apply_keyboard_layer_visibility(root: ET.Element, state: MainSettingsState) -> None:
@@ -2383,9 +2986,7 @@ def _apply_keyboard_layer_visibility(root: ET.Element, state: MainSettingsState)
             "main_box2_+_icon",
         ):
             _set_visible(_find_by_logical_id(root, lid), False)
-        search_group = _wifi_onboarding_search_group(root)
-        if search_group is not None:
-            _set_visible(search_group, False)
+        _hide_add_search_glyphs(root)
         for lid in _DUAL_LOCATION_ICON_IDS:
             _set_visible(_find_by_logical_id(root, lid), False)
         _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
@@ -2406,12 +3007,16 @@ def _apply_keyboard_layer_visibility(root: ET.Element, state: MainSettingsState)
             "main_box1_device_group",
             "main_box2_device_group",
             "main_box3_device_group",
+            "main_box1",
+            "main_box2",
+            "main_box3",
             "main_box1_container",
             "main_box2_container",
             "main_box3_container",
             "main_box2_add_search_icon",
         ):
             _set_visible(_find_by_logical_id(root, lid), False)
+        _hide_add_search_glyphs(root)
         for lid in _DUAL_LOCATION_ICON_IDS:
             _set_visible(_find_by_logical_id(root, lid), False)
         _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
@@ -3284,13 +3889,9 @@ def _hide_svg_wifi_icons(root: ET.Element) -> None:
 
 
 def _hide_box_column_search_svg_circles(root: ET.Element) -> None:
-    """Hide column search ring circles; OpenCV redraws them with rect clip masks.
-
-    Triangles and ``+`` stay in the SVG (PyMuPDF renders those correctly). Stroke-only
-    ``clip-path`` circles become full rings under PyMuPDF, so they must not rasterize.
-    """
+    """Hide leftover clip-path ring circles. Stroke arc paths rasterize correctly."""
     parents = _parent_map(root)
-    for box_num in (2, 3):
+    for box_num in (1, 2, 3):
         search_icon = _find_box_column_search_icon(root, box_num)
         if search_icon is None or _is_subtree_hidden(search_icon, parents):
             continue
@@ -3305,25 +3906,31 @@ def _collect_box_search_arc_overlays(
     *,
     focused_logical: str,
 ) -> list[_BoxSearchArcOverlay]:
-    """Arc specs + stroke colors for visible idle box2/box3 search icons."""
+    """Arc specs + stroke colors for visible idle box search icons.
+
+    Path-stroked ellipses rasterize correctly; only legacy clip-path circles
+    need an OpenCV redraw. Skip entirely while a keyboard overlay is up so the
+    add/search arrows cannot bleed through the PIN pad.
+    """
+    if state.keyboard_open:
+        return []
     parents = _parent_map(root)
     overlays: list[_BoxSearchArcOverlay] = []
-    for box_num in (2, 3):
+    for box_num in (1, 2, 3):
         search_icon = _find_box_column_search_icon(root, box_num)
         if search_icon is None or _is_subtree_hidden(search_icon, parents):
             continue
-        panel = state._box_panel(box_num)
+        if not any(el.tag.endswith("circle") for el in search_icon.iter()):
+            continue
+        panel = state._box_panel(box_num) if box_num in (2, 3) else None
+        scanning = bool(panel is not None and panel.scanning and panel.active)
         # Rotating spinner path draws its own glyph; skip static arcs.
-        if panel.scanning and panel.active and not bool(
-            getattr(state, "spinner_glyph_capture", False)
-        ):
+        if scanning and not bool(getattr(state, "spinner_glyph_capture", False)):
             continue
         specs = _discover_search_arc_specs_in_group(root, search_icon)
         if not specs:
             continue
-        selected = focused_logical == f"main_box{box_num}_button" or (
-            panel.scanning and panel.active
-        )
+        selected = focused_logical == f"main_box{box_num}_button" or scanning
         color_bgr = _hex_to_bgr("#202020" if selected else "#ffffff")
         overlays.append(_BoxSearchArcOverlay(specs=specs, color_bgr=color_bgr))
     return overlays
@@ -3805,7 +4412,7 @@ def _stroke_bgr_for_star_spec(
         if m is not None:
             panel = state._box_panel(int(m.group(1)))
             if not panel.scanning and not panel.active:
-                return _hex_to_bgr("#FF0013")
+                return _hex_to_bgr(theme.ui or COLOR_UI_DEFAULT)
     if spec.focus_button:
         m = re.match(r"main_box([23])_button", spec.focus_button)
         if m is not None:
@@ -3997,6 +4604,26 @@ def _disable_embedded_settings_background_layers(root: ET.Element) -> None:
                 _set_visible(el, False)
     _hide_container_stripe_rects(root)
     _remove_canvas_background_rect(root)
+    # Illustrator exports sometimes bake the canvas + diagonal stripes into
+    # plain ``Layer_NN`` groups (e.g. settings_pigeon_ui_color 0815): sweep the
+    # whole tree for slanted stripe rects and full-canvas plates so the shared
+    # code-drawn theme background stays visible underneath.
+    parents = _parent_map(root)
+    for el in list(root.iter()):
+        if not el.tag.endswith("rect"):
+            continue
+        transform = el.get("transform") or _style_prop(el.get("style") or "", "transform")
+        is_slant_stripe = _parse_svg_slant_transform(transform) is not None
+        try:
+            w = float(el.get("width") or 0.0)
+            h = float(el.get("height") or 0.0)
+        except ValueError:
+            w = h = 0.0
+        is_canvas_plate = w >= 790.0 and h >= 470.0
+        if is_slant_stripe or is_canvas_plate:
+            parent = parents.get(el)
+            if parent is not None:
+                parent.remove(el)
     for lid in ("settings_background", "background"):
         el = _find_by_logical_id(root, lid)
         if el is not None:
@@ -4202,19 +4829,20 @@ def _apply_box_pigeon_logo_icon_styles(
     *,
     theme: SettingsTheme,
 ) -> None:
-    """Paint hex-clip ring strokes in box3/box2 pigeon logo icons accent red."""
+    """Paint hex-clip ring strokes / speaker polygons with ``theme.ui``."""
     icon = _find_by_logical_id(root, f"main_box{box_num}_pigeon_logo_icon")
     if icon is None:
         return
-    accent = "#FF0013"
+    ui = theme.ui or COLOR_UI_DEFAULT
+    edge = theme.deselected or COLOR_DESELECTED
     for el in icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
         if tag == "circle":
-            _set_paint(el, fill="none", stroke=accent)
+            _set_paint(el, fill="none", stroke=ui)
         elif tag == "line":
-            _set_paint(el, fill="none", stroke=accent)
+            _set_paint(el, fill="none", stroke=ui)
         elif tag == "polygon":
-            _set_paint(el, fill=accent, stroke="#000013")
+            _set_paint(el, fill=ui, stroke=edge)
 
 
 def _apply_box_device_text_contrast(
@@ -4351,10 +4979,14 @@ def _force_layer_white(el: ET.Element) -> None:
 
 
 def _apply_wifi_search_glyph_layers(search_group: ET.Element) -> None:
-    """WiFi search art: filled star triangles (ring strokes drawn as BGRA overlays)."""
+    """WiFi search art: ellipse paths are stroke-only; triangles are fill-only."""
     for el in search_group.iter():
-        if el.tag.endswith("polygon"):
-            _set_paint(el, fill="#000000", stroke="none")
+        tag = el.tag.rsplit("}", 1)[-1]
+        fill, stroke = _iter_style_fill_stroke(el)
+        if tag == "polygon":
+            _set_paint(el, fill=fill or "#ffffff", stroke="none")
+        elif tag in ("circle", "path"):
+            _set_paint(el, fill="none", stroke=stroke or "#ffffff")
 
 
 def _hide_wifi_search_glyphs(root: ET.Element) -> None:
@@ -4370,7 +5002,7 @@ def _apply_wifi_search_icon_styles(
     focused: str,
     theme: SettingsTheme,
 ) -> None:
-    """Onboarding search rings stay black; ``+`` follows selection contrast."""
+    """Onboarding search rings stay stroke-only; ``+`` follows selection contrast."""
     add_group = _find_by_logical_id(root, "main_box2_add_search_icon")
     if add_group is None:
         return
@@ -4786,14 +5418,17 @@ def _apply_box_search_icon_glyph_styles(
     *,
     color: str = "#202020",
 ) -> None:
-    """Ellipses: stroke only. Arrow triangles: fill only."""
+    """Ellipses: stroke only. Arrow triangles and ``+``: fill only."""
     if search_icon is None:
         return
     for el in search_icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
-        if tag == "circle":
+        logical = _normalize_logical(el.get("id") or "")
+        if tag in ("circle", "path"):
             _set_paint(el, fill="none", stroke=color)
-        elif tag == "polygon" and "triangle" in _normalize_logical(el.get("id") or ""):
+        elif tag == "polygon" and "triangle" in logical:
+            _set_paint(el, fill=color, stroke="none")
+        elif tag == "text":
             _set_paint(el, fill=color, stroke="none")
 
 
@@ -4806,15 +5441,14 @@ def _set_box_search_plus_visible(search_icon: ET.Element | None, visible: bool) 
 
 
 def _show_box_search_icon_vectors(search_icon: ET.Element | None) -> None:
-    """Show SVG triangles; ring circles stay hidden (OpenCV clip redraw)."""
+    """Show filled triangles/plus and stroke arcs; hide leftover clip-path circles."""
     if search_icon is None:
         return
     for el in search_icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
-        if tag == "polygon":
+        if tag in ("polygon", "path", "text"):
             _set_visible(el, True)
         elif tag == "circle":
-            # PyMuPDF ignores circle clip-path → full rings; hide for OpenCV redraw.
             _set_visible(el, False)
 
 
@@ -4824,7 +5458,7 @@ def _hide_box_search_icon_vectors(search_icon: ET.Element | None) -> None:
         return
     for el in search_icon.iter():
         tag = el.tag.rsplit("}", 1)[-1]
-        if tag in ("circle", "polygon"):
+        if tag in ("circle", "polygon", "path"):
             _set_visible(el, False)
 
 
@@ -4834,33 +5468,25 @@ def _apply_box_search_icon_variant(
     selected: bool,
     show_plus: bool = True,
 ) -> None:
-    """Paint box column search art (black glyphs on white pill, white on black).
+    """Paint box column add/search art (black glyphs on white pill, white on black).
 
-    Ellipse/triangle layers are Illustrator-named ``*_selected`` but have no
-    ``*_deselected`` twins — keep groups present and only recolor. Ring circles
-    are stroke-only with rect ``clip-path``; PyMuPDF drops those clips, so circles
-    are hidden before rasterize and redrawn via OpenCV (triangles stay in SVG).
+    Plus and triangles are fills; ellipse arcs are strokes. Keep groups present
+    and only recolor. Leftover clip-path circles stay hidden.
     """
     if search_icon is None:
         return
     color = "#202020" if selected else "#ffffff"
     _apply_box_search_icon_glyph_styles(search_icon, color=color)
-    # Keep ellipse clip groups in the tree for geometry discovery; hide circles.
     for el in search_icon.iter():
         if el is search_icon:
             continue
         logical = _normalize_logical(el.get("id") or "")
-        if "ellipse" in logical or "eplipse" in logical:
+        tag = el.tag.rsplit("}", 1)[-1]
+        if "ellipse" in logical or "eplipse" in logical or tag == "path":
             _set_visible(el, True)
-        if el.tag.endswith("circle"):
+        if tag == "circle":
             _set_visible(el, False)
-    plus_visible = bool(show_plus and not selected)
-    _set_box_search_plus_visible(search_icon, plus_visible)
-    if plus_visible:
-        for el in search_icon.iter():
-            if not el.tag.endswith("text"):
-                continue
-            _set_paint(el, fill=COLOR_SELECTED)
+    _set_box_search_plus_visible(search_icon, bool(show_plus))
 
 
 def _apply_box_result_text_style(
@@ -5205,8 +5831,15 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
     # Prefer the logical-id index over a full-tree normalize walk on every paint.
     for logical, els in _logical_id_index(root).items():
         if logical.endswith("_accent") or re.search(r"_accent(_|$)", logical):
+            hide = logical in _HIDDEN_MAIN_ACCENT_IDS
             for el in els:
-                _apply_accent_paint(el, theme.accent)
+                if hide:
+                    _set_visible(el, False)
+                else:
+                    _apply_accent_paint(el, theme.accent)
+        if logical.endswith("_icon") or "_icon_" in logical:
+            for el in els:
+                _apply_ui_brand_paint(el, theme.ui)
 
     entry = state.manual_device_entry
     pairing_pin = state.box_pairing is not None and kb_target == "pin"
@@ -5219,11 +5852,7 @@ def apply_main_settings_svg_state(root: ET.Element, state: MainSettingsState) ->
         for lid in _DUAL_LOCATION_ICON_IDS:
             _set_visible(_find_by_logical_id(root, lid), False)
         _set_visible(_find_by_logical_id(root, "main_dual_network_wifi_group"), False)
-        _set_visible(_find_by_logical_id(root, "welcome_to_pigeon_group"), False)
-        _set_visible(_find_by_logical_id(root, "main_box2_add_search_icon"), False)
-        search_group = _wifi_onboarding_search_group(root)
-        if search_group is not None:
-            _set_visible(search_group, False)
+        _hide_add_search_glyphs(root)
     hide_loc_svg = (
         (state.keyboard_open and kb_target in ("location", "network", "device_name", "pin", "wifi_logout"))
         or state.wifi_connecting
@@ -5436,8 +6065,7 @@ def render_main_settings_bgra(
     onboarding_arc_specs = geom["onboarding_arcs"]  # type: ignore[assignment]
     onboarding_triangle_specs = geom["onboarding_tris"]  # type: ignore[assignment]
     wifi_layouts = geom["wifi_layouts"]  # type: ignore[assignment]
-    # Box search rings: discover clip geometry while circles still exist, then
-    # strip them before PyMuPDF (which ignores clip-path → full rings).
+    # Box search rings: path strokes rasterize; leftover clip-path circles are hidden.
     box_search_arc_overlays = _collect_box_search_arc_overlays(
         root, st, focused_logical=focused_logical
     )
@@ -5500,6 +6128,12 @@ class MainSettingsWidget:
                 self._state.version_string = version_string()
             except Exception:
                 pass
+        try:
+            from pigeon.widgets.ui_color_settings import load_persisted_theme_into_state
+
+            load_persisted_theme_into_state(self._state)
+        except Exception:
+            pass
         if self._state.needs_wifi_setup():
             self._state.wifi_onboarding = False
         try:
@@ -5606,6 +6240,29 @@ class MainSettingsWidget:
             # Drive caret blink without forcing a full redraw every wake.
             int(time.monotonic() * 2) % 2 if kb_open else 0,
             1 if kb_open else 0,
+            # Prefs live overlays (HH:MM / NP rings / content) refresh each
+            # second without busting the heavy SVG structure cache.
+            (
+                datetime.now().strftime("%H%M%S"),
+                int(round(float(self._state.preferences_np_progress) * 100))
+                if self._state.preferences_np_progress is not None
+                else -1,
+                1 if self._state.preferences_live_content else 0,
+                str(self._state.preferences_volume or ""),
+                round(float(self._state.preferences_volume_fraction or 0.0), 3),
+                str(self._state.preferences_elapsed_text or ""),
+                str(self._state.preferences_remaining_text or ""),
+                str(self._state.preferences_service_name or ""),
+                str(self._state.preferences_song_title or ""),
+                str(self._state.preferences_album_title or ""),
+                str(self._state.preferences_artist_title or ""),
+                id(self._state.preferences_poster_bgra)
+                if self._state.preferences_poster_bgra is not None
+                else 0,
+                tuple(self._state.preferences_cast or ()),
+            )
+            if self._state.show_preferences
+            else (),
         )
 
     def _clear_keyboard_focus_caches(self) -> None:
@@ -5755,8 +6412,29 @@ class MainSettingsWidget:
                 if oldest != compose_key:
                     self._kb_composed_cache.pop(oldest, None)
 
+    def _metadata_debug_sig(self) -> tuple[object, ...]:
+        """Metadata inspector page + a live-data token (repaint on change)."""
+        st = self._state
+        if not st.show_metadata_debug:
+            return (False,)
+        try:
+            from pigeon.widgets.metadata_debug import metadata_debug_data
+
+            data_token = hash(repr(metadata_debug_data()))
+        except Exception:
+            data_token = 0
+        return (True, int(st.metadata_debug_page), data_token)
+
     def _main_state_sig(self) -> tuple[object, ...]:
         st = self._state
+        if st.show_pigeon_settings or st.show_preferences:
+            try:
+                from pigeon.hdmi_ocr import hdmi_capture_available, probe_hdmi_presence
+
+                st.pigeon_hdmi_ok = hdmi_capture_available()
+                probe_hdmi_presence()
+            except Exception:
+                pass
         th = st.theme
         kb = st.keyboard
         kb_main: tuple[object, ...] = ()
@@ -5820,6 +6498,31 @@ class MainSettingsWidget:
             st.box3_devices.picked,
             bool(st.show_pigeon_settings),
             int(st.pigeon_focus_index),
+            bool(st.pigeon_needs_update_prefetch),
+            st.pigeon_metadata_ok,
+            bool(st.pigeon_hdmi_ok),
+            bool(st.pigeon_audio_ok),
+            bool(st.source_wifi_on),
+            bool(st.source_metadata_on),
+            bool(st.source_hdmi_on),
+            bool(st.source_audio_on),
+            bool(st.wifi_configured),
+            bool(st.show_preferences),
+            self._metadata_debug_sig(),
+            str(st.preferences_nav or ""),
+            int(st.preferences_focus_index),
+            int(st.preferences_active_zone),
+            tuple(st.preferences_zone_widgets),
+            bool(st.show_ui_color),
+            str(st.ui_color_nav or ""),
+            int(st.ui_color_focus_index),
+            str(st.ui_color_active_class or ""),
+            str(st.ui_color_accent_key or ""),
+            str(st.ui_color_ui_key or ""),
+            str(st.ui_color_button_key or ""),
+            str(st.theme.ui),
+            str(st.theme.accent),
+            str(st.theme.deselected),
             bool(st.show_update_popup),
             bool(st.update_available),
             bool(st.update_checking),
@@ -5912,6 +6615,19 @@ class MainSettingsWidget:
             int(st.box3_devices.scroll),
             st.box3_devices.picked,
             bool(st.show_pigeon_settings),
+            bool(st.show_preferences),
+            str(st.preferences_nav or ""),
+            int(st.preferences_active_zone),
+            # Zone widget assignments are focus-key only (change every widget nav).
+            bool(st.show_ui_color),
+            str(st.ui_color_nav or ""),
+            str(st.ui_color_active_class or ""),
+            str(st.ui_color_accent_key or ""),
+            str(st.ui_color_ui_key or ""),
+            str(st.ui_color_button_key or ""),
+            str(st.theme.ui),
+            str(st.theme.accent),
+            str(st.theme.deselected),
             bool(st.show_update_popup),
             bool(st.update_available),
             bool(st.update_checking),
@@ -5944,6 +6660,16 @@ class MainSettingsWidget:
             int(st.box3_devices.row),
             str(st.box3_devices.arrow),
             int(st.pigeon_focus_index),
+            int(st.preferences_focus_index) if st.show_preferences else -1,
+            str(st.preferences_nav or "") if st.show_preferences else "",
+            int(st.preferences_active_zone) if st.show_preferences else 0,
+            tuple(st.preferences_zone_widgets) if st.show_preferences else (),
+            int(st.ui_color_focus_index) if st.show_ui_color else -1,
+            str(st.ui_color_nav or "") if st.show_ui_color else "",
+            str(st.ui_color_active_class or "") if st.show_ui_color else "",
+            str(st.ui_color_accent_key or "") if st.show_ui_color else "",
+            str(st.ui_color_ui_key or "") if st.show_ui_color else "",
+            str(st.ui_color_button_key or "") if st.show_ui_color else "",
             int(st.update_popup_focus_index) if st.show_update_popup else -1,
             bool(st.show_update_popup),
         )
@@ -6003,6 +6729,16 @@ class MainSettingsWidget:
             int(st.box3_devices.row),
             str(st.box3_devices.arrow),
             int(st.pigeon_focus_index),
+            int(st.preferences_focus_index) if st.show_preferences else -1,
+            str(st.preferences_nav or "") if st.show_preferences else "",
+            int(st.preferences_active_zone) if st.show_preferences else 0,
+            tuple(st.preferences_zone_widgets) if st.show_preferences else (),
+            int(st.ui_color_focus_index) if st.show_ui_color else -1,
+            str(st.ui_color_nav or "") if st.show_ui_color else "",
+            str(st.ui_color_active_class or "") if st.show_ui_color else "",
+            str(st.ui_color_accent_key or "") if st.show_ui_color else "",
+            str(st.ui_color_ui_key or "") if st.show_ui_color else "",
+            str(st.ui_color_button_key or "") if st.show_ui_color else "",
             int(st.update_popup_focus_index) if st.show_update_popup else -1,
             bool(st.show_update_popup),
         )
@@ -6037,6 +6773,13 @@ class MainSettingsWidget:
             self._cached_bgra = None
             self._cached_sig = None
             self._paste_fully_opaque = None
+            if st.show_metadata_debug:
+                # Inspector pages render live; a grid focus bitmap here would
+                # be served by bgra_frame() as the "current" frame and make
+                # arrow presses appear to exit to the settings grid.
+                self._cached_main_bgra = None
+                self._cached_main_sig = None
+                return
             focus_key = self._focus_cache_key()
             structure = self._structure_sig()
             if (
@@ -6083,6 +6826,155 @@ class MainSettingsWidget:
         if st.keyboard_open:
             return
         structure = self._structure_sig()
+        if st.show_pigeon_settings and st.show_ui_color:
+            from pigeon.widgets.ui_color_settings import (
+                render_ui_color_settings_bgra,
+                ui_color_class_focus_ring,
+                ui_color_swatch_focus_ring,
+            )
+
+            if str(st.ui_color_nav or "") == "swatches":
+                ring = ui_color_swatch_focus_ring(str(st.ui_color_active_class or ""))
+            else:
+                ring = ui_color_class_focus_ring()
+            n = len(ring)
+            if n <= 1:
+                return
+            missing = []
+            for idx in range(n):
+                probe = copy.deepcopy(st)
+                probe.ui_color_focus_index = idx
+                if self._focus_key_for_state(probe) not in self._focus_frame_cache:
+                    missing.append(idx)
+            if not missing:
+                return
+            self._prewarm_all_inflight = True
+            state_snap = copy.deepcopy(st)
+            assets_dir = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_ui_color() -> None:
+                try:
+                    for idx in missing:
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        state_snap.ui_color_focus_index = idx
+                        if str(state_snap.ui_color_nav or "") == "swatches":
+                            focused = ring[idx % n]
+                            cls = str(state_snap.ui_color_active_class or "")
+                            if cls == "accent":
+                                state_snap.ui_color_accent_key = focused
+                            elif cls == "ui":
+                                state_snap.ui_color_ui_key = focused
+                            elif cls == "button":
+                                state_snap.ui_color_button_key = focused
+                            from pigeon.widgets.ui_color_settings import (
+                                theme_from_color_keys,
+                            )
+
+                            state_snap.theme = theme_from_color_keys(
+                                {
+                                    "accent": state_snap.ui_color_accent_key,
+                                    "ui": state_snap.ui_color_ui_key,
+                                    "button": state_snap.ui_color_button_key,
+                                },
+                                base=state_snap.theme,
+                            )
+                        key = self._focus_key_for_state(state_snap)
+                        if key in cache:
+                            continue
+                        try:
+                            frame = render_ui_color_settings_bgra(
+                                state_snap, assets_dir=assets_dir
+                            )
+                        except Exception:
+                            return
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        if self._focus_cache_structure is None:
+                            self._focus_cache_structure = struct_ref
+                        cache[key] = frame
+                finally:
+                    self._prewarm_all_inflight = False
+
+            import threading as _threading
+
+            _threading.Thread(
+                target=_work_ui_color, name="ui-color-prewarm-all", daemon=True
+            ).start()
+            return
+        if st.show_pigeon_settings and st.show_preferences:
+            from pigeon.widgets.preferences_settings import (
+                preferences_widget_focus_ring,
+                preferences_zone_focus_ring,
+                render_preferences_settings_bgra,
+            )
+
+            if str(st.preferences_nav or "") == "widgets":
+                ring = preferences_widget_focus_ring(int(st.preferences_active_zone))
+            else:
+                ring = preferences_zone_focus_ring()
+            n = len(ring)
+            if n <= 1:
+                return
+            missing = []
+            for idx in range(n):
+                probe = copy.deepcopy(st)
+                probe.preferences_focus_index = idx
+                if self._focus_key_for_state(probe) not in self._focus_frame_cache:
+                    missing.append(idx)
+            if not missing:
+                return
+            self._prewarm_all_inflight = True
+            state_snap = copy.deepcopy(st)
+            assets_dir = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_prefs() -> None:
+                try:
+                    for idx in missing:
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        state_snap.preferences_focus_index = idx
+                        # Mirror live widget assignment while prewarming widget nav.
+                        if str(state_snap.preferences_nav or "") == "widgets":
+                            focused = ring[idx % n]
+                            zone = int(state_snap.preferences_active_zone)
+                            if focused != "exit" and 1 <= zone <= 5:
+                                widgets = list(state_snap.preferences_zone_widgets)
+                                widgets[zone - 1] = focused
+                                state_snap.preferences_zone_widgets = (
+                                    widgets[0],
+                                    widgets[1],
+                                    widgets[2],
+                                    widgets[3],
+                                    widgets[4],
+                                )
+                        key = self._focus_key_for_state(state_snap)
+                        if key in cache:
+                            continue
+                        try:
+                            frame = render_preferences_settings_bgra(
+                                state_snap, assets_dir=assets_dir
+                            )
+                        except Exception:
+                            return
+                        if self._focus_cache_structure not in (None, struct_ref):
+                            return
+                        if self._focus_cache_structure is None:
+                            self._focus_cache_structure = struct_ref
+                        cache[key] = frame
+                finally:
+                    self._prewarm_all_inflight = False
+
+            import threading as _threading
+
+            _threading.Thread(
+                target=_work_prefs, name="prefs-prewarm-all", daemon=True
+            ).start()
+            return
         if st.show_pigeon_settings:
             from pigeon.widgets.pigeon_settings import pigeon_focus_ring, render_pigeon_settings_bgra
 
@@ -6232,6 +7124,116 @@ class MainSettingsWidget:
             return
         st = self._state
         if st.keyboard_open:
+            return
+
+        if st.show_pigeon_settings and st.show_ui_color:
+            from pigeon.widgets.ui_color_settings import (
+                render_ui_color_settings_bgra,
+                theme_from_color_keys,
+                ui_color_class_focus_ring,
+                ui_color_swatch_focus_ring,
+            )
+
+            if str(st.ui_color_nav or "") == "swatches":
+                ring = ui_color_swatch_focus_ring(str(st.ui_color_active_class or ""))
+            else:
+                ring = ui_color_class_focus_ring()
+            n = len(ring)
+            if n <= 0:
+                return
+            nxt = (int(st.ui_color_focus_index) + (1 if forward else -1)) % n
+            snap = copy.deepcopy(st)
+            snap.ui_color_focus_index = nxt
+            focused = ring[nxt]
+            if str(snap.ui_color_nav or "") == "swatches":
+                cls = str(snap.ui_color_active_class or "")
+                if cls == "accent":
+                    snap.ui_color_accent_key = focused
+                elif cls == "ui":
+                    snap.ui_color_ui_key = focused
+                elif cls == "button":
+                    snap.ui_color_button_key = focused
+                snap.theme = theme_from_color_keys(
+                    {
+                        "accent": snap.ui_color_accent_key,
+                        "ui": snap.ui_color_ui_key,
+                        "button": snap.ui_color_button_key,
+                    },
+                    base=snap.theme,
+                )
+            key_probe = self._focus_key_for_state(snap)
+            if key_probe in self._focus_frame_cache:
+                return
+            assets = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_ui_color_n() -> None:
+                try:
+                    frame = render_ui_color_settings_bgra(snap, assets_dir=assets)
+                except Exception:
+                    return
+                if self._focus_cache_structure != struct_ref:
+                    return
+                cache.setdefault(key_probe, frame)
+
+            threading.Thread(
+                target=_work_ui_color_n, name="ui-color-prewarm-n", daemon=True
+            ).start()
+            return
+
+        if st.show_pigeon_settings and st.show_preferences:
+            from pigeon.widgets.preferences_settings import (
+                preferences_widget_focus_ring,
+                preferences_zone_focus_ring,
+                render_preferences_settings_bgra,
+            )
+
+            if str(st.preferences_nav or "") == "widgets":
+                ring = preferences_widget_focus_ring(int(st.preferences_active_zone))
+            else:
+                ring = preferences_zone_focus_ring()
+            n = len(ring)
+            if n <= 0:
+                return
+            nxt = (int(st.preferences_focus_index) + (1 if forward else -1)) % n
+            snap = copy.deepcopy(st)
+            snap.preferences_focus_index = nxt
+            focused = ring[nxt]
+            zone = int(snap.preferences_active_zone)
+            if (
+                str(snap.preferences_nav or "") == "widgets"
+                and focused != "exit"
+                and 1 <= zone <= 5
+            ):
+                widgets = list(snap.preferences_zone_widgets)
+                widgets[zone - 1] = focused
+                snap.preferences_zone_widgets = (
+                    widgets[0],
+                    widgets[1],
+                    widgets[2],
+                    widgets[3],
+                    widgets[4],
+                )
+            key_probe = self._focus_key_for_state(snap)
+            if key_probe in self._focus_frame_cache:
+                return
+            assets = self._assets_dir
+            cache = self._focus_frame_cache
+            struct_ref = structure
+
+            def _work_prefs_n() -> None:
+                try:
+                    frame = render_preferences_settings_bgra(snap, assets_dir=assets)
+                except Exception:
+                    return
+                if self._focus_cache_structure != struct_ref:
+                    return
+                cache.setdefault(key_probe, frame)
+
+            threading.Thread(
+                target=_work_prefs_n, name="prefs-prewarm-n", daemon=True
+            ).start()
             return
 
         if st.show_pigeon_settings:
@@ -7049,6 +8051,31 @@ class MainSettingsWidget:
             return f"keyboard:{result}"
 
         if st.show_pigeon_settings:
+            if st.show_metadata_debug:
+                # EXIT is the only control — land back on the pigeon settings grid.
+                st.close_metadata_debug()
+                self.invalidate()
+                return "metadata_debug_exit"
+            if st.show_ui_color:
+                action = st.activate_ui_color()
+                self._cached_bgra = None
+                self._cached_sig = None
+                self._cached_main_bgra = None
+                self._cached_main_sig = None
+                self._paste_fully_opaque = None
+                self._want_prewarm_after_paint = True
+                self.invalidate()
+                return action
+            if st.show_preferences:
+                action = st.activate_preferences()
+                # Soft invalidate: keep neighbor focus bitmaps; drop current paste only.
+                self._cached_bgra = None
+                self._cached_sig = None
+                self._cached_main_bgra = None
+                self._cached_main_sig = None
+                self._paste_fully_opaque = None
+                self._want_prewarm_after_paint = True
+                return action
             if st.show_update_popup:
                 if st.update_applying or st.update_checking:
                     return "update_popup:busy"
@@ -7072,6 +8099,46 @@ class MainSettingsWidget:
                 st.open_update_popup()
                 self.invalidate()
                 return "update_popup:open"
+            if focused == "color_button":
+                st.close_preferences()
+                st.open_ui_color()
+                self.invalidate()
+                return "ui_color_open"
+            if focused == "reset_button":
+                self.invalidate()
+                return "pigeon_factory_reset"
+            if focused == "info_button":
+                st.open_preferences()
+                self.invalidate()
+                return "preferences_open"
+            if focused == "general_button":
+                # WIDGETS — opens the now-playing zone widget editor.
+                st.open_preferences()
+                self.invalidate()
+                return "preferences_open"
+            if focused in (
+                "wifi_button",
+                "metadata_button",
+                "hdmi_button",
+                "audio_button",
+            ):
+                kind = focused.removesuffix("_button")
+                from pigeon.source_toggles import (
+                    apply_toggles_to_settings_state,
+                    toggle_source,
+                )
+
+                on = toggle_source(kind)
+                apply_toggles_to_settings_state(st)
+                if kind == "hdmi" and not on:
+                    try:
+                        from pigeon.hdmi_ocr import release_capture
+
+                        release_capture()
+                    except Exception:
+                        pass
+                self.invalidate()
+                return f"source_toggle:{kind}:{int(on)}"
             return f"pigeon_activate:{focused}"
 
         focused = st.focused_id
@@ -7224,7 +8291,52 @@ class MainSettingsWidget:
                 if structure != self._focus_cache_structure:
                     self._focus_frame_cache.clear()
                     self._focus_cache_structure = structure
-                if focus_key in self._focus_frame_cache:
+                if st.show_metadata_debug:
+                    # Live debug page — render every frame signature change; the
+                    # sig carries a 1s token so values stay fresh.
+                    from pigeon.widgets.metadata_debug import (
+                        render_metadata_debug_bgra,
+                    )
+
+                    if (
+                        self._cached_main_bgra is not None
+                        and self._cached_main_sig == main_sig
+                    ):
+                        frame = self._cached_main_bgra
+                    else:
+                        frame = render_metadata_debug_bgra(
+                            st,
+                            assets_dir=self._assets_dir,
+                        )
+                        self._cached_main_bgra = frame
+                        self._cached_main_sig = main_sig
+                elif st.show_ui_color:
+                    from pigeon.widgets.ui_color_settings import (
+                        render_ui_color_settings_bgra,
+                    )
+
+                    frame = render_ui_color_settings_bgra(
+                        st,
+                        assets_dir=self._assets_dir,
+                    )
+                    self._cached_main_bgra = frame
+                    self._cached_main_sig = main_sig
+                    self._store_focus_frame(frame)
+                elif st.show_preferences:
+                    # Prefs keeps a structure cache + live overlays; always go through
+                    # render so HH:MM / NP progress stay fresh without per-second SVG.
+                    from pigeon.widgets.preferences_settings import (
+                        render_preferences_settings_bgra,
+                    )
+
+                    frame = render_preferences_settings_bgra(
+                        st,
+                        assets_dir=self._assets_dir,
+                    )
+                    self._cached_main_bgra = frame
+                    self._cached_main_sig = main_sig
+                    self._store_focus_frame(frame)
+                elif focus_key in self._focus_frame_cache:
                     frame = self._focus_frame_cache[focus_key]
                     self._cached_main_bgra = frame
                     self._cached_main_sig = main_sig
@@ -7238,7 +8350,9 @@ class MainSettingsWidget:
                         assets_dir=self._assets_dir,
                     )
                     if st.show_update_popup:
-                        from pigeon.widgets.update_popup import composite_update_popup_over_bgra
+                        from pigeon.widgets.update_popup import (
+                            composite_update_popup_over_bgra,
+                        )
 
                         frame = composite_update_popup_over_bgra(
                             frame,

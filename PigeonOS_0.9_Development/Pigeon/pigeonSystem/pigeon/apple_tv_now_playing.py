@@ -330,7 +330,8 @@ def _query_preference_from_playing(playing) -> str:
     media_type = getattr(playing, "media_type", None)
     sn = getattr(playing, "season_number", None)
     en = getattr(playing, "episode_number", None)
-    episode_like = sn is not None or en is not None
+    episode_title_txt = _tx("episode_title")
+    episode_like = sn is not None or en is not None or bool(episode_title_txt)
     t_t = _tx("title")
     t_a = _tx("artist")
     title_embeds_se = False
@@ -347,6 +348,7 @@ def _query_preference_from_playing(playing) -> str:
         return "tv"
     # Streamers often tag TV episodes as Video; still search TMDb as TV when episodic.
     # Prime Video often embeds ``S01 E01`` only inside ``title`` (no pyatv season/episode fields).
+    # Peacock / others often send only ``episode_title`` with an empty series_name.
     if episode_like or title_embeds_se:
         return "tv"
     t_sn = _tx("series_name")
@@ -895,12 +897,53 @@ async def _clear_airplay_credentials(storage, conf) -> None:
         pass
 
 
+async def _close_atv(atv) -> None:
+    """Close a pyatv session and await its teardown tasks.
+
+    pyatv's ``AppleTV.close()`` is synchronous and returns a set of pending
+    disconnect tasks (session manager + per-protocol teardown). ``await
+    atv.close()`` therefore raises TypeError and leaves those tasks pending —
+    when the caller's short-lived event loop closes they are destroyed and
+    every poll logs "Event loop is closed" / "Task was destroyed".
+    """
+    if atv is None:
+        return
+    try:
+        result = atv.close()
+    except Exception:
+        return
+    try:
+        if asyncio.iscoroutine(result):
+            await result
+        elif isinstance(result, (set, list, tuple)) and result:
+            await asyncio.wait(set(result), timeout=3.0)
+    except Exception:
+        pass
+
+
 def _new_loop_run(coro):
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(coro)
     finally:
+        try:
+            # Let straggler teardown tasks (pyatv disconnects, transport
+            # close callbacks) finish before the loop closes; cancel and
+            # reap whatever survives the grace period.
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            if pending:
+                loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
+                leftover = [t for t in pending if not t.done()]
+                for t in leftover:
+                    t.cancel()
+                if leftover:
+                    loop.run_until_complete(
+                        asyncio.gather(*leftover, return_exceptions=True)
+                    )
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
         try:
             loop.stop()
         except Exception:
@@ -1082,7 +1125,7 @@ async def _async_fetch_title_for_device(
         finally:
             if atv is not None:
                 try:
-                    await atv.close()
+                    await _close_atv(atv)
                 except Exception:
                     pass
 
@@ -1251,7 +1294,7 @@ async def _async_fetch_now_playing_info_for_device(
         finally:
             if atv is not None:
                 try:
-                    await atv.close()
+                    await _close_atv(atv)
                 except Exception:
                     pass
 
@@ -1297,7 +1340,7 @@ async def _async_atv_remote_close_session() -> None:
     atv = _ATV_REMOTE_STATE.get("atv")
     if atv is not None:
         try:
-            await atv.close()  # type: ignore[union-attr]
+            await _close_atv(atv)
         except Exception:
             pass
     _ATV_REMOTE_STATE.clear()
@@ -1378,7 +1421,7 @@ async def _async_atv_remote_worker_one(
             fn = getattr(atv.remote_control, m, None)
             if fn is None or not callable(fn):
                 try:
-                    await atv.close()
+                    await _close_atv(atv)
                 except Exception:
                     pass
                 atv = None
@@ -1395,7 +1438,7 @@ async def _async_atv_remote_worker_one(
         except Exception:
             if atv is not None:
                 try:
-                    await atv.close()
+                    await _close_atv(atv)
                 except Exception:
                     pass
 
@@ -1513,7 +1556,7 @@ async def _async_send_remote_method_to_device(
         finally:
             if atv is not None:
                 try:
-                    await atv.close()
+                    await _close_atv(atv)
                 except Exception:
                     pass
 
@@ -2000,7 +2043,7 @@ async def _async_debug_metadata_for_device(
         finally:
             if atv is not None:
                 try:
-                    await atv.close()
+                    await _close_atv(atv)
                 except Exception:
                     pass
         lines.append("")

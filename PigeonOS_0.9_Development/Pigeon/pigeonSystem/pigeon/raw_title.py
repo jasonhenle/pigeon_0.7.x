@@ -612,17 +612,22 @@ def tmdb_query_candidates_from_metadata(metadata: Mapping[str, Any] | None) -> l
     rt = raw_title_from_metadata_dict(metadata)
     pyatv_q = str(metadata.get("query") or "").strip()
     episode_like = _title_looks_like_episode_in_metadata(metadata, rt)
+    ep_title = (rt.raw_episode_title or "").strip() or str(
+        metadata.get("episode_title") or ""
+    ).strip()
     if episode_like:
         add(pyatv_q)
         add(rt.raw_title)
     else:
         add(rt.raw_title)
         add(pyatv_q)
+    # Episode-only Peacock/etc. lines: always try the episode title for series-index fallback.
+    add(ep_title)
     try:
         add(tmdb_query_from_raw_title(rt, base_query=pyatv_q or None))
     except Exception:
         pass
-    for key in ("series_name", "artist", "album", "title"):
+    for key in ("series_name", "artist", "album", "title", "ocr_title"):
         add(str(metadata.get(key) or ""))
     if not out:
         add(resolve_metadata_tmdb_query(metadata))

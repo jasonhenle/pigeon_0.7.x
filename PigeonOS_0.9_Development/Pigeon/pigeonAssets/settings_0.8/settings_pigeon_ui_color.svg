@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" viewBox="0 0 1478.15 1513.77">
+  <!-- Generator: Adobe Illustrator 30.6.0, SVG Export Plug-In . SVG Version: 2.1.4 Build 109)  -->
+  <defs>
+    <clipPath id="clippath">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" style="fill: none;"/>
+    </clipPath>
+    <clipPath id="clippath-1">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" style="fill: none;"/>
+    </clipPath>
+    <clipPath id="clippath-2">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" style="fill: none;"/>
+    </clipPath>
+    <clipPath id="clippath-3">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" style="fill: none;"/>
+    </clipPath>
+    <clipPath id="clippath-4">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" style="fill: none;"/>
+    </clipPath>
+    <clipPath id="clippath-5">
+      <rect x="385.66" y="551.56" width="754.46" height="315.43" rx="19.78" ry="19.78" style="fill: none;"/>
+    </clipPath>
+  </defs>
+  <g id="Layer_30" style="display: none;">
+    <g id="Layer_40">
+      <rect x="368.02" y="448.4" width="797.98" height="480"/>
+    </g>
+    <g id="menu_container_6">
+      <g style="clip-path: url(#clippath);">
+        <rect x="421.48" y="891.38" width="1197.51" height="197.03" transform="translate(-392.9492 1143.7788) rotate(-50.35)" style="fill: #4c0006;"/>
+      </g>
+    </g>
+    <g id="menu_container_5">
+      <g style="clip-path: url(#clippath-1);">
+        <rect x="295.8" y="821.14" width="1197.51" height="130.19" transform="translate(-358.6173 1009.5012) rotate(-50.35)" style="fill: #5e0009;"/>
+      </g>
+    </g>
+    <g id="menu_container_4">
+      <g style="clip-path: url(#clippath-2);">
+        <rect x="189.05" y="723.4" width="1197.51" height="147.74" transform="translate(-328.75 895.11) rotate(-50.35)" style="fill: #77000e;"/>
+      </g>
+    </g>
+    <g id="menu_container_3">
+      <g style="clip-path: url(#clippath-3);">
+        <rect x="94.05" y="652.93" width="1196.76" height="131.57" transform="translate(-302.79 793.24) rotate(-50.35)" style="fill: #930012;"/>
+      </g>
+    </g>
+    <g id="menu_container_2">
+      <g style="clip-path: url(#clippath-4);">
+        <rect x="-9.65" y="559.3" width="1196.01" height="145.33" transform="translate(-273.66 681.72) rotate(-50.35)" style="fill: #b2000d;"/>
+      </g>
+    </g>
+    <g id="menu_container_1">
+      <g style="clip-path: url(#clippath-5);">
+        <rect x="-139.5" y="424.73" width="1197.51" height="200.51" transform="translate(-238.01 543.6) rotate(-50.35)" style="fill: #ff0013;"/>
+      </g>
+    </g>
+  </g>
+  <g id="color_x5F_container_x5F_group">
+    <rect id="color_x5F_containter_x5F_button" x="431.34" y="574.01" width="674.92" height="259.19" rx="13.04" ry="13.04" style="fill: #1c1c1c; stroke: #1c1c1c; stroke-miterlimit: 10; stroke-width: 7px;"/>
+    <rect id="color_x5F_container_x5F_accent" x="431.34" y="574.01" width="674.92" height="259.19" rx="13.04" ry="13.04" style="fill: none; stroke: #666; stroke-miterlimit: 10; stroke-width: 3px;"/>
+  </g>
+  <g id="button_x5F_color_x5F_group">
+    <g id="black_x5F_swatch_x5F_group">
+      <rect id="black_x5F_swatch" x="1021.49" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #202020; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="black_x5F_swatch_x5F_icon" cx="1057.77" cy="783.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="darkpurple_x5F_swatch_x5F_group">
+      <rect id="darkpurple_x5F_swatch" x="940.72" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #490089; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="darkpurple_x5F_swatch_x5F_icon" cx="977.84" cy="783.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="darkblue_x5F_swatch_x5F_group">
+      <rect id="darkblue_x5F_swatch" x="860.98" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #03237f; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="darkblue_x5F_swatch_x5F_icon" cx="898.2" cy="783.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="darkgreen_x5F_swatch_x5F_group">
+      <rect id="darkgreen_x5F_swatch" x="781.21" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #2f7f00; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="darkgreen_x5F_swatch_x5F_icon" cx="818.66" cy="783.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="darkyellow_x5F_swatch_x5F_group">
+      <rect id="darkyellow_x5F_swatch" x="700.51" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #878000; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="darkyellow_x5F_swatch_x5F_icon" cx="737.82" cy="783.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="darkorange_x5F_swatch_x5F_group">
+      <rect id="darkorange_x5F_swatch" x="620.74" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #825a00; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="darkorange_x5F_swatch_x5F_icon" cx="658.08" cy="783.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="darkred_x5F_swatch_x5F_group">
+      <rect id="darkred_x5F_swatch" x="540.97" y="746.56" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #7f0000; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="darkred_x5F_swatch_x5F_icon" cx="578.14" cy="783.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <text id="button_x5F_text" transform="translate(452.99 811.31) scale(1.14 1)" style="fill: #919190; font-family: SharpSans-Semibold, &apos;Sharp Sans&apos;; font-size: 21.11px; font-weight: 600;"><tspan x="0" y="0">button</tspan></text>
+  </g>
+  <g id="ui_x5F_color_x5F_group">
+    <g id="gray_x5F_swatch_x5F_group">
+      <rect id="gray_x5F_swatch" x="1021.49" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #777; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="gray_x5F_swatch_x5F_icon" cx="1058.77" cy="702.87" r="30.63" style="fill: #fff; stroke: #202020; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="purple_x5F_swatch_x5F_group">
+      <rect id="purple_x5F_swatch" x="940.72" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #9500ff; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="purple_x5F_swatch_x5F_icon" cx="977.84" cy="702.87" r="30.63" style="fill: #fff; stroke: #202020; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="blue_x5F_swatch_x5F_group">
+      <rect id="blue_x5F_swatch" x="861.98" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #0037ff; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="blue_x5F_swatch_x5F_icon" cx="899.5" cy="702.87" r="30.63" style="fill: #fff; stroke: #202020; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="green_x5F_swatch_x5F_group">
+      <rect id="green_x5F_swatch" x="781.21" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #58ff00; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="green_x5F_swatch_x5F_icon" cx="818.36" cy="702.87" r="30.63" style="fill: #fff; stroke: #202020; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="yellow_x5F_swatch_x5F_group">
+      <rect id="yellow_x5F_swatch" x="700.51" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #fff800; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="yellow_x5F_swatch_x5F_icon" cx="737.72" cy="702.87" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="orange_x5F_Swatch_x5F_group">
+      <rect id="orange_x5F_swatch" x="620.74" y="665.76" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #ffb600; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="orange_x5F_swatch_x5F_icon" cx="658.08" cy="702.87" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="red_x5F_swatch_x5F_group">
+      <rect id="red_x5F_swatch_x5F_button" x="540.97" y="665.79" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: red; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="red_x5F_swatch_x5F_icon" cx="578.14" cy="702.87" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <text id="ui_x5F_text" transform="translate(513.83 731.17)" style="fill: #919190; font-family: SharpSans-Semibold, &apos;Sharp Sans&apos;; font-size: 24px; font-weight: 600;"><tspan x="0" y="0">ui</tspan></text>
+  </g>
+  <g id="accent_x5F_color_x5F_group">
+    <g id="lightpurple_x5F_swatch_x5F_group">
+      <rect id="lightpurple_x5F_swatch" x="940.72" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #c27efc; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="lightpurple_x5F_swatch_x5F_icon" cx="978.04" cy="622.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="lightblue_x5F_swatch_x5F_group">
+      <rect id="lightblue_x5F_swatch" x="860.98" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #7196ff; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <g id="lightblue_x5F_swatch_x5F_icon">
+        <circle cx="898.6" cy="622.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+      </g>
+    </g>
+    <g id="lightgreen_x5F_swatch_x5F_group">
+      <rect id="lightgreen_x5F_swatch" x="781.21" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #acff7b; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="lightgreen_x5F_swatch_x5F_icon" cx="818.36" cy="622.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="lightyellow_x5F_swatch_x5F_group">
+      <rect id="lightyellow_x5F_swatch" x="700.51" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #fff87d; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="lightyellow_x5F_swatch_x5F_icon" cx="737.52" cy="622.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="lightorange_x5F_group">
+      <rect id="orange_x5F_swatch1" data-name="orange_x5F_swatch" x="620.74" y="584.96" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #ffd985; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="orange_x5F_swatch_x5F_icon1" data-name="orange_x5F_swatch_x5F_icon" cx="658.08" cy="622.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <g id="lightred_x5F_swatch_x5F_group">
+      <rect id="lightred_x5F_swatch" x="540.97" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #ff8383; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="lightred_x5F_swatch_x5F_icon" cx="578.14" cy="622.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <text id="accent_x5F_text" transform="translate(450.05 650.47)" style="fill: #fff; font-family: SharpSans-Semibold, &apos;Sharp Sans&apos;; font-size: 24px; font-weight: 600;"><tspan x="0" y="0">accent</tspan></text>
+    <g id="white_x5F_swatch_x5F_group">
+      <rect id="white_x5F_swatch" x="1021.49" y="584.99" width="74.33" height="74.33" rx="10.35" ry="10.35" style="fill: #fff; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+      <circle id="white_x5F_swatch_x5F_icon" cx="1057.77" cy="622.15" r="30.63" style="fill: #fff; stroke: #000; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+  </g>
+  <g id="back_x5F_group">
+    <path id="back_x5F_button" d="M404.37,505.47h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" style="fill: #202020; stroke: #202020; stroke-miterlimit: 10; stroke-width: 7px;"/>
+    <g id="back_x5F_accent">
+      <path d="M404.37,505.47h49.08c5.27,0,9.56,4.28,9.56,9.56v18.81c0,5.27-4.28,9.56-9.56,9.56h-50.08c-5.27,0-9.56-4.28-9.56-9.56v-17.81c0-5.83,4.73-10.56,10.56-10.56Z" style="fill: none; stroke: #666; stroke-miterlimit: 10; stroke-width: 3px;"/>
+    </g>
+    <text id="back_x5F_text" transform="translate(402.34 534.04)" style="fill: #fff; font-family: Digital-7, Digital-7; font-size: 29px;"><tspan x="0" y="0">BACK</tspan></text>
+  </g>
+</svg>

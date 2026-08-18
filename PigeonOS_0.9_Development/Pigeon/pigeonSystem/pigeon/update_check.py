@@ -516,6 +516,18 @@ def check_for_update(*, timeout_s: float = 12.0, force: bool = False) -> UpdateC
     ``force=True`` (settings_pigeon Update button) bypasses HTTP caches so a
     newly merged main release is detected immediately.
     """
+    try:
+        from pigeon.source_toggles import source_enabled
+
+        if not source_enabled("wifi"):
+            return UpdateCheckResult(
+                local_version=version_string(),
+                remote_version=None,
+                update_available=False,
+                error="Pigeon is offline (Wi-Fi source is off).",
+            )
+    except ImportError:
+        pass
     prepare_github_update_environment()
     local = version_string()
     local_t = version_tuple()

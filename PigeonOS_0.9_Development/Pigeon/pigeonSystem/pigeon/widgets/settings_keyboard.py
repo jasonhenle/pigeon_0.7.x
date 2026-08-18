@@ -535,15 +535,11 @@ def _paint_kb_button_shape(
     selected: bool,
     theme: SettingsTheme,
 ) -> None:
-    """Fill + 3px outline (white deselected, black selected)."""
+    """Flat key fill — accent outlines are turned off on keyboards."""
     fill = theme.selected if selected else theme.deselected
-    stroke = theme.deselected if selected else theme.selected
-    _set_paint(node, fill=fill, stroke=stroke)
+    _set_paint(node, fill=fill, stroke="none")
     style = node.get("style") or ""
-    style = _rewrite_style_prop(style, "stroke-width", _KB_STROKE_WIDTH)
-    node.set("stroke-width", _KB_STROKE_WIDTH)
-    node.set("stroke-linejoin", "round")
-    node.set("stroke-linecap", "round")
+    style = _rewrite_style_prop(style, "stroke-width", "0")
     if style:
         node.set("style", style)
 

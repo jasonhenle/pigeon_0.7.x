@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from pigeon.font_paths import (
     resolve_digital7_font,
+    resolve_ui_font_bold,
     resolve_ui_font_extrabold,
     resolve_ui_font_extrabold_italic,
     resolve_ui_font_semibold,
@@ -43,6 +44,7 @@ _MATRIX_RE = re.compile(
 class SettingsFontRole(str, Enum):
     DIGITAL7 = "digital7"
     SHARP_SEMIBOLD = "semibold"
+    SHARP_BOLD = "bold"
     SHARP_EXTRABOLD = "extrabold"
     SHARP_EXTRABOLD_ITALIC = "extrabold_italic"
 
@@ -51,7 +53,7 @@ _INSTRUCTION_GROUP_IDS = frozenset({"main_instructions"})
 _KEYBOARD_GROUP_IDS = frozenset({"keyboardtemp"})
 _AI_SUFFIX_RE = re.compile(r"_\d{20,}_?$")
 
-SettingsTextFontMode = Literal["auto", "keyboard", "update_popup"]
+SettingsTextFontMode = Literal["auto", "keyboard", "update_popup", "preferences"]
 
 
 @dataclass(frozen=True)
@@ -217,12 +219,57 @@ def _is_keyboard_text(
     return logical.startswith("keyboard") or logical.startswith("symbolic_")
 
 
+def _is_preferences_back_text(
+    text_el: ET.Element,
+    parents: dict[ET.Element, ET.Element],
+) -> bool:
+    """True for the BACK label under ``selector_exit_group`` (Digital-7 only)."""
+    logical = _normalize_logical(text_el.get("id") or "")
+    if logical in ("main_exit_text", "selector_exit_text", "selector_back_text"):
+        return True
+    cur: ET.Element | None = text_el
+    while cur is not None:
+        key = _normalize_logical(cur.get("id") or cur.get("data-name") or "")
+        if key == "selector_exit_group":
+            return True
+        if key.startswith("selector_") and key.endswith("_group") and key != "selector_exit_group":
+            return False
+        cur = parents.get(cur)
+    return False
+
+
+def _font_role_from_svg_family(text_el: ET.Element) -> SettingsFontRole:
+    """Map Illustrator ``font-family`` to a Pillow role."""
+    family = _parse_font_family(text_el)
+    if "digital" in family:
+        return SettingsFontRole.DIGITAL7
+    if "italic" in family and (
+        "extrabold" in family or "bold" in family or "sharp" in family
+    ):
+        return SettingsFontRole.SHARP_EXTRABOLD_ITALIC
+    if "extrabold" in family:
+        return SettingsFontRole.SHARP_EXTRABOLD
+    if "bold" in family:
+        return SettingsFontRole.SHARP_BOLD
+    if "semibold" in family or "medium" in family:
+        return SettingsFontRole.SHARP_SEMIBOLD
+    if "sharp" in family or "myriad" in family:
+        # Zone numerals ship as Myriad; Sharp Extrabold is the closest bundled face.
+        return SettingsFontRole.SHARP_EXTRABOLD
+    return SettingsFontRole.SHARP_EXTRABOLD
+
+
 def _font_role_for_text(
     text_el: ET.Element,
     parents: dict[ET.Element, ET.Element],
     *,
     font_mode: SettingsTextFontMode = "auto",
 ) -> SettingsFontRole:
+    if font_mode == "preferences":
+        # Among selector buttons, only BACK is Digital-7; other labels keep SVG faces.
+        if _is_preferences_back_text(text_el, parents):
+            return SettingsFontRole.DIGITAL7
+        return _font_role_from_svg_family(text_el)
     if font_mode == "update_popup":
         family = _parse_font_family(text_el)
         logical = _normalize_logical(text_el.get("id") or "")
@@ -277,6 +324,38 @@ def _text_content(text_el: ET.Element) -> str:
     return "".join(text_el.itertext()).strip()
 
 
+def _tspan_lines(text_el: ET.Element) -> list[tuple[float, float, str]] | None:
+    """Group child tspans by ``y`` into lines: ``(x_offset, y_offset, text)``.
+
+    Returns ``None`` when there is only one baseline (caller should use flat text).
+    """
+    tspans = [c for c in list(text_el) if c.tag.endswith("tspan")]
+    if len(tspans) < 2:
+        return None
+    by_y: dict[float, list[tuple[float, str]]] = {}
+    for tspan in tspans:
+        try:
+            y = float(tspan.get("y") or 0.0)
+        except ValueError:
+            y = 0.0
+        try:
+            x = float(tspan.get("x") or 0.0)
+        except ValueError:
+            x = 0.0
+        piece = "".join(tspan.itertext())
+        by_y.setdefault(y, []).append((x, piece))
+    if len(by_y) <= 1:
+        return None
+    lines: list[tuple[float, float, str]] = []
+    for y in sorted(by_y.keys()):
+        pieces = by_y[y]
+        x0 = min(p[0] for p in pieces)
+        text = "".join(p[1] for p in pieces)
+        if text.strip():
+            lines.append((x0, y, text))
+    return lines if len(lines) > 1 else None
+
+
 def collect_settings_text_ops(
     root: ET.Element,
     *,
@@ -289,6 +368,8 @@ def collect_settings_text_ops(
     vb_x, vb_y, vb_w, vb_h = view_box if view_box is not None else viewbox_from_root(root)
     parents = _parent_map(root)
     ops: list[SettingsTextDrawOp] = []
+    sx = out_w / max(vb_w, 1.0)
+    sy = out_h / max(vb_h, 1.0)
 
     for text_el in root.iter():
         if not text_el.tag.endswith("text"):
@@ -298,12 +379,7 @@ def collect_settings_text_ops(
         pos = _parse_text_xy(text_el)
         if pos is None:
             continue
-        content = _text_content(text_el)
-        if not content:
-            continue
         x_svg, y_svg = pos
-        x_px = int(round((x_svg - vb_x) * out_w / max(vb_w, 1.0)))
-        y_px = int(round((y_svg - vb_y) * out_h / max(vb_h, 1.0)))
         fill_raw = (text_el.get("fill") or "").strip() or (
             _style_prop(text_el.get("style"), "fill") or ""
         )
@@ -318,19 +394,30 @@ def collect_settings_text_ops(
             else _hex_to_rgba(fill if fill.startswith("#") else "#ffffff")
         )
         stroke_rgba = _hex_to_rgba(stroke_hex) if stroke_hex else None
-        ops.append(
-            SettingsTextDrawOp(
-                x_px=x_px,
-                y_px=y_px,
-                text=content,
-                size_px=_parse_font_size(text_el, vb_h=vb_h, out_h=out_h),
-                fill_rgba=fill_rgba,
-                role=role,
-                anchor=_parse_text_anchor(text_el),
-                stroke_rgba=stroke_rgba,
-                stroke_width=float(stroke_w),
+        size_px = _parse_font_size(text_el, vb_h=vb_h, out_h=out_h)
+        anchor = _parse_text_anchor(text_el)
+
+        lines = _tspan_lines(text_el)
+        if lines is None:
+            content = _text_content(text_el)
+            if not content:
+                continue
+            lines = [(0.0, 0.0, content)]
+
+        for x_off, y_off, content in lines:
+            ops.append(
+                SettingsTextDrawOp(
+                    x_px=int(round((x_svg + x_off - vb_x) * sx)),
+                    y_px=int(round((y_svg + y_off - vb_y) * sy)),
+                    text=content,
+                    size_px=size_px,
+                    fill_rgba=fill_rgba,
+                    role=role,
+                    anchor=anchor,
+                    stroke_rgba=stroke_rgba,
+                    stroke_width=float(stroke_w),
+                )
             )
-        )
     return ops
 
 
@@ -358,6 +445,8 @@ def _font_path_for_role(role: SettingsFontRole) -> str | None:
         return resolve_ui_font_extrabold_italic() or resolve_ui_font_extrabold()
     if role == SettingsFontRole.SHARP_EXTRABOLD:
         return resolve_ui_font_extrabold() or resolve_ui_font_semibold()
+    if role == SettingsFontRole.SHARP_BOLD:
+        return resolve_ui_font_bold() or resolve_ui_font_semibold()
     return resolve_ui_font_semibold()
 
 
